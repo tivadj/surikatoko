@@ -7,6 +7,7 @@ import random
 import time
 import threading
 import typing
+import os
 import numpy as np
 import numpy.linalg as LA
 import cv2
@@ -188,6 +189,29 @@ def findHomogDltMasks(xs1, xs2):
     H = hs.reshape((3, 3), order="F")
     return H
 
+# H[3x3]
+# xs1[Nx3]
+def CalculateHomogError(H, xs1, xs2):
+    points_count = len(xs1)
+
+    # x2=H*x1
+    xs1_mapto2 = H.dot(xs1.T).T
+    s1 = np.sum([LA.norm(delta) for delta in xs2 - xs1_mapto2])
+
+    Hinv = LA.inv(H)
+    xs2_mapto1 = Hinv.dot(xs2.T).T
+    s2 = np.sum([LA.norm(delta) for delta in xs1 - xs2_mapto1])
+
+    err = (s1 + s2) / (points_count*2) # average error
+    return err
+
+def HomogErr(H, H_inv, x1, x2):
+    x1_mapped_to2 = H.dot(x1)
+    x2_mapped_to1 = H_inv.dot(x2)
+    err = LA.norm(x1_mapped_to2 - x2) + LA.norm(x2_mapped_to1 - x1)
+    err *= 0.5
+    return err
+
 # Decomposes planar homography into the (R,T/d,N) components. Returns the list of two possible solutions.
 # d=distance to the plane from camera center.
 # N=normal vector to the plane.
@@ -198,11 +222,27 @@ def ExtractRotTransFromPlanarHomography(H, xs1, xs2, debug):
     sig2 = dVec[1]
     Hnorm = H / sig2
 
-    # ??? correct the sign of H so that x2*H*x1>0
+    # H is correct except of sign; fix it, taking into account that x2*H*x1>0
     if not xs1 is None and not xs2 is None:
+        require_reverse = False
         for i in range(0, len(xs1)):
             val = xs2[i].dot(Hnorm).dot(xs1[i])
-            if val < 0: print("error: x2Hx1[{0}]={1}".format(i, val))
+            if val < 0:
+                require_reverse = True
+                break
+        if require_reverse:
+            Hnorm = -Hnorm
+        got_error = False
+        for i in range(0, len(xs1)):
+            val = xs2[i].dot(Hnorm).dot(xs1[i])
+            if val < 0: # TODO: this happens, what to do?
+                print("error: x2Hx1[{0}]={1}".format(i, val))
+                got_error = True
+        if got_error: # print entire list of x2*H*x1
+            print("---")
+            for i in range(0, len(xs1)):
+                val = xs2[i].dot(Hnorm).dot(xs1[i])
+                print("error: x2Hx1[{0}]={1}".format(i, val))
 
     #
     HH = np.dot(Hnorm.T, Hnorm)
@@ -276,7 +316,7 @@ def ExtractRotTransFromPlanarHomography(H, xs1, xs2, debug):
 
         if cand_valid:
             valid_cam_poses.append((candR, candT_div_d, candN))
-            if debug >= 3:
+            if debug >= 93:
                 n, ang = logSO3(candR)
                 print("Valid ind:{0}".format(i))
                 print("R n={0} ang={1}deg\n{2}".format(n, math.degrees(ang), candR))
@@ -284,22 +324,6 @@ def ExtractRotTransFromPlanarHomography(H, xs1, xs2, debug):
                 print("N={0}".format(candN))
     return valid_cam_poses
 
-
-# H[3x3]
-# xs1[Nx3]
-def CalculateHomogError(H, xs1, xs2):
-    points_count = len(xs1)
-
-    # x2=H*x1
-    xs1_mapto2 = H.dot(xs1.T).T
-    s1 = np.sum([LA.norm(delta) for delta in xs2 - xs1_mapto2])
-
-    Hinv = LA.inv(H)
-    xs2_mapto1 = Hinv.dot(xs2.T).T
-    s2 = np.sum([LA.norm(delta) for delta in xs1 - xs2_mapto1])
-
-    err = (s1 + s2) / (points_count*2) # average error
-    return err
 
 # Computes Sampson distance between projections of 3D points.
 # It approximates reprojection error and doesn't require the computation of 3D coordinates.
@@ -947,6 +971,7 @@ def convertPixelToMeterPoints(camMat, xs_per_image, xs_per_image_meter):
             # print("i:{0} x'={1} x={2} xRe'={3}".format(i, pnt, xmeter, np.dot(camMat, xmeter)))
             # xs_meter.append((xmeter[0], xmeter[1]))
             xs_meter.append(xmeter)
+        xs_meter = np.array(xs_meter)
         xs_per_image_meter.append(xs_meter)
 
 
@@ -1083,18 +1108,27 @@ def NormalizedCrossCorrelation(image1, image2, p1, p2, win_width):
 # transit=1 - next image
 def FuseInteractive(win_name, img1_adorn, img2_adorn, transit = 0, print_transit=True):
     img3 = np.zeros_like(img1_adorn)
+    update_image = True
     while True:
-        img3 = cv2.addWeighted(img1_adorn, 1-transit, img2_adorn, transit, 0, dst=img3)
+        if update_image:
+            img3 = cv2.addWeighted(img1_adorn, 1-transit, img2_adorn, transit, 0, dst=img3)
+            update_image = False
         cv2.imshow(win_name, img3)
         k = cv2.waitKey()
-        if k == 81: # left
-            transit -= 0.3
-        elif k == 83: # right
-            transit += 0.3
+
+        transit_new = transit
+        if k == 81 or k == 52: # left or NumPad4
+            transit_new = transit - 0.3
+        elif k == 83 or k == 54: # right or NumPad6
+            transit_new = transit + 0.3
         elif k == 27: # Esc
             break
-        transit = clamp(transit, 0, 1)
-        if print_transit: print('transit={0}'.format(transit))
+
+        transit_new = clamp(transit_new, 0, 1)
+        if transit != transit_new:
+            transit = transit_new
+            update_image = True
+            if print_transit: print('transit={0}'.format(transit))
 
 def ShowMatches(win_name, image1, image2, points, next_pts):
     color_from = [255,0,0]
@@ -1259,6 +1293,42 @@ def TestSampsonDistance():
                 grad[pos] = g
             print("{0}: {1}".format(ten_power, grad))
 
+# Performs RANSAC to find the maximal (cardinality) subset of items which agree on computation of some model.
+# Those items which marked True are called inliers, the rest is outliers.
+# samp_size = number of points in each sample to select
+# consensus_fun(items_count, samp_group_inds, cons_set_mask)->consensus_set_card
+# MASKS page 389
+def GetMaxSubsetInConsensus(samp_size, items_count, consensus_fun, consensus_mask, debug = 3):
+    sample_times = 200 # number of times to sample
+
+    best_cons_set_mask = np.zeros(items_count, np.uint8)
+    cur_cons_mask = np.zeros(items_count, np.uint8)
+    best_cons_set_card = -1
+
+    random.seed(313)
+
+    good = range(0, items_count)
+    for samp_ind in range(0, sample_times):
+        # generate new sample
+        num_points = samp_size
+        samp_group_inds = random.sample(good, num_points)
+
+        cur_cons_mask.fill(0)
+        consensus_set_card = consensus_fun(items_count, samp_group_inds, cur_cons_mask)
+        if consensus_set_card > best_cons_set_card:
+            best_cons_set_card = consensus_set_card
+            #if debug >= 3: print("best_cons_set_card={0}".format(best_cons_set_card))
+
+            best_cons_set_mask[:] = cur_cons_mask[:]
+
+
+    # reestimate essential mat on all matched points in consensus
+    assert best_cons_set_card >= 0
+    consensus_mask[:] = best_cons_set_mask
+
+    return best_cons_set_card
+
+
 # (wide baseline)
 # samp_size = number of points in each sample to select
 # attempt of my impl
@@ -1329,7 +1399,7 @@ def MatchKeypointsAndGetEssentialMatNarrowBaselineCore(samp_size, cam_mat, xs1_m
         samp_group_inds = random.sample(good, num_points)
 
         samp_xs1_meter = [xs1_meter[i] for i in samp_group_inds]
-        samp_xs2_meter = [xs1_meter[i] for i in samp_group_inds]
+        samp_xs2_meter = [xs2_meter[i] for i in samp_group_inds]
 
         if debug >= 994:
             samp_xs1_pixels = [xs1_pixels[i] for i in samp_group_inds]
@@ -4640,11 +4710,10 @@ def RunPlanarHomographyReconstruction():
 
     kpd = cv2.xfeatures2d.SIFT_create(nfeatures=50)  # OpenCV-contrib-3
 
-    image1 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/is/scene00001.png")
-    #image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/is/scene00002.png")
-    # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_57.png")
-    # image1 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_6.png")
-    # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_13.png")
+    #img_path_str = "/home/mmore/Pictures/blue_tapis1_640x480/is_always_shift/scene{0:05}.png"
+    #img_path_str = "/home/mmore/Pictures/blue_tapis2_640x480/is_always_shift/scene{0:05}.png"
+    img_path_str = "/home/mmore/Pictures/blue_tapis4_640x480_n45deg/is_always_shift/image-{0:04}.png"
+    image1 = cv2.imread(img_path_str.format(1)) # tapis1=122, tapis2=1
     assert not image1 is None
     img1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
     kp1 = kpd.detect(img1_gray, None)
@@ -4660,6 +4729,8 @@ def RunPlanarHomographyReconstruction():
     cam_poses_R = [np.eye(3,3)] # world
     cam_poses_T = [np.zeros(3)] # world
     last_reg_frame_ind = 0
+    cam2_from_world_pair = [np.eye(4)] * 2
+    homog_plane_pair_prev = [None] * 2
 
     # gather points to search for a partner
     head_pixels = []
@@ -4671,24 +4742,37 @@ def RunPlanarHomographyReconstruction():
             head_to_thread_inds.append(i)
     num_tracked_points.append(len(head_pixels))
 
-    #for ind2 in [57]:
-    for ind2 in range(1, 18): # 518
-        img2_id = ind2 + 1
+    #img_inds = range(122+1, 451)
+    img_inds = range(2, 1400+1)
+    ind2 = 1
+    for img2_id in img_inds:
         print("img2_id={0}".format(img2_id))
 
-        img2_path = "/home/mmore/Pictures/roshensweets_201704101700/is/scene{0:05}.png".format(img2_id)
+        img2_path = img_path_str.format(img2_id)
         image2 = cv2.imread(img2_path)
-        assert not image2 is None
+        if image2 is None: # skip gaps in numbering
+            continue
 
         img2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
 
         # try to find the corner in the next image
         head_pixels_array = np.array(head_pixels)
-        next_pts, status, err = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, head_pixels_array, None)
+        next_pts, status, err = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, head_pixels_array, None, winSize=(45,45))
 
         status = status.ravel()
-        xs1_pixels = [p for s, p in zip(status, head_pixels) if s]
-        xs2_pixels = [p for s, p in zip(status, next_pts) if s]
+        xs1_pixels = np.array([p for s, p in zip(status, head_pixels) if s])
+        xs2_pixels = np.array([p for s, p in zip(status, next_pts) if s])
+
+        if debug >= 4: ShowMatches("opticalFlow", image1, image2, xs1_pixels, xs2_pixels)
+
+        clean_files_without_shift = False
+        if clean_files_without_shift:
+            avg_pix_shift = LA.norm(xs1_pixels-xs2_pixels)
+            print("avg_pix_shift={0}".format(avg_pix_shift))
+            if avg_pix_shift < 1:
+                #print("removing {0}".format(img2_path))
+                os.remove(img2_path)
+                continue
 
         num_pnts = len(head_pixels)
         next_num_pnts = len(xs1_pixels)
@@ -4708,56 +4792,160 @@ def RunPlanarHomographyReconstruction():
 
 
         # convert pixel to image coordinates (pixel -> meters)
-        xs1_meter = []
-        xs2_meter = []
-        convertPixelToMeterPoints(cam_mat, [xs1_pixels], xs1_meter)
-        convertPixelToMeterPoints(cam_mat, [xs2_pixels], xs2_meter)
-        xs1_meter = xs1_meter[0]
-        xs2_meter = xs2_meter[0]
+        xs1_meters = []
+        xs2_meters = []
+        convertPixelToMeterPoints(cam_mat, [xs1_pixels], xs1_meters)
+        convertPixelToMeterPoints(cam_mat, [xs2_pixels], xs2_meters)
+        xs1_meters = xs1_meters[0]
+        xs2_meters = xs2_meters[0]
 
-        # MatchKeypointsAndGetEssentialMatNcc(self.imgLeft, self.imgRight)
-        #ess_mat, xs1_meter, xs2_meter = MatchKeypointsAndGetEssentialMatSift(8, cam_mat, image1, image2, do_norming = True, debug = debug)
-        ess_mat, cons_set_inds = MatchKeypointsAndGetEssentialMatNarrowBaselineCore(8, cam_mat, xs1_meter, xs2_meter, image1, image2, xs1_pixels, xs2_pixels, debug=debug)
-        if debug >= 3: print("ess_mat=\n{0}".format(ess_mat))
+        def MeasureConsensusFun(items_count, samp_group_inds, cons_set_mask):
+            if debug >= 94:
+                samp_xs1_pixels = xs1_pixels[samp_group_inds]
+                samp_xs2_pixels = xs2_pixels[samp_group_inds]
+                ShowMatches("sample", image1, image2, samp_xs1_pixels, samp_xs2_pixels)
 
-        cons_xs1_meter = [xs1_meter[i] for i in cons_set_inds]
-        cons_xs2_meter = [xs2_meter[i] for i in cons_set_inds]
+            samp_xs1_meters = xs1_meters[samp_group_inds]
+            samp_xs2_meters = xs2_meters[samp_group_inds]
 
-        suc, ess_mat_refined = RefineFundMat(ess_mat, cons_xs1_meter, cons_xs2_meter, debug=debug)
-        if not suc:
-            print("ind2={0} can't refine ess mat".format(img2_id))
-        else:
-            if debug >= 3: print("refined_ess_mat=\n{0}".format(ess_mat_refined))
+            # find homography
+            H2 = findHomogDltMasks(samp_xs1_meters, samp_xs2_meters)
+            #H2 = H2 / H2[-1,-1]
+            #err2 = CalculateHomogError(H2, xs1_meters, xs2_meters)
+            #print("H=\n{0} err={1}".format(H2, err2))
+
+            H2_inv = LA.inv(H2)
+
+            homog_thr = 1.5 # number of pixels between point x2 and one, projected by homography H*x1
+            cons_set_card = 0
+            for i in range(0, items_count):
+                pt1 = xs1_meters[i]
+                pt2 = xs2_meters[i]
+
+                err = HomogErr(H2, H2_inv, pt1, pt2)
+                cons = err < homog_thr
+                #if debug >= 3: print("err={0} include={1}".format(err, cons))
+                if cons:
+                    cons_set_card += 1
+                cons_set_mask[i] = cons
+
+            return cons_set_card
+
+        points_count = len(xs1_meters)
+        consens_mask = np.zeros(points_count, np.uint8)
+        cons_set_card = GetMaxSubsetInConsensus(4, points_count, MeasureConsensusFun, consens_mask)
+        assert cons_set_card >= 4, "need >= 4 points to compute homography"
+        print("cons_set_card={0}".format(cons_set_card))
+
+        cons_xs1_meter = np.array([p for i,p in enumerate(xs1_meters) if consens_mask[i]])
+        cons_xs2_meter = np.array([p for i,p in enumerate(xs2_meters) if consens_mask[i]])
+
+        if debug >= 4:
+            cons_xs1_pixels = np.array([p for i,p in enumerate(xs1_pixels) if consens_mask[i]])
+            cons_xs2_pixels = np.array([p for i,p in enumerate(xs2_pixels) if consens_mask[i]])
+            ShowMatches("cons", image1, image2, cons_xs1_pixels, cons_xs2_pixels)
+
+        # find homography
+        H = findHomogDltMasks(cons_xs1_meter, cons_xs2_meter)
+        #H = H / H[-1, -1]
+        err2 = CalculateHomogError(H, cons_xs1_meter, cons_xs2_meter)
+        if debug >= 3: print("H=\n{0} err={1}".format(H, err2))
+
+        frame_poses = ExtractRotTransFromPlanarHomography(H, cons_xs1_meter, cons_xs2_meter, debug=debug)
+
+        if debug >= 3:
+            print("frame_poses={0}".format(frame_poses))
+
+        # contains indices of matched normal N in previous frame
+        # [A,B] means: match 0th normal N in current frame to normal A in previous frame, 1st to Bth
+        decomp_track_parent_ind = [0, 1]
+        decomp_track_price = [0, 0]
+        if not "decomp_track_price_accum" in locals():
+            decomp_track_price_accum = [0, 0]
+            decomp_track_flip_count = [0, 0]
+
+        # find angles between normals in previous and current frames
+        # match the closest normals
+        if not homog_plane_pair_prev[0] is None:
+            cosangs = np.zeros((2,2))
+            inds = [(0,0), (0,1), (1,0), (1,1)]
+            for i1,i2 in inds:
+                N_prev = homog_plane_pair_prev[i1]
+                N_cur = frame_poses[i2][2]
+                ca = np.dot(N_prev[0:3], N_cur)
+                cosangs[i1,i2] = ca
+            # min(ang)=max(cosang)
+            print("cosangs={0}".format(cosangs))
+            #match_inds = max(inds, key=lambda ind: cosangs[ind[0],ind[1]])
+
+            # Way2 find best price
+            prices = np.zeros(2)
+            for i, (i1, i2) in enumerate(inds[0:2]):
+                ca1 = cosangs[i1, i2]
+                ca2 = cosangs[1-i1, 1-i2]
+                price = math.degrees(math.acos(ca1)) + math.degrees(math.acos(ca2))
+                prices[i] = price
+            min_price_ind = min([0,1], key=lambda i: prices[i])
+            match_inds = inds[min_price_ind]
+
+            i1, i2 = match_inds
+            decomp_track_parent_ind[i2] = i1
+            decomp_track_parent_ind[1-i2] = 1-i1 # invert 0 or 1 (1-0=1 and 1-1=0)
+            price1 = math.degrees(math.acos(cosangs[i1,i2]))
+            price2 = math.degrees(math.acos(cosangs[1 - i1, 1 - i2]))
+            decomp_track_price[i2] = price1
+            decomp_track_price[1-i2] = price2
+            decomp_track_price_accum[i2] += price1
+            decomp_track_price_accum[1-i2] += price2
+            decomp_track_flip_count[i2] += (price1 > 90)
+            decomp_track_flip_count[1-i2] += (price2 > 90)
+
+        assert decomp_track_parent_ind[0] != decomp_track_parent_ind[1], "Both decomposition must be associated with parent"
+
+        cam3_from_world_pair = [None, None]
+        for i, (candR, candT_div_d, candN) in enumerate(frame_poses):
+            cam3_from2 = SE3Mat(r=candR, t=candT_div_d)
+            n, ang = logSO3(candR)
+            print("R n={0} ang={1}deg\n{2}".format(n, math.degrees(ang), candR))
+            print("T/d={0}".format(candT_div_d))
+            print("N_={0}".format(candN))
+
+            match_ind = decomp_track_parent_ind[i]
+
+            candN_world = LA.inv(cam2_from_world_pair[match_ind]).dot(np.hstack((candN, 0)))
+            print("Nw={0} match_ind={1} Nwp={2} price={3}(d={4} flip={5})".
+                  format(candN_world, match_ind, homog_plane_pair_prev[match_ind], decomp_track_price_accum[match_ind],decomp_track_price[match_ind], decomp_track_flip_count[match_ind]))
+
+            cam3_from_world = cam3_from2.dot(cam2_from_world_pair[i])
+            cam3_from_world_pair[i] = cam3_from_world
+            homog_plane_pair_prev[match_ind] = candN_world
+
+        cam2_from_world_pair[:] = cam3_from_world_pair[:]
 
         #
-        world_R = None
-        world_T = None
-        suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
-        if not suc:
-            print("Failed E->R,T")
-        else:
-            ess_T = skewSymmeticMat(ess_Tvec)
-            ess_wvec, ess_wang = logSO3(ess_R)
-            print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
-
-            # map to the world frame
-            head_R =  cam_poses_R[last_reg_frame_ind]
-            head_T =  cam_poses_T[last_reg_frame_ind]
-
-            world_R = np.dot(head_R, ess_R)
-            world_T = np.dot(head_R, ess_Tvec) + head_T
-
-        cam_poses_R.append(world_R)
-        cam_poses_T.append(world_T)
-
-        # on failure to find [R,T] the head_ind doesn't change
-        if not world_R is None:
-            last_reg_frame_ind = ind2
-            head_pixels = xs2_pixels
-            head_to_thread_inds = next_to_thread_inds
+        # world_R = None
+        # world_T = None
+        # suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
+        # if not suc:
+        #     print("Failed E->R,T")
+        # else:
+        #     ess_T = skewSymmeticMat(ess_Tvec)
+        #     ess_wvec, ess_wang = logSO3(ess_R)
+        #     print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+        #
+        #     # map to the world frame
+        #     head_R =  cam_poses_R[last_reg_frame_ind]
+        #     head_T =  cam_poses_T[last_reg_frame_ind]
+        #
+        #     world_R = np.dot(head_R, ess_R)
+        #     world_T = np.dot(head_R, ess_Tvec) + head_T
+        #
+        # cam_poses_R.append(world_R)
+        # cam_poses_T.append(world_T)
 
         # update cursor
         img1_gray = img2_gray
+        ind2 += 1
 
     print("num_tracked_points={0}".format(num_tracked_points))
     print("cam_poses_R={0}".format(cam_poses_R))
@@ -4801,8 +4989,7 @@ def RunReconstructionOfIsolatedImagePairs():
         xs_per_image1 = [p for s, p in zip(status, points) if s]
         xs_per_image2 = [p for s, p in zip(status, next_pts) if s]
 
-        if debug >= 3:
-            ShowMatches("initial match", image1, image2, xs_per_image1, xs_per_image2)
+        if debug >= 94: ShowMatches("initial match", image1, image2, xs_per_image1, xs_per_image2)
 
         # convert matched points pixels->meters
         xs_per_image1_meter = []
@@ -4840,7 +5027,7 @@ def RunReconstructionOfIsolatedImagePairs():
 def TestExtractRTdNFromPlanarHomography():
     # MASKS page 138, example 5.20
     H = np.array([[5.404, 0, 4.436], [0, 4, 0], [-1.236, 0, 3.804]])
-    ExtractRotTransFromPlanarHomography(H, None, None)
+    ExtractRotTransFromPlanarHomography(H, None, None, 3)
     print()
 
 if __name__ == '__main__':
