@@ -8,6 +8,7 @@ import time
 import threading
 import typing
 import os
+import argparse
 import numpy as np
 import numpy.linalg as LA
 import cv2
@@ -4701,8 +4702,8 @@ def RunReconstructionSequential():
 
     return cam_poses_R, cam_poses_T
 
-def RunPlanarHomographyReconstruction():
-    debug = 0
+def RunPlanarHomographyReconstruction(args):
+    debug = args.debug
     cam_mat = np.array([
         [5.7231451642124046e+02, 0., 3.2393613004134221e+02],
         [0., 5.7231451642124046e+02, 2.8464798761067397e+02],
@@ -5031,6 +5032,10 @@ def TestExtractRTdNFromPlanarHomography():
     print()
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int)
+    args = parser.parse_args()
+
     #TestSampsonDistance()
     #testCorrespondencePoly6()
     #TestHomography()
@@ -5038,6 +5043,6 @@ if __name__ == '__main__':
     #RunGenerateVirtualPointsProjectAndReconstruct()
     #RunReconstructionOfIsolatedImagePairs()
     #RunReconstructionSequential()
-    RunPlanarHomographyReconstruction()
+    RunPlanarHomographyReconstruction(args)
     #demo = ReconstructDemo(); demo.mainRun()
 
