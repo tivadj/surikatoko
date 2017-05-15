@@ -2863,6 +2863,8 @@ class ReconstructDemo:
         self.xs3d = [] # 3D structure (mapping in SLAM)
         self.world_to_cam_R = [] # position and orientation of camera for each image (localization in SLAM)
         self.world_to_cam_T = []
+        self.world_to_cam_R_alt = [] # alternative decomposition of planar homography
+        self.world_to_cam_T_alt = []
         self.simplices = None
         self.eye = None
         self.center = None
@@ -2870,6 +2872,7 @@ class ReconstructDemo:
         self.orthoRadius = None
         self.scene_scale = None
         self.do_computation_flag = True
+        self.world_map_changed_flag = False
         self.continue_computation_lock = threading.Lock()
         self.cameras_lock = threading.Lock()
 
@@ -3745,103 +3748,105 @@ class ReconstructDemo:
     def DrawCameras(self):
         cam_to_world = np.eye(4, 4, dtype=np.float32)
         cam_pos_world = np.zeros(4, np.float32)
-        cam_pos_world_prev = np.zeros(4, np.float32)
-        cam_pos_world_prev_inited = False
 
         with self.cameras_lock:
-            for i in range(0, len(self.world_to_cam_R)):
-                camR = self.world_to_cam_R[i]
-                camT = self.world_to_cam_T[i]
-                if camR is None:
-                    continue
+            # process two alternative R,T/d decompositions of planar homography H
+            two_decomps = [(self.world_to_cam_R, self.world_to_cam_T), (self.world_to_cam_R_alt, self.world_to_cam_T_alt)]
+            for decomp_ind, (camR_list, camT_list) in enumerate(two_decomps):
+                cam_pos_world_prev = np.zeros(4, np.float32)
+                cam_pos_world_prev_inited = False
 
-                # cam_to_world=inv(world_to_cam)=[Rt,-Rt.T]
-                cam_to_world[0:3,0:3] = camR.T
-                cam_to_world[0:3,3] = -camR.T.dot(camT)
+                # draw the center of the axes
+                track_col = 0.0 if decomp_ind == 0 else 1.0
+                glColor3f(track_col, track_col, track_col)
 
-                # get position of the camera in the world: cam_to_world*(0,0,0,1)=cam_pos
-                cam_pos_world[:] = cam_to_world[:,3]
-                assert np.isclose(1, cam_pos_world[-1]), "Expect cam_to_world(3,3)==1"
+                for i in range(0, len(camR_list)):
+                    camR = camR_list[i]
+                    camT = camT_list[i]
+                    if camR is None:
+                        continue
 
-                # draw trajectory of the camera
-                if cam_pos_world_prev_inited:
-                    glBegin(GL_LINES)
-                    glColor3f(0, 0, 1)
-                    glVertex3fv(cam_pos_world_prev[0:3])
+                    # get position of the camera in the world: cam_to_world*(0,0,0,1)=cam_pos
+                    cam_pos_world_tmp = -camR.T.dot(camT)
+                    #assert np.isclose(1, cam_pos_world_tmp[-1]), "Expect cam_to_world(3,3)==1"
+                    cam_pos_world[0:3] = cam_pos_world_tmp[0:3]
+
+                    # draw trajectory of the camera
+                    if cam_pos_world_prev_inited and False:
+                        glBegin(GL_LINES)
+                        glColor3f(0, 0, 1)
+                        glVertex3fv(cam_pos_world_prev[0:3])
+                        glVertex3fv(cam_pos_world[0:3])
+                        glEnd()
+
+                    glBegin(GL_POINTS)
                     glVertex3fv(cam_pos_world[0:3])
                     glEnd()
 
-                glPushMatrix()
+                    cam_pos_world_prev, cam_pos_world = cam_pos_world, cam_pos_world_prev
+                    cam_pos_world_prev_inited = True
+                pass # frame poses
 
-                # transform to the camera frame
-                glMultMatrixf(cam_to_world.ravel('F'))
+                # current <- the latest frame position
+                if len(camR_list) > 0:
+                    camR = camR_list[-1]
+                    camT = camT_list[-1]
 
-                # draw the center of the axes
-                glColor3f(0, 0, 1.0)
+                    # transform to the camera frame
+                    # cam_to_world=inv(world_to_cam)=[Rt,-Rt.T]
+                    cam_to_world.fill(0)
+                    cam_to_world[0:3, 0:3] = camR.T
+                    cam_to_world[0:3, 3] = -camR.T.dot(camT)
+                    cam_to_world[-1, -1] = 1
 
-                glBegin(GL_POINTS)
-                glVertex3f(0, 0, 0)
-                glEnd()
+                    glPushMatrix()
+                    glMultMatrixf(cam_to_world.ravel('F'))
 
-                # draw axes in the local coordinates
-                ax = 0.2
-                glLineWidth(2)
-                glBegin(GL_LINES)
-                glColor3f(1, 0, 0)
-                glVertex3f(0, 0, 0)
-                glVertex3f(ax, 0, 0)
-                glColor3f(0, 1, 0)
-                glVertex3f(0, 0, 0)
-                glVertex3f(0, ax, 0)
-                glColor3f(0, 0, 1)
-                glVertex3f(0, 0, 0)
-                glVertex3f(0, 0, ax)
-                glEnd()
+                    # draw axes in the local coordinates
+                    ax = 0.2
+                    glLineWidth(2)
+                    glBegin(GL_LINES)
+                    glColor3f(1, 0, 0)
+                    glVertex3f(0, 0, 0)
+                    glVertex3f(ax, 0, 0)
+                    glColor3f(0, 1, 0)
+                    glVertex3f(0, 0, 0)
+                    glVertex3f(0, ax, 0)
+                    glColor3f(0, 0, 1)
+                    glVertex3f(0, 0, 0)
+                    glVertex3f(0, 0, ax)
+                    glEnd()
 
-                # draw camera in the local coordinates
-                hw = ax / 3  # halfwidth
-                cam_skel = np.float32([
-                    [0, 0, 0],
-                    [hw, hw, ax],  # left top
-                    [-hw, hw, ax],  # right top
-                    [-hw, -hw, ax],  # right bot
-                    [hw, -hw, ax],  # left bot
-                ])
-                glLineWidth(1)
-                glColor3f(1, 1, 1)
-                glBegin(GL_LINE_LOOP)  # left top of the front plane of the camera
-                glVertex3fv(cam_skel[1])
-                glVertex3fv(cam_skel[2])
-                glVertex3fv(cam_skel[3])
-                glVertex3fv(cam_skel[4])
-                glEnd()
-                glBegin(GL_LINES)  # edges from center to the front plane
-                glVertex3fv(cam_skel[0])
-                glVertex3fv(cam_skel[1])
-                glVertex3fv(cam_skel[0])
-                glVertex3fv(cam_skel[2])
-                glVertex3fv(cam_skel[0])
-                glVertex3fv(cam_skel[3])
-                glVertex3fv(cam_skel[0])
-                glVertex3fv(cam_skel[4])
-                glEnd()
-
-                # draw the number of frame
-                # glColor3f(0, 0, 0)
-                # s = 0.001
-                # glScalef(s, s, s)
-                # glutStrokeCharacter(GLUT_STROKE_ROMAN, ord(str(i)))
-
-                # winx, winy, winz = gluProject(0, 0, 0)
-                # font2 = pygame.font.SysFont("calibri", 20)
-                # text = font2.render("Begin", True, (255, 255, 255))
-                # screen = pygame.display.get_surface()
-                # screen.blit(text, (winx, winy))
-
-                glPopMatrix()
-
-                cam_pos_world_prev, cam_pos_world = cam_pos_world, cam_pos_world_prev
-                cam_pos_world_prev_inited = True
+                    # draw camera in the local coordinates
+                    hw = ax / 3  # halfwidth
+                    cam_skel = np.float32([
+                        [0, 0, 0],
+                        [hw, hw, ax],  # left top
+                        [-hw, hw, ax],  # right top
+                        [-hw, -hw, ax],  # right bot
+                        [hw, -hw, ax],  # left bot
+                    ])
+                    glLineWidth(1)
+                    glColor3f(1, 1, 1)
+                    glBegin(GL_LINE_LOOP)  # left top of the front plane of the camera
+                    glVertex3fv(cam_skel[1])
+                    glVertex3fv(cam_skel[2])
+                    glVertex3fv(cam_skel[3])
+                    glVertex3fv(cam_skel[4])
+                    glEnd()
+                    glBegin(GL_LINES)  # edges from center to the front plane
+                    glVertex3fv(cam_skel[0])
+                    glVertex3fv(cam_skel[1])
+                    glVertex3fv(cam_skel[0])
+                    glVertex3fv(cam_skel[2])
+                    glVertex3fv(cam_skel[0])
+                    glVertex3fv(cam_skel[3])
+                    glVertex3fv(cam_skel[0])
+                    glVertex3fv(cam_skel[4])
+                    glEnd()
+                    glPopMatrix()
+                pass # process head camera
+            pass # two H decompositions
         pass # lock
 
     def setup(self, width, height):
@@ -3982,10 +3987,10 @@ class ReconstructDemo:
     pass
 
     def handlePyGameEvent(self, event):
+        moved = False
         if event.type == pygame.KEYDOWN:
             # keysPressed = pygame.key.get_pressed()
 
-            moved = False
             sc = 0.01
             if pygame.key.get_mods() & pygame.KMOD_SHIFT:
                 sc = sc*20
@@ -4050,6 +4055,7 @@ class ReconstructDemo:
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             pass
+        return moved
 
     # Dummy generation thread
     def WorkerGenerateDummyCameraPositions(self, sleep_time_sec, continue_lock, cameras_lock):
@@ -4288,42 +4294,339 @@ class ReconstructDemo:
         #return cam_poses_R, cam_poses_T
         print("Exiting WorkerRunCornerMatcherAndFindCameraPos")
 
-    def mainRun(self):
+    def WorkerRunPlanarHomographyReconstruction(self, continue_lock, cameras_lock, main_args):
+        debug = main_args.debug
+        cam_mat = np.array([
+            [5.7231451642124046e+02, 0., 3.2393613004134221e+02],
+            [0., 5.7231451642124046e+02, 2.8464798761067397e+02],
+            [0., 0., 1.]])
+
+        kpd = cv2.xfeatures2d.SIFT_create(nfeatures=50)  # OpenCV-contrib-3
+
+        # img_path_str = "/home/mmore/Pictures/blue_tapis1_640x480/is_always_shift/scene{0:05}.png"
+        # img_path_str = "/home/mmore/Pictures/blue_tapis2_640x480/is_always_shift/scene{0:05}.png"
+        img_path_str = "/home/mmore/Pictures/blue_tapis4_640x480_n45deg/is_always_shift/image-{0:04}.png"
+        image1 = cv2.imread(img_path_str.format(1))  # tapis1=122, tapis2=1
+        assert not image1 is None
+        img1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+        kp1 = kpd.detect(img1_gray, None)
+
+        # init
+        points = np.array([kp.pt for kp in kp1], np.float32)
+        points_life = [None] * len(points)
+        for i, x1 in enumerate(points):
+            points_list = [x1]
+            points_life[i] = points_list
+
+        num_tracked_points = []
+        cam_poses_R = [np.eye(3, 3)]  # world
+        cam_poses_T = [np.zeros(3)]  # world
+        last_reg_frame_ind = 0
+        cam2_from_world_pair = [np.eye(4)] * 2
+        homog_plane_pair_prev = [None] * 2
+
+        # gather points to search for a partner
+        head_pixels = []
+        head_to_thread_inds = []
+        for i, points_list in enumerate(points_life):
+            pnt = points_list[last_reg_frame_ind]
+            if not pnt is None:
+                head_pixels.append(pnt)
+                head_to_thread_inds.append(i)
+        num_tracked_points.append(len(head_pixels))
+
+        # img_inds = range(122+1, 451)
+        img_inds = range(2, 1400 + 1)
+        ind2 = 1
+        for img2_id in img_inds:
+            with continue_lock:
+                cont = self.do_computation_flag
+            if not cont:
+                print("got request to cancel computation")
+                break
+
+            print("img2_id={0}".format(img2_id))
+
+            img2_path = img_path_str.format(img2_id)
+            image2 = cv2.imread(img2_path)
+            if image2 is None:  # skip gaps in numbering
+                continue
+
+            img2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+
+            # try to find the corner in the next image
+            head_pixels_array = np.array(head_pixels)
+            next_pts, status, err = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, head_pixels_array, None,
+                                                             winSize=(45, 45))
+
+            status = status.ravel()
+            xs1_pixels = np.array([p for s, p in zip(status, head_pixels) if s])
+            xs2_pixels = np.array([p for s, p in zip(status, next_pts) if s])
+
+            if debug >= 4: ShowMatches("opticalFlow", image1, image2, xs1_pixels, xs2_pixels)
+
+            clean_files_without_shift = False
+            if clean_files_without_shift:
+                avg_pix_shift = LA.norm(xs1_pixels - xs2_pixels)
+                print("avg_pix_shift={0}".format(avg_pix_shift))
+                if avg_pix_shift < 1:
+                    # print("removing {0}".format(img2_path))
+                    os.remove(img2_path)
+                    continue
+
+            num_pnts = len(head_pixels)
+            next_num_pnts = len(xs1_pixels)
+            num_tracked_points.append(next_num_pnts)
+            if debug >= 3: print("Number of active points {0}->{1}".format(num_pnts, next_num_pnts))
+
+            # reserve space
+            for points_list in points_life: points_list.append(None)
+
+            next_to_thread_inds = [0] * len(next_pts)
+            for i, s in enumerate(status):
+                if s:
+                    parent_ind = head_to_thread_inds[i]  # index in the point_life
+                    pnt2 = next_pts[i]
+                    points_life[parent_ind][ind2] = pnt2
+                    next_to_thread_inds[i] = parent_ind
+
+            # convert pixel to image coordinates (pixel -> meters)
+            xs1_meters = []
+            xs2_meters = []
+            convertPixelToMeterPoints(cam_mat, [xs1_pixels], xs1_meters)
+            convertPixelToMeterPoints(cam_mat, [xs2_pixels], xs2_meters)
+            xs1_meters = xs1_meters[0]
+            xs2_meters = xs2_meters[0]
+
+            def MeasureConsensusFun(items_count, samp_group_inds, cons_set_mask):
+                if debug >= 94:
+                    samp_xs1_pixels = xs1_pixels[samp_group_inds]
+                    samp_xs2_pixels = xs2_pixels[samp_group_inds]
+                    ShowMatches("sample", image1, image2, samp_xs1_pixels, samp_xs2_pixels)
+
+                samp_xs1_meters = xs1_meters[samp_group_inds]
+                samp_xs2_meters = xs2_meters[samp_group_inds]
+
+                # find homography
+                H2 = findHomogDltMasks(samp_xs1_meters, samp_xs2_meters)
+                # H2 = H2 / H2[-1,-1]
+                # err2 = CalculateHomogError(H2, xs1_meters, xs2_meters)
+                # print("H=\n{0} err={1}".format(H2, err2))
+
+                H2_inv = LA.inv(H2)
+
+                homog_thr = 1.5  # number of pixels between point x2 and one, projected by homography H*x1
+                cons_set_card = 0
+                for i in range(0, items_count):
+                    pt1 = xs1_meters[i]
+                    pt2 = xs2_meters[i]
+
+                    err = HomogErr(H2, H2_inv, pt1, pt2)
+                    cons = err < homog_thr
+                    # if debug >= 3: print("err={0} include={1}".format(err, cons))
+                    if cons:
+                        cons_set_card += 1
+                    cons_set_mask[i] = cons
+
+                return cons_set_card
+
+            points_count = len(xs1_meters)
+            consens_mask = np.zeros(points_count, np.uint8)
+            cons_set_card = GetMaxSubsetInConsensus(4, points_count, MeasureConsensusFun, consens_mask)
+            assert cons_set_card >= 4, "need >= 4 points to compute homography"
+            print("cons_set_card={0}".format(cons_set_card))
+
+            cons_xs1_meter = np.array([p for i, p in enumerate(xs1_meters) if consens_mask[i]])
+            cons_xs2_meter = np.array([p for i, p in enumerate(xs2_meters) if consens_mask[i]])
+
+            if debug >= 4:
+                cons_xs1_pixels = np.array([p for i, p in enumerate(xs1_pixels) if consens_mask[i]])
+                cons_xs2_pixels = np.array([p for i, p in enumerate(xs2_pixels) if consens_mask[i]])
+                ShowMatches("cons", image1, image2, cons_xs1_pixels, cons_xs2_pixels)
+
+            # find homography
+            H = findHomogDltMasks(cons_xs1_meter, cons_xs2_meter)
+            # H = H / H[-1, -1]
+            err2 = CalculateHomogError(H, cons_xs1_meter, cons_xs2_meter)
+            if debug >= 3: print("H=\n{0} err={1}".format(H, err2))
+
+            frame_poses = ExtractRotTransFromPlanarHomography(H, cons_xs1_meter, cons_xs2_meter, debug=debug)
+
+            if debug >= 3:
+                print("frame_poses={0}".format(frame_poses))
+
+            # contains indices of matched normal N in previous frame
+            # [A,B] means: match 0th normal N in current frame to normal A in previous frame, 1st to Bth
+            decomp_track_parent_ind = [0, 1]
+            decomp_track_price = [0, 0]
+            if not "decomp_track_price_accum" in locals():
+                decomp_track_price_accum = [0, 0]
+                decomp_track_flip_count = [0, 0]
+                primary_decomp_track_ind = 0
+
+            # find angles between normals in previous and current frames
+            # match the closest normals
+            if not homog_plane_pair_prev[0] is None:
+                cosangs = np.zeros((2, 2))
+                inds = [(0, 0), (0, 1), (1, 0), (1, 1)]
+                for i1, i2 in inds:
+                    N_prev = homog_plane_pair_prev[i1]
+                    N_cur = frame_poses[i2][2]
+                    ca = np.dot(N_prev[0:3], N_cur)
+                    cosangs[i1, i2] = ca
+                # min(ang)=max(cosang)
+                print("cosangs={0}".format(cosangs))
+                # match_inds = max(inds, key=lambda ind: cosangs[ind[0],ind[1]])
+
+                # Way2 find best price
+                prices = np.zeros(2)
+                for i, (i1, i2) in enumerate(inds[0:2]):
+                    ca1 = cosangs[i1, i2]
+                    ca2 = cosangs[1 - i1, 1 - i2]
+                    price = math.degrees(math.acos(ca1)) + math.degrees(math.acos(ca2))
+                    prices[i] = price
+                min_price_ind = min([0, 1], key=lambda i: prices[i])
+                match_inds = inds[min_price_ind]
+
+                i1, i2 = match_inds
+                decomp_track_parent_ind[i2] = i1
+                decomp_track_parent_ind[1 - i2] = 1 - i1  # invert 0 or 1 (1-0=1 and 1-1=0)
+                price1 = math.degrees(math.acos(cosangs[i1, i2]))
+                price2 = math.degrees(math.acos(cosangs[1 - i1, 1 - i2]))
+                decomp_track_price[i2] = price1
+                decomp_track_price[1 - i2] = price2
+                decomp_track_price_accum[i2] += price1
+                decomp_track_price_accum[1 - i2] += price2
+                decomp_track_flip_count[i2] += (price1 > 90)
+                decomp_track_flip_count[1 - i2] += (price2 > 90)
+
+                if primary_decomp_track_ind == i1:
+                    primary_decomp_track_ind = i2
+                else:
+                    primary_decomp_track_ind = 1-i2
+
+            assert decomp_track_parent_ind[0] != decomp_track_parent_ind[
+                1], "Both decomposition must be associated with parent"
+
+            cam3_from_world_pair = [None, None]
+            for i, (candR, candT_div_d, candN) in enumerate(frame_poses):
+                cam3_from2 = SE3Mat(r=candR, t=candT_div_d)
+                n, ang = logSO3(candR)
+                print("R n={0} ang={1}deg\n{2}".format(n, math.degrees(ang), candR))
+                print("T/d={0}".format(candT_div_d))
+                print("N_={0}".format(candN))
+
+                match_ind = decomp_track_parent_ind[i]
+
+                candN_world = LA.inv(cam2_from_world_pair[match_ind]).dot(np.hstack((candN, 0)))
+                print("Nw={0} match_ind={1} Nwp={2} price={3}(d={4} flip={5})".
+                      format(candN_world, match_ind, homog_plane_pair_prev[match_ind],
+                             decomp_track_price_accum[match_ind], decomp_track_price[match_ind],
+                             decomp_track_flip_count[match_ind]))
+
+                cam3_from_world = cam3_from2.dot(cam2_from_world_pair[i])
+                cam3_from_world_pair[i] = cam3_from_world
+                homog_plane_pair_prev[match_ind] = candN_world
+
+            with cameras_lock:
+                mat4x4 = cam3_from_world_pair[primary_decomp_track_ind]
+                self.world_to_cam_R.append(mat4x4[0:3,0:3]) # world
+                self.world_to_cam_T.append(mat4x4[0:3,3])  # world
+                mat4x4 = cam3_from_world_pair[1-primary_decomp_track_ind]
+                self.world_to_cam_R_alt.append(mat4x4[0:3,0:3]) # world
+                self.world_to_cam_T_alt.append(mat4x4[0:3,3])  # world
+
+            with continue_lock: # notify model is changed, redraw is required
+                self.world_map_changed_flag = True
+
+            cam2_from_world_pair[:] = cam3_from_world_pair[:]
+
+            #
+            # world_R = None
+            # world_T = None
+            # suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
+            # if not suc:
+            #     print("Failed E->R,T")
+            # else:
+            #     ess_T = skewSymmeticMat(ess_Tvec)
+            #     ess_wvec, ess_wang = logSO3(ess_R)
+            #     print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+            #
+            #     # map to the world frame
+            #     head_R =  cam_poses_R[last_reg_frame_ind]
+            #     head_T =  cam_poses_T[last_reg_frame_ind]
+            #
+            #     world_R = np.dot(head_R, ess_R)
+            #     world_T = np.dot(head_R, ess_Tvec) + head_T
+            #
+            # cam_poses_R.append(world_R)
+            # cam_poses_T.append(world_T)
+
+            # update cursor
+            img1_gray = img2_gray
+            ind2 += 1
+            print("ind2={}".format(ind2))
+            #time.sleep(0.1)
+
+        print("num_tracked_points={0}".format(num_tracked_points))
+        print("cam_poses_R={0}".format(cam_poses_R))
+        print("cam_poses_T={0}".format(cam_poses_T))
+
+        return cam_poses_R, cam_poses_T
+
+    def mainRun(self, main_args):
         #self.run()
 
         width, height = 1024, 768
         self.setup(width, height)
         # draw_teapot(0.02)
 
-        # glRotatef(-45, 0, 1, 0)
-
         # compute_thread = threading.Thread(name="comput", target=self.WorkerGenerateDummyCameraPositions,\
         #     args=(0.033, self.continue_computation_lock, self.cameras_lock))
-        compute_thread = threading.Thread(name="comput", target=self.WorkerRunCornerMatcherAndFindCameraPos,\
-            args=(self.continue_computation_lock, self.cameras_lock))
+        # compute_thread = threading.Thread(name="comput", target=self.WorkerRunCornerMatcherAndFindCameraPos,\
+        #     args=(self.continue_computation_lock, self.cameras_lock))
+        compute_thread = threading.Thread(name="comput", target=self.WorkerRunPlanarHomographyReconstruction,\
+            args=(self.continue_computation_lock, self.cameras_lock, main_args))
         compute_thread.start()
 
 
         main_loop_counter = 0
+        require_redraw = False
         while True:
             main_loop_counter += 1
             pygame.display.set_caption(str(main_loop_counter))
+            #print("main_loop_counter={}".format(main_loop_counter))
 
-            event = pygame.event.poll()
-            # print("event")
-            if event.type == pygame.QUIT:
-                break
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                break
-            self.handlePyGameEvent(event)
+            if pygame.event.peek():
+                event = pygame.event.poll()
+                if event.type == pygame.QUIT:
+                    break
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    break
+                moved = self.handlePyGameEvent(event)
+                if moved:
+                    require_redraw = True
 
-            # glRotatef(1, 1, 0, 0)
+            # query if model has changed
+            if not require_redraw:
+                with self.continue_computation_lock: # notify model is changed, redraw is required
+                    if self.world_map_changed_flag:
+                        require_redraw = True
+                        self.world_map_changed_flag = False # reset the flag to avoid further redraw
 
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-            # self.drawBackground(width,height,None)
-            self.drawData(width, height)
-            pygame.display.flip()
-            #time.sleep(1)
+            #require_redraw = True # forcebly, exhaustively redraw a scene
+            if require_redraw:
+                #print("redraw")
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+                # self.drawBackground(width,height,None)
+                self.drawData(width, height)
+                pygame.display.flip()
+                require_redraw = False
+
+            # give other threads an opportunity to progress;
+            # without yielding, the pygame thread consumes the majority of cpu
+            time.sleep(0.05)
+        pass # game loop
 
         # do cancel request
         with self.continue_computation_lock:
@@ -4702,258 +5005,6 @@ def RunReconstructionSequential():
 
     return cam_poses_R, cam_poses_T
 
-def RunPlanarHomographyReconstruction(args):
-    debug = args.debug
-    cam_mat = np.array([
-        [5.7231451642124046e+02, 0., 3.2393613004134221e+02],
-        [0., 5.7231451642124046e+02, 2.8464798761067397e+02],
-        [0., 0., 1.]])
-
-    kpd = cv2.xfeatures2d.SIFT_create(nfeatures=50)  # OpenCV-contrib-3
-
-    #img_path_str = "/home/mmore/Pictures/blue_tapis1_640x480/is_always_shift/scene{0:05}.png"
-    #img_path_str = "/home/mmore/Pictures/blue_tapis2_640x480/is_always_shift/scene{0:05}.png"
-    img_path_str = "/home/mmore/Pictures/blue_tapis4_640x480_n45deg/is_always_shift/image-{0:04}.png"
-    image1 = cv2.imread(img_path_str.format(1)) # tapis1=122, tapis2=1
-    assert not image1 is None
-    img1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
-    kp1 = kpd.detect(img1_gray, None)
-
-    # init
-    points = np.array([kp.pt for kp in kp1], np.float32)
-    points_life = [None] * len(points)
-    for i, x1 in enumerate(points):
-        points_list = [x1]
-        points_life[i] = points_list
-
-    num_tracked_points = []
-    cam_poses_R = [np.eye(3,3)] # world
-    cam_poses_T = [np.zeros(3)] # world
-    last_reg_frame_ind = 0
-    cam2_from_world_pair = [np.eye(4)] * 2
-    homog_plane_pair_prev = [None] * 2
-
-    # gather points to search for a partner
-    head_pixels = []
-    head_to_thread_inds = []
-    for i,points_list in enumerate(points_life):
-        pnt = points_list[last_reg_frame_ind]
-        if not pnt is None:
-            head_pixels.append(pnt)
-            head_to_thread_inds.append(i)
-    num_tracked_points.append(len(head_pixels))
-
-    #img_inds = range(122+1, 451)
-    img_inds = range(2, 1400+1)
-    ind2 = 1
-    for img2_id in img_inds:
-        print("img2_id={0}".format(img2_id))
-
-        img2_path = img_path_str.format(img2_id)
-        image2 = cv2.imread(img2_path)
-        if image2 is None: # skip gaps in numbering
-            continue
-
-        img2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-
-        # try to find the corner in the next image
-        head_pixels_array = np.array(head_pixels)
-        next_pts, status, err = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, head_pixels_array, None, winSize=(45,45))
-
-        status = status.ravel()
-        xs1_pixels = np.array([p for s, p in zip(status, head_pixels) if s])
-        xs2_pixels = np.array([p for s, p in zip(status, next_pts) if s])
-
-        if debug >= 4: ShowMatches("opticalFlow", image1, image2, xs1_pixels, xs2_pixels)
-
-        clean_files_without_shift = False
-        if clean_files_without_shift:
-            avg_pix_shift = LA.norm(xs1_pixels-xs2_pixels)
-            print("avg_pix_shift={0}".format(avg_pix_shift))
-            if avg_pix_shift < 1:
-                #print("removing {0}".format(img2_path))
-                os.remove(img2_path)
-                continue
-
-        num_pnts = len(head_pixels)
-        next_num_pnts = len(xs1_pixels)
-        num_tracked_points.append(next_num_pnts)
-        if debug >=3: print("Number of active points {0}->{1}".format(num_pnts, next_num_pnts))
-
-        # reserve space
-        for points_list in points_life: points_list.append(None)
-
-        next_to_thread_inds = [0] * len(next_pts)
-        for i,s in enumerate(status):
-            if s:
-                parent_ind = head_to_thread_inds[i] # index in the point_life
-                pnt2 = next_pts[i]
-                points_life[parent_ind][ind2] = pnt2
-                next_to_thread_inds[i] = parent_ind
-
-
-        # convert pixel to image coordinates (pixel -> meters)
-        xs1_meters = []
-        xs2_meters = []
-        convertPixelToMeterPoints(cam_mat, [xs1_pixels], xs1_meters)
-        convertPixelToMeterPoints(cam_mat, [xs2_pixels], xs2_meters)
-        xs1_meters = xs1_meters[0]
-        xs2_meters = xs2_meters[0]
-
-        def MeasureConsensusFun(items_count, samp_group_inds, cons_set_mask):
-            if debug >= 94:
-                samp_xs1_pixels = xs1_pixels[samp_group_inds]
-                samp_xs2_pixels = xs2_pixels[samp_group_inds]
-                ShowMatches("sample", image1, image2, samp_xs1_pixels, samp_xs2_pixels)
-
-            samp_xs1_meters = xs1_meters[samp_group_inds]
-            samp_xs2_meters = xs2_meters[samp_group_inds]
-
-            # find homography
-            H2 = findHomogDltMasks(samp_xs1_meters, samp_xs2_meters)
-            #H2 = H2 / H2[-1,-1]
-            #err2 = CalculateHomogError(H2, xs1_meters, xs2_meters)
-            #print("H=\n{0} err={1}".format(H2, err2))
-
-            H2_inv = LA.inv(H2)
-
-            homog_thr = 1.5 # number of pixels between point x2 and one, projected by homography H*x1
-            cons_set_card = 0
-            for i in range(0, items_count):
-                pt1 = xs1_meters[i]
-                pt2 = xs2_meters[i]
-
-                err = HomogErr(H2, H2_inv, pt1, pt2)
-                cons = err < homog_thr
-                #if debug >= 3: print("err={0} include={1}".format(err, cons))
-                if cons:
-                    cons_set_card += 1
-                cons_set_mask[i] = cons
-
-            return cons_set_card
-
-        points_count = len(xs1_meters)
-        consens_mask = np.zeros(points_count, np.uint8)
-        cons_set_card = GetMaxSubsetInConsensus(4, points_count, MeasureConsensusFun, consens_mask)
-        assert cons_set_card >= 4, "need >= 4 points to compute homography"
-        print("cons_set_card={0}".format(cons_set_card))
-
-        cons_xs1_meter = np.array([p for i,p in enumerate(xs1_meters) if consens_mask[i]])
-        cons_xs2_meter = np.array([p for i,p in enumerate(xs2_meters) if consens_mask[i]])
-
-        if debug >= 4:
-            cons_xs1_pixels = np.array([p for i,p in enumerate(xs1_pixels) if consens_mask[i]])
-            cons_xs2_pixels = np.array([p for i,p in enumerate(xs2_pixels) if consens_mask[i]])
-            ShowMatches("cons", image1, image2, cons_xs1_pixels, cons_xs2_pixels)
-
-        # find homography
-        H = findHomogDltMasks(cons_xs1_meter, cons_xs2_meter)
-        #H = H / H[-1, -1]
-        err2 = CalculateHomogError(H, cons_xs1_meter, cons_xs2_meter)
-        if debug >= 3: print("H=\n{0} err={1}".format(H, err2))
-
-        frame_poses = ExtractRotTransFromPlanarHomography(H, cons_xs1_meter, cons_xs2_meter, debug=debug)
-
-        if debug >= 3:
-            print("frame_poses={0}".format(frame_poses))
-
-        # contains indices of matched normal N in previous frame
-        # [A,B] means: match 0th normal N in current frame to normal A in previous frame, 1st to Bth
-        decomp_track_parent_ind = [0, 1]
-        decomp_track_price = [0, 0]
-        if not "decomp_track_price_accum" in locals():
-            decomp_track_price_accum = [0, 0]
-            decomp_track_flip_count = [0, 0]
-
-        # find angles between normals in previous and current frames
-        # match the closest normals
-        if not homog_plane_pair_prev[0] is None:
-            cosangs = np.zeros((2,2))
-            inds = [(0,0), (0,1), (1,0), (1,1)]
-            for i1,i2 in inds:
-                N_prev = homog_plane_pair_prev[i1]
-                N_cur = frame_poses[i2][2]
-                ca = np.dot(N_prev[0:3], N_cur)
-                cosangs[i1,i2] = ca
-            # min(ang)=max(cosang)
-            print("cosangs={0}".format(cosangs))
-            #match_inds = max(inds, key=lambda ind: cosangs[ind[0],ind[1]])
-
-            # Way2 find best price
-            prices = np.zeros(2)
-            for i, (i1, i2) in enumerate(inds[0:2]):
-                ca1 = cosangs[i1, i2]
-                ca2 = cosangs[1-i1, 1-i2]
-                price = math.degrees(math.acos(ca1)) + math.degrees(math.acos(ca2))
-                prices[i] = price
-            min_price_ind = min([0,1], key=lambda i: prices[i])
-            match_inds = inds[min_price_ind]
-
-            i1, i2 = match_inds
-            decomp_track_parent_ind[i2] = i1
-            decomp_track_parent_ind[1-i2] = 1-i1 # invert 0 or 1 (1-0=1 and 1-1=0)
-            price1 = math.degrees(math.acos(cosangs[i1,i2]))
-            price2 = math.degrees(math.acos(cosangs[1 - i1, 1 - i2]))
-            decomp_track_price[i2] = price1
-            decomp_track_price[1-i2] = price2
-            decomp_track_price_accum[i2] += price1
-            decomp_track_price_accum[1-i2] += price2
-            decomp_track_flip_count[i2] += (price1 > 90)
-            decomp_track_flip_count[1-i2] += (price2 > 90)
-
-        assert decomp_track_parent_ind[0] != decomp_track_parent_ind[1], "Both decomposition must be associated with parent"
-
-        cam3_from_world_pair = [None, None]
-        for i, (candR, candT_div_d, candN) in enumerate(frame_poses):
-            cam3_from2 = SE3Mat(r=candR, t=candT_div_d)
-            n, ang = logSO3(candR)
-            print("R n={0} ang={1}deg\n{2}".format(n, math.degrees(ang), candR))
-            print("T/d={0}".format(candT_div_d))
-            print("N_={0}".format(candN))
-
-            match_ind = decomp_track_parent_ind[i]
-
-            candN_world = LA.inv(cam2_from_world_pair[match_ind]).dot(np.hstack((candN, 0)))
-            print("Nw={0} match_ind={1} Nwp={2} price={3}(d={4} flip={5})".
-                  format(candN_world, match_ind, homog_plane_pair_prev[match_ind], decomp_track_price_accum[match_ind],decomp_track_price[match_ind], decomp_track_flip_count[match_ind]))
-
-            cam3_from_world = cam3_from2.dot(cam2_from_world_pair[i])
-            cam3_from_world_pair[i] = cam3_from_world
-            homog_plane_pair_prev[match_ind] = candN_world
-
-        cam2_from_world_pair[:] = cam3_from_world_pair[:]
-
-        #
-        # world_R = None
-        # world_T = None
-        # suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
-        # if not suc:
-        #     print("Failed E->R,T")
-        # else:
-        #     ess_T = skewSymmeticMat(ess_Tvec)
-        #     ess_wvec, ess_wang = logSO3(ess_R)
-        #     print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
-        #
-        #     # map to the world frame
-        #     head_R =  cam_poses_R[last_reg_frame_ind]
-        #     head_T =  cam_poses_T[last_reg_frame_ind]
-        #
-        #     world_R = np.dot(head_R, ess_R)
-        #     world_T = np.dot(head_R, ess_Tvec) + head_T
-        #
-        # cam_poses_R.append(world_R)
-        # cam_poses_T.append(world_T)
-
-        # update cursor
-        img1_gray = img2_gray
-        ind2 += 1
-
-    print("num_tracked_points={0}".format(num_tracked_points))
-    print("cam_poses_R={0}".format(cam_poses_R))
-    print("cam_poses_T={0}".format(cam_poses_T))
-
-    return cam_poses_R, cam_poses_T
-
 def RunReconstructionOfIsolatedImagePairs():
     debug = 3
     cam_mat = np.array([
@@ -5043,6 +5094,5 @@ if __name__ == '__main__':
     #RunGenerateVirtualPointsProjectAndReconstruct()
     #RunReconstructionOfIsolatedImagePairs()
     #RunReconstructionSequential()
-    RunPlanarHomographyReconstruction(args)
-    #demo = ReconstructDemo(); demo.mainRun()
+    demo = ReconstructDemo(); demo.mainRun(args)
 
