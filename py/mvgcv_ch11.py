@@ -52,6 +52,10 @@ def rootCube(x):
     if 0<=x: return x**(1./3.)
     return -(-x)**(1./3.)
 
+# Square of the vector norm.
+def NormSqr(v):
+    return sum(np.square(v))
+
 # puts R[3x3] and T[3x1] into result[4x4]
 def FillRT4x4(R, T, result = None):
     h,w = R.shape[0:2]
@@ -175,7 +179,7 @@ def findHomogDltMasks(xs1, xs2):
     dim = len(xs1[0])
     assert dim == 3, "Provide homogeneous 2D points"
 
-    A = np.zeros((3*pointsCount, 9))
+    A = np.zeros((3*pointsCount, 9), dtype=type(xs1[0][0]))
     for i in range(0,pointsCount):
         x1 = xs1[i]
         x2 = xs2[i]
@@ -190,27 +194,9 @@ def findHomogDltMasks(xs1, xs2):
     H = hs.reshape((3, 3), order="F")
     return H
 
-# H[3x3]
-# xs1[Nx3]
-def CalculateHomogError(H, xs1, xs2):
-    points_count = len(xs1)
-
-    # x2=H*x1
-    xs1_mapto2 = H.dot(xs1.T).T
-    s1 = np.sum([LA.norm(delta) for delta in xs2 - xs1_mapto2])
-
-    Hinv = LA.inv(H)
-    xs2_mapto1 = Hinv.dot(xs2.T).T
-    s2 = np.sum([LA.norm(delta) for delta in xs1 - xs2_mapto1])
-
-    err = (s1 + s2) / (points_count*2) # average error
-    return err
-
-def HomogErr(H, H_inv, x1, x2):
+def HomogErrSqrOneWay(H, x1, x2):
     x1_mapped_to2 = H.dot(x1)
-    x2_mapped_to1 = H_inv.dot(x2)
-    err = LA.norm(x1_mapped_to2 - x2) + LA.norm(x2_mapped_to1 - x1)
-    err *= 0.5
+    err = NormSqr(x1_mapped_to2 - x2)
     return err
 
 # Decomposes planar homography into the (R,T/d,N) components. Returns the list of two possible solutions.
@@ -1294,13 +1280,22 @@ def TestSampsonDistance():
                 grad[pos] = g
             print("{0}: {1}".format(ten_power, grad))
 
+
+# Estimates the number of times to sample in RANSAC algorithm.
+# TUM, Lecture 7, "Visual Navigation for Flying Robots (Dr. Jürgen Sturm)" t=6m3s
+# https://www.youtube.com/watch?v=5E5n7fhLHEM
+# suc_prob = desired probability of success
+def RansacIterationsCount(samp_size, outlier_ratio, suc_prob):
+    sample_times = math.log(1 - suc_prob) / math.log(1 - (1 - outlier_ratio) ** samp_size)
+    return math.ceil(sample_times)
+
 # Performs RANSAC to find the maximal (cardinality) subset of items which agree on computation of some model.
 # Those items which marked True are called inliers, the rest is outliers.
 # samp_size = number of points in each sample to select
 # consensus_fun(items_count, samp_group_inds, cons_set_mask)->consensus_set_card
 # MASKS page 389
-def GetMaxSubsetInConsensus(samp_size, items_count, consensus_fun, consensus_mask, debug = 3):
-    sample_times = 200 # number of times to sample
+def GetMaxSubsetInConsensus(items_count, samp_size, outlier_ratio, suc_prob, consensus_fun, consensus_mask, debug = 3):
+    sample_times = RansacIterationsCount(samp_size, outlier_ratio, suc_prob)
 
     best_cons_set_mask = np.zeros(items_count, np.uint8)
     cur_cons_mask = np.zeros(items_count, np.uint8)
@@ -4345,7 +4340,7 @@ class ReconstructDemo:
                 print("got request to cancel computation")
                 break
 
-            print("img2_id={0}".format(img2_id))
+            if debug >= 3: print("img2_id={}".format(img2_id))
 
             img2_path = img_path_str.format(img2_id)
             image2 = cv2.imread(img2_path)
@@ -4407,21 +4402,15 @@ class ReconstructDemo:
                 samp_xs1_meters = xs1_meters[samp_group_inds]
                 samp_xs2_meters = xs2_meters[samp_group_inds]
 
-                # find homography
                 H2 = findHomogDltMasks(samp_xs1_meters, samp_xs2_meters)
-                # H2 = H2 / H2[-1,-1]
-                # err2 = CalculateHomogError(H2, xs1_meters, xs2_meters)
-                # print("H=\n{0} err={1}".format(H2, err2))
 
-                H2_inv = LA.inv(H2)
-
-                homog_thr = 1.5  # number of pixels between point x2 and one, projected by homography H*x1
+                homog_thr = 1.5 ** 2  # number of pixels between point x2 and one, projected by homography H*x1
                 cons_set_card = 0
                 for i in range(0, items_count):
                     pt1 = xs1_meters[i]
                     pt2 = xs2_meters[i]
 
-                    err = HomogErr(H2, H2_inv, pt1, pt2)
+                    err = HomogErrSqrOneWay(H2, pt1, pt2)
                     cons = err < homog_thr
                     # if debug >= 3: print("err={0} include={1}".format(err, cons))
                     if cons:
@@ -4432,9 +4421,11 @@ class ReconstructDemo:
 
             points_count = len(xs1_meters)
             consens_mask = np.zeros(points_count, np.uint8)
-            cons_set_card = GetMaxSubsetInConsensus(4, points_count, MeasureConsensusFun, consens_mask)
+            suc_prob = 0.99
+            outlier_ratio = 0.3
+            cons_set_card = GetMaxSubsetInConsensus(points_count, 4, outlier_ratio, suc_prob, MeasureConsensusFun, consens_mask)
             assert cons_set_card >= 4, "need >= 4 points to compute homography"
-            print("cons_set_card={0}".format(cons_set_card))
+            if debug >= 3: print("cons_set_card={0}".format(cons_set_card))
 
             cons_xs1_meter = np.array([p for i, p in enumerate(xs1_meters) if consens_mask[i]])
             cons_xs2_meter = np.array([p for i, p in enumerate(xs2_meters) if consens_mask[i]])
@@ -4446,8 +4437,7 @@ class ReconstructDemo:
 
             # find homography
             H = findHomogDltMasks(cons_xs1_meter, cons_xs2_meter)
-            # H = H / H[-1, -1]
-            err2 = CalculateHomogError(H, cons_xs1_meter, cons_xs2_meter)
+            err2 = sum([HomogErrSqrOneWay(H, x1, x2) for x1,x2 in zip(cons_xs1_meter, cons_xs2_meter)])
             if debug >= 3: print("H=\n{0} err={1}".format(H, err2))
 
             frame_poses = ExtractRotTransFromPlanarHomography(H, cons_xs1_meter, cons_xs2_meter, debug=debug)
@@ -4475,7 +4465,7 @@ class ReconstructDemo:
                     ca = np.dot(N_prev[0:3], N_cur)
                     cosangs[i1, i2] = ca
                 # min(ang)=max(cosang)
-                print("cosangs={0}".format(cosangs))
+                if debug >= 3: print("cosangs={0}".format(cosangs))
                 # match_inds = max(inds, key=lambda ind: cosangs[ind[0],ind[1]])
 
                 # Way2 find best price
@@ -4505,24 +4495,23 @@ class ReconstructDemo:
                 else:
                     primary_decomp_track_ind = 1-i2
 
-            assert decomp_track_parent_ind[0] != decomp_track_parent_ind[
-                1], "Both decomposition must be associated with parent"
+            assert decomp_track_parent_ind[0] != decomp_track_parent_ind[1], "Both decomposition must be associated with parent"
 
             cam3_from_world_pair = [None, None]
             for i, (candR, candT_div_d, candN) in enumerate(frame_poses):
                 cam3_from2 = SE3Mat(r=candR, t=candT_div_d)
-                n, ang = logSO3(candR)
-                print("R n={0} ang={1}deg\n{2}".format(n, math.degrees(ang), candR))
-                print("T/d={0}".format(candT_div_d))
-                print("N_={0}".format(candN))
+                if debug >= 3:
+                    n, ang = logSO3(candR)
+                    print("R n={0} ang={1}deg\n{2}".format(n, math.degrees(ang), candR))
+                    print("T/d={0}".format(candT_div_d))
+                    print("N_={0}".format(candN))
 
                 match_ind = decomp_track_parent_ind[i]
 
-                candN_world = LA.inv(cam2_from_world_pair[match_ind]).dot(np.hstack((candN, 0)))
-                print("Nw={0} match_ind={1} Nwp={2} price={3}(d={4} flip={5})".
-                      format(candN_world, match_ind, homog_plane_pair_prev[match_ind],
-                             decomp_track_price_accum[match_ind], decomp_track_price[match_ind],
-                             decomp_track_flip_count[match_ind]))
+                # transform N from cam2 to world
+                candN_world = np.dot(cam2_from_world_pair[match_ind][0:3,0:3].T, candN)
+                if debug >= 3:
+                    print("Nw={0} match_ind={1} Nwp={2} price={3}(d={4} flip={5})".format(candN_world, match_ind, homog_plane_pair_prev[match_ind], decomp_track_price_accum[match_ind], decomp_track_price[match_ind],decomp_track_flip_count[match_ind]))
 
                 cam3_from_world = cam3_from2.dot(cam2_from_world_pair[i])
                 cam3_from_world_pair[i] = cam3_from_world
@@ -4541,31 +4530,8 @@ class ReconstructDemo:
 
             cam2_from_world_pair[:] = cam3_from_world_pair[:]
 
-            #
-            # world_R = None
-            # world_T = None
-            # suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
-            # if not suc:
-            #     print("Failed E->R,T")
-            # else:
-            #     ess_T = skewSymmeticMat(ess_Tvec)
-            #     ess_wvec, ess_wang = logSO3(ess_R)
-            #     print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
-            #
-            #     # map to the world frame
-            #     head_R =  cam_poses_R[last_reg_frame_ind]
-            #     head_T =  cam_poses_T[last_reg_frame_ind]
-            #
-            #     world_R = np.dot(head_R, ess_R)
-            #     world_T = np.dot(head_R, ess_Tvec) + head_T
-            #
-            # cam_poses_R.append(world_R)
-            # cam_poses_T.append(world_T)
-
-            # update cursor
             img1_gray = img2_gray
             ind2 += 1
-            print("ind2={}".format(ind2))
             #time.sleep(0.1)
 
         print("num_tracked_points={0}".format(num_tracked_points))
@@ -4625,7 +4591,7 @@ class ReconstructDemo:
 
             # give other threads an opportunity to progress;
             # without yielding, the pygame thread consumes the majority of cpu
-            time.sleep(0.05)
+            time.sleep(0.03)
         pass # game loop
 
         # do cancel request
