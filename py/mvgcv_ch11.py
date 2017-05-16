@@ -2867,6 +2867,7 @@ class ReconstructDemo:
         self.orthoRadius = None
         self.scene_scale = None
         self.do_computation_flag = True
+        self.processed_images_counter = 0
         self.world_map_changed_flag = False
         self.continue_computation_lock = threading.Lock()
         self.cameras_lock = threading.Lock()
@@ -4330,6 +4331,9 @@ class ReconstructDemo:
                 head_to_thread_inds.append(i)
         num_tracked_points.append(len(head_pixels))
 
+        with continue_lock:
+            self.processed_images_counter = 0
+
         # img_inds = range(122+1, 451)
         img_inds = range(2, 1400 + 1)
         ind2 = 1
@@ -4437,7 +4441,7 @@ class ReconstructDemo:
 
             # find homography
             H = findHomogDltMasks(cons_xs1_meter, cons_xs2_meter)
-            err2 = sum([HomogErrSqrOneWay(H, x1, x2) for x1,x2 in zip(cons_xs1_meter, cons_xs2_meter)])
+            err2 = sum([HomogErrSqrOneWay(H, x1, x2) for x1,x2 in zip(cons_xs1_meter, cons_xs2_meter)]) / points_count
             if debug >= 3: print("H=\n{0} err={1}".format(H, err2))
 
             frame_poses = ExtractRotTransFromPlanarHomography(H, cons_xs1_meter, cons_xs2_meter, debug=debug)
@@ -4527,6 +4531,7 @@ class ReconstructDemo:
 
             with continue_lock: # notify model is changed, redraw is required
                 self.world_map_changed_flag = True
+                self.processed_images_counter += 1
 
             cam2_from_world_pair[:] = cam3_from_world_pair[:]
 
@@ -4556,13 +4561,10 @@ class ReconstructDemo:
         compute_thread.start()
 
 
-        main_loop_counter = 0
         require_redraw = False
+        t1 = time.time()
+        processed_images_counter_prev = -1
         while True:
-            main_loop_counter += 1
-            pygame.display.set_caption(str(main_loop_counter))
-            #print("main_loop_counter={}".format(main_loop_counter))
-
             if pygame.event.peek():
                 event = pygame.event.poll()
                 if event.type == pygame.QUIT:
@@ -4574,20 +4576,35 @@ class ReconstructDemo:
                     require_redraw = True
 
             # query if model has changed
-            if not require_redraw:
-                with self.continue_computation_lock: # notify model is changed, redraw is required
-                    if self.world_map_changed_flag:
-                        require_redraw = True
-                        self.world_map_changed_flag = False # reset the flag to avoid further redraw
+            processed_images_counter = -1
+            with self.continue_computation_lock: # notify model is changed, redraw is required
+                if self.world_map_changed_flag:
+                    require_redraw = True
+                    self.world_map_changed_flag = False # reset the flag to avoid further redraw
+                processed_images_counter = self.processed_images_counter
+
+            print(processed_images_counter)
 
             #require_redraw = True # forcebly, exhaustively redraw a scene
             if require_redraw:
+                t2 = time.time()
                 #print("redraw")
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
                 # self.drawBackground(width,height,None)
                 self.drawData(width, height)
                 pygame.display.flip()
+
+                # images per sec
+                if t2 - t1 > 0.5: # display images per sec every X seconds
+                    if processed_images_counter_prev != -1:
+                        ips = (processed_images_counter - processed_images_counter_prev) / (t2 - t1)
+                        title_str = "images_per_sec={0:05.2f}".format(ips)
+                        pygame.display.set_caption(title_str)
+                    processed_images_counter_prev = processed_images_counter
+                    t1 = t2
+
                 require_redraw = False
+            pass # require redraw
 
             # give other threads an opportunity to progress;
             # without yielding, the pygame thread consumes the majority of cpu
