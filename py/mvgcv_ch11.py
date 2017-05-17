@@ -4439,7 +4439,7 @@ class ReconstructDemo:
                 cons_xs2_pixels = np.array([p for i, p in enumerate(xs2_pixels) if consens_mask[i]])
                 ShowMatches("cons", image1, image2, cons_xs1_pixels, cons_xs2_pixels)
 
-            # find homography
+            # now we have - the set of points which agree on homography
             H = findHomogDltMasks(cons_xs1_meter, cons_xs2_meter)
             err2 = sum([HomogErrSqrOneWay(H, x1, x2) for x1,x2 in zip(cons_xs1_meter, cons_xs2_meter)]) / points_count
             if debug >= 3: print("H=\n{0} err={1}".format(H, err2))
@@ -4582,8 +4582,6 @@ class ReconstructDemo:
                     require_redraw = True
                     self.world_map_changed_flag = False # reset the flag to avoid further redraw
                 processed_images_counter = self.processed_images_counter
-
-            print(processed_images_counter)
 
             #require_redraw = True # forcebly, exhaustively redraw a scene
             if require_redraw:
