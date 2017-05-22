@@ -4612,14 +4612,17 @@ class ReconstructDemo:
 
         width, height = 1024, 768
         self.setup(width, height)
-        # draw_teapot(0.02)
 
-        # compute_thread = threading.Thread(name="comput", target=self.WorkerGenerateDummyCameraPositions,\
-        #     args=(0.033, self.continue_computation_lock, self.cameras_lock))
-        # compute_thread = threading.Thread(name="comput", target=self.WorkerRunCornerMatcherAndFindCameraPos,\
-        #     args=(self.continue_computation_lock, self.cameras_lock))
-        compute_thread = threading.Thread(name="comput", target=self.WorkerRunPlanarHomographyReconstruction,\
-            args=(self.continue_computation_lock, self.cameras_lock, main_args))
+        job_id = main_args.job or 1
+        if job_id == 1:
+            compute_thread = threading.Thread(name="comput", target=self.WorkerGenerateDummyCameraPositions,\
+                args=(0.033, self.continue_computation_lock, self.cameras_lock))
+        elif job_id == 2:
+            compute_thread = threading.Thread(name="comput", target=self.WorkerRunCornerMatcherAndFindCameraPos,\
+                args=(self.continue_computation_lock, self.cameras_lock))
+        elif job_id == 3:
+            compute_thread = threading.Thread(name="comput", target=self.WorkerRunPlanarHomographyReconstruction,\
+                args=(self.continue_computation_lock, self.cameras_lock, main_args))
         compute_thread.start()
 
 
@@ -5138,6 +5141,7 @@ def RunVisualizeTwoHomogDecomp():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int)
+    parser.add_argument("--job", help="specify worker thread to run", type=int)
     args = parser.parse_args()
 
     #TestSampsonDistance()
