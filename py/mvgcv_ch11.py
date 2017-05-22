@@ -202,14 +202,19 @@ def HomogErrSqrOneWay(H, x1, x2):
 # Decomposes planar homography into the (R,T/d,N) components. Returns the list of two possible solutions.
 # d=distance to the plane from camera center.
 # N=normal vector to the plane.
+# source: MASKS page 139, algorithm 5.2
 def ExtractRotTransFromPlanarHomography(H, xs1, xs2, debug):
-    # normalize the
+    # 1. normalize H scale
     dVec,u,vt = cv2.SVDecomp(H)
     dVec = dVec.ravel()
     sig2 = dVec[1]
     Hnorm = H / sig2
 
-    # H is correct except of sign; fix it, taking into account that x2*H*x1>0
+    # 2. normalize H sign
+    # H is correct except of sign
+    # X2=H*X1 => lam2*x2=H*lam1*x1 and lam1>0 and lam2>0 => invert sign of H if left and right sides have different signs
+    # or equivalent condition x2*H*x1>0
+    # source: MASKS page 136, para 5.3.2
     if not xs1 is None and not xs2 is None:
         require_reverse = False
         for i in range(0, len(xs1)):
@@ -230,6 +235,7 @@ def ExtractRotTransFromPlanarHomography(H, xs1, xs2, debug):
             for i in range(0, len(xs1)):
                 val = xs2[i].dot(Hnorm).dot(xs1[i])
                 print("error: x2Hx1[{0}]={1}".format(i, val))
+            assert False, "sign of H must be corrected"
 
     #
     HH = np.dot(Hnorm.T, Hnorm)
@@ -2848,6 +2854,49 @@ class PointLife:
         self.is_in_consensus_set = []
 
 
+# Tries to choose unique homography decomposition from two possible ones (for each frame).
+# source: "Advances in Unmanned Aerial Vehicles", Kimon P. Valavanis, Springer, 2007, page 285
+def ChooseSingleHomographyDecomposition(plane_normal_pair_list, thr, debug):
+    # match the head N with all other N-candidates
+    headN1, headN2 = plane_normal_pair_list[0]
+
+    while True:
+        match_count_n1 = 0
+        match_count_n2 = 0
+        frame_count = len(plane_normal_pair_list)
+        if frame_count == 1:
+            break
+        for i in range(1, frame_count):
+            n1, n2 = plane_normal_pair_list[i]
+            d11 = LA.norm(headN1 - n1)
+            d12 = LA.norm(headN1 - n2)
+            d21 = LA.norm(headN2 - n1)
+            d22 = LA.norm(headN2 - n2)
+            matched_headN1 = d11 < thr or d12 < thr
+            matched_headN2 = d21 < thr or d22 < thr
+            if matched_headN1:
+                match_count_n1 += 1
+            if matched_headN2:
+                match_count_n2 += 1
+
+        matched_headN1 = match_count_n1 == frame_count - 1
+        matched_headN2 = match_count_n2 == frame_count - 1
+        if not matched_headN1 and not matched_headN2:
+            # both decomposition are not found => increase threshold
+            thr *= 1.1
+            print("retrying with larger thr={} c1={} c2={}".format(thr, match_count_n1, match_count_n2))
+            continue
+        elif matched_headN1 and matched_headN2:
+            # both decomposition are found => decrease threshold
+            thr *= 0.9
+            print("retrying with smaller thr={} c1={} c2={}".format(thr, match_count_n1, match_count_n2))
+            continue
+        else:
+            break
+
+    print("got unique match thr={} c1={} c2={}".format(thr, match_count_n1, match_count_n2))
+
+
 class ReconstructDemo:
     def __init__(self):
         self.imgLeft = None
@@ -4335,7 +4384,7 @@ class ReconstructDemo:
             self.processed_images_counter = 0
 
         # img_inds = range(122+1, 451)
-        img_inds = range(2, 1400 + 1)
+        img_inds = range(2, 848 + 1)
         ind2 = 1
         for img2_id in img_inds:
             with continue_lock:
@@ -4457,6 +4506,7 @@ class ReconstructDemo:
                 decomp_track_price_accum = [0, 0]
                 decomp_track_flip_count = [0, 0]
                 primary_decomp_track_ind = 0
+                decomp_track_n_world = []
 
             # find angles between normals in previous and current frames
             # match the closest normals
@@ -4502,6 +4552,7 @@ class ReconstructDemo:
             assert decomp_track_parent_ind[0] != decomp_track_parent_ind[1], "Both decomposition must be associated with parent"
 
             cam3_from_world_pair = [None, None]
+            candN_world_pair = [None, None]
             for i, (candR, candT_div_d, candN) in enumerate(frame_poses):
                 cam3_from2 = SE3Mat(r=candR, t=candT_div_d)
                 if debug >= 3:
@@ -4520,6 +4571,10 @@ class ReconstructDemo:
                 cam3_from_world = cam3_from2.dot(cam2_from_world_pair[i])
                 cam3_from_world_pair[i] = cam3_from_world
                 homog_plane_pair_prev[match_ind] = candN_world
+                candN_world_pair[i] = candN_world
+
+            #
+            decomp_track_n_world.append(candN_world_pair)
 
             with cameras_lock:
                 mat4x4 = cam3_from_world_pair[primary_decomp_track_ind]
@@ -4542,6 +4597,13 @@ class ReconstructDemo:
         print("num_tracked_points={0}".format(num_tracked_points))
         print("cam_poses_R={0}".format(cam_poses_R))
         print("cam_poses_T={0}".format(cam_poses_T))
+
+        thr = 0.1 # norm(N-candN)<thr
+        ChooseSingleHomographyDecomposition(decomp_track_n_world, thr, debug)
+
+        # [Nx6]
+        dump_decomp = False
+        if dump_decomp: np.savetxt("homog_two.txt", np.array([np.hstack((p[0], p[1])) for p in decomp_track_n_world]))
 
         return cam_poses_R, cam_poses_T
 
@@ -5063,6 +5125,16 @@ def TestExtractRTdNFromPlanarHomography():
     ExtractRotTransFromPlanarHomography(H, None, None, 3)
     print()
 
+def RunVisualizeTwoHomogDecomp():
+    data = np.loadtxt("homog_two.txt")
+
+    mask1 = data[:,2] > 0
+    plt.plot(data[mask1,0], data[mask1,1], '.')
+    plt.plot(data[~ mask1,0], data[~ mask1,1], 'r.')
+    plt.show()
+
+    print("")
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int)
@@ -5072,6 +5144,7 @@ if __name__ == '__main__':
     #testCorrespondencePoly6()
     #TestHomography()
     #TestExtractRTdNFromPlanarHomography()
+    #RunVisualizeTwoHomogDecomp()
     #RunGenerateVirtualPointsProjectAndReconstruct()
     #RunReconstructionOfIsolatedImagePairs()
     #RunReconstructionSequential()
