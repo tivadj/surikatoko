@@ -4178,8 +4178,9 @@ class ReconstructDemo:
 
         kpd = cv2.xfeatures2d.SIFT_create(nfeatures=50)  # OpenCV-contrib-3
 
-        image1 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/is/scene00001.png")
-        # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/is/scene00002.png")
+        img_dir_path = "/home/mmore/Pictures/roshensweets_201704101700/is"
+        img_abs_pathes = [os.path.join(img_dir_path, file_name) for file_name in sorted(os.listdir(img_dir_path))]
+        image1 = cv2.imread(img_abs_pathes[0])
         # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_57.png")
         # image1 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_6.png")
         # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_13.png")
@@ -4211,8 +4212,7 @@ class ReconstructDemo:
                 head_to_life_inds.append(i)
         num_tracked_points.append(len(head_pixels))
 
-        # for ind2 in [57]:
-        for ind2 in range(1, 518):  # 518
+        for img_ind in range(1, len(img_abs_pathes)):  # 518
             # check if cancel is requested
             with continue_lock:
                 cont = self.do_computation_flag
@@ -4220,10 +4220,9 @@ class ReconstructDemo:
                 print("got computation cancel request")
                 break
 
-            img2_id = ind2 + 1
-            print("img2_id={0}".format(img2_id))
+            print("img_ind={0}".format(img_ind))
 
-            img2_path = "/home/mmore/Pictures/roshensweets_201704101700/is/scene{0:05}.png".format(img2_id)
+            img2_path = img_abs_pathes[img_ind]
             image2 = cv2.imread(img2_path)
             assert not image2 is None
 
@@ -4252,13 +4251,13 @@ class ReconstructDemo:
                 parent_ind = head_to_life_inds[i]  # index in the point_life
                 if s:
                     pnt2 = next_pts[i]
-                    points_life[parent_ind].points_list[ind2] = pnt2
-                    points_life[parent_ind].is_in_consensus_set[ind2] = False
+                    points_life[parent_ind].points_list[img_ind] = pnt2
+                    points_life[parent_ind].is_in_consensus_set[img_ind] = False
                     next_to_thread_inds[i] = parent_ind
                 else:
                     # the point was not matched, exclude it from 3D world reconstruction
                     points_life[parent_ind].all_in_consensus = False
-                    points_life[parent_ind].is_in_consensus_set[ind2] = None
+                    points_life[parent_ind].is_in_consensus_set[img_ind] = None
 
 
             # convert pixel to image coordinates (pixel -> meters)
@@ -4283,16 +4282,16 @@ class ReconstructDemo:
 
             for cons_ind in cons_set_inds:
                 parent_ind = head_to_life_inds[cons_ind]
-                points_life[parent_ind].is_in_consensus_set[ind2] = True
+                points_life[parent_ind].is_in_consensus_set[img_ind] = True
             # the rest of points are not in consensus
             # remove them from the consensus list
             for pnt_life in points_life:
-                if not pnt_life.is_in_consensus_set[ind2]:
+                if not pnt_life.is_in_consensus_set[img_ind]:
                     pnt_life.all_in_consensus = False
 
             suc, ess_mat_refined = RefineFundMat(ess_mat, cons_xs1_meter, cons_xs2_meter, debug=debug)
             if not suc:
-                print("ind2={0} can't refine ess mat".format(img2_id))
+                print("img_ind={} can't refine ess mat {}".format(img_ind, img2_path))
             else:
                 if debug >= 3: print("refined_ess_mat=\n{0}".format(ess_mat_refined))
 
@@ -4321,7 +4320,7 @@ class ReconstructDemo:
 
             # on failure to find [R,T] the head_ind doesn't change
             if not world_R is None:
-                last_reg_frame_ind = ind2
+                last_reg_frame_ind = img_ind
                 head_pixels = xs2_pixels
                 head_to_life_inds = next_to_thread_inds
 
