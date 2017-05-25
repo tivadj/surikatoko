@@ -27,11 +27,12 @@ from OpenGL.GLU import *
 from OpenGL.GLUT import *
 import pygame
 import time
-
 # import pygame, pygame.image
 # from pygame.locals import *
 
 import py.sampson
+import py.ess_5point_stewenius
+import py.la_utils
 
 # debug = {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}
 
@@ -198,6 +199,11 @@ def HomogErrSqrOneWay(H, x1, x2):
     x1_mapped_to2 = H.dot(x1)
     err = NormSqr(x1_mapped_to2 - x2)
     return err
+
+def CalculateHomogError(H, xs1, xs2, point_pair_homog_err_fun):
+    points_count = len(xs1)
+    err1 = sum([point_pair_homog_err_fun(H, x1, x2) for x1, x2 in zip(xs1, xs2)]) / points_count
+    return err1
 
 # Decomposes planar homography into the (R,T/d,N) components. Returns the list of two possible solutions.
 # d=distance to the plane from camera center.
@@ -564,6 +570,101 @@ def FindEssentialMatListPoint7(xs1, xs2, unity_translation = True, perror = None
         ess_mat_list.append(ess_mat)
 
     return ess_mat_list, real_roots
+
+def FindEssentialMatFivePointStewenius(xs1, xs2, unity_translation = True, debug = 0, expected_ess_mat = None):
+    """
+    Computes essential matrix from at least five 2D homogeneous (3 components) point correspondences.
+    source: "Recent developments on direct relative orientation", Stewenius 2006
+    'direct' refers to close form algorithm (it won't be trapped in local minimum).
+    :return: the list of essential matrix candidates
+    """
+    points_count = len(xs1)
+    assert points_count >= 5, "Provide the minimal number of point correspondences"
+
+    eltype = type(xs1[0][0])
+
+    A = np.zeros((points_count, 9), dtype=eltype)
+    FindEssentialMat_FillMatrixA(xs1, xs2, True, A)
+
+    # solve A*EssMat=0
+    dVec, u, vt = cv2.SVDecomp(A)
+
+    # E=x*E1+y*E2+z*E3+w*E4; w==1 so E4 should be built from eigenvector, corresponding to smallest eigenvalue (latest column)
+    e1_stacked = vt.T[:,-4]
+    e2_stacked = vt.T[:,-3]
+    e3_stacked = vt.T[:,-2]
+    e4_stacked = vt.T[:,-1] # w==1
+
+    M = np.zeros((10, 20), dtype=eltype)
+
+    if not expected_ess_mat is None:
+        z9=np.zeros(9)
+        ess9 = expected_ess_mat.ravel(order='F')
+        even_inds = [i for i in range(0,9) if i % 3 == 1] # split original ess_mat into two portions
+        odd_inds = [i for i in range(0,9) if i % 3 != 1]
+        ess9_p1 = np.zeros(9, dtype=eltype)
+        ess9_p2 = np.zeros(9, dtype=eltype)
+        ess9_p1[even_inds] = ess9[ even_inds]
+        ess9_p2[odd_inds] = ess9[odd_inds]
+        # #r9=np.array(range(2,11))
+        # r9=np.array([[10,1,3],[3,10,2],[2,1,10]]).ravel(order='F')
+        py.ess_5point_stewenius.EssentialMat_Stewenius_FillM(ess9_p1*1/3.0, ess9_p2*1/5.0, z9, z9, M=M)
+    else:
+        py.ess_5point_stewenius.EssentialMat_Stewenius_FillM(e1_stacked, e2_stacked, e3_stacked, e4_stacked, M)
+
+    # MX=[M1|M2]X=0 => [I|B]X=0
+    # B is the Grobner basis
+    grobner_basis_comput = 0 # 0=svd based,1=jordan-gauss elimination (maybe quicker, TODO: check)
+    if grobner_basis_comput == 0:
+        B = np.zeros((10,10), dtype=eltype)
+        M1 = M[:,0:10]
+        M2 = M[:,10:20]
+        suc,B = cv2.solve(M1, M2, dst=B, flags=cv2.DECOMP_SVD)
+        assert suc, "Should succeed, because SVD is used and the solution in least squares sense"
+    elif grobner_basis_comput == 1:
+        suc = py.la_utils.GaussJordanElimination(M) # modify inplace
+        B = M[:,10:20]
+        assert suc
+
+    # action matrix
+    At = np.zeros((10,10), dtype=eltype)
+    At[0:6,:] = -B[[0,1,2,4,5,7],:]
+    At[6,0] = 1 # x
+    At[7,1] = 1 # y
+    At[8,3] = 1 # z
+    At[9,6] = 1 # free term
+
+    dVec_At, u_At, vt_At = cv2.SVDecomp(At)
+
+    ess_mat_list = []
+    # process left eigenvectors
+    #sols = np.multiply(vt_At[6:9,:], 1/vt_At[9,:])
+    #sols = np.multiply(u_At[:,6:9].T, 1/u_At[:,9].T) # left, hack
+    #sols = np.multiply(u_At[6:9,:], 1/u_At[9,:]) # left
+    for i_sol in range(0,10):
+        #x,y,z = sols[:,i_sol]
+        w = vt_At.T[9, i_sol]
+        if np.isclose(0, w):
+            continue
+        x, y, z = vt_At.T[6:9,i_sol] / w # OK!!!
+        #x, y, z = u_At[i_sol,6:9] / u_At[i_sol, 9]
+        ess_mat_stacked3 = x*e1_stacked+y*e2_stacked+z*e3_stacked+e4_stacked
+        ess_mat3 = ess_mat_stacked3.reshape((3,3),order='F')
+
+        proj_ess_space = False
+        if proj_ess_space:
+            ess_mat = ProjectOntoEssentialSpace(ess_mat3, unity_translation)
+        else:
+            ess_mat = ess_mat3
+        ess_mat_list.append(ess_mat)
+        if debug >= 3:
+            err = CalculateHomogError(ess_mat, xs1, xs2, HomogErrSqrOneWay)
+            if proj_ess_space:
+                ess_disp=ess_mat.ravel(order='F')
+            else:
+                ess_disp=ess_mat_stacked3/LA.norm(ess_mat_stacked3)*math.sqrt(2)
+            print("i={} E={} xyz={} err={}".format(i_sol, ess_disp,(x,y,z), err))
+    return ess_mat_list
 
 # xs1_meter is used to select the valid [R,T] camera's position - such that all points viewed in this camera have positive depth.
 def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, debug=3):
@@ -4489,7 +4590,7 @@ class ReconstructDemo:
 
             # now we have - the set of points which agree on homography
             H = findHomogDltMasks(cons_xs1_meter, cons_xs2_meter)
-            err2 = sum([HomogErrSqrOneWay(H, x1, x2) for x1,x2 in zip(cons_xs1_meter, cons_xs2_meter)]) / points_count
+            err2 = CalculateHomogError(cons_xs1_meter, cons_xs2_meter, HomogErrSqrOneWay)
             if debug >= 3: print("H=\n{0} err={1}".format(H, err2))
 
             frame_poses = ExtractRotTransFromPlanarHomography(H, cons_xs1_meter, cons_xs2_meter, debug=debug)
@@ -4741,13 +4842,15 @@ def TestHomography():
                 xs_img3[i, :] /= xs_img3[i, -1]
 
             H1 = findHomogDlt(xs_img2[:,0:2], xs_img3[:,0:2])
-            err1 = CalculateHomogError(H1, xs_img2, xs_img3)
+            err1 = CalculateHomogError(H1, xs_img2, xs_img3, HomogErrSqrOneWay)
             #print("H=\n{0} err={1}".format(H1, err1))
 
             H2 = findHomogDltMasks(xs_img2, xs_img3)
             H2 = H2 / H2[-1,-1]
-            err2 = CalculateHomogError(H2, xs_img2, xs_img3)
+            err2 = CalculateHomogError(H2, xs_img2, xs_img3, HomogErrSqrOneWay)
             #print("H=\n{0} err={1}".format(H2, err2))
+
+            E = FindEssentialMatFivePointStewenius(xs_img2, xs_img3, True, debug)
 
             frame_poses = ExtractRotTransFromPlanarHomography(H2, xs_img2, xs_img3, debug = debug)
 
@@ -4759,6 +4862,96 @@ def TestHomography():
         world_to_cam_prev = world_to_cam
 
     print("")
+
+def TestEssMat(main_args):
+    debug = main_args.debug
+    xs3D, cell_width, side_mask = GenerateTwoOrthoChess()
+
+    xs3D = np.array([xs3D[0],xs3D[3],xs3D[5],xs3D[11],xs3D[-1]])
+
+    targ_ang_deg = 30
+    targ_ang = math.radians(targ_ang_deg)
+
+    # rotate around OY by 45deg
+    # NOTE: R1 rotates the points => to rotate the frame we take the transpose (inverse)
+    R2 = rotMat([0, 1, 0], math.radians(45)).T  # 45
+    T2 = np.array([0, 0, 0.25])
+    xs3D_cam2 = np.dot(R2, xs3D.T).T + T2
+    print("xs3D_cam2={0}".format(xs3D_cam2))
+
+    # cam3
+    # R3 = rotMat([0,1,0], math.radians(15)).T # 15
+    R3 = rotMat([0, 1, 0], math.radians(45 - targ_ang_deg)).T
+    T3 = np.array([0, 0, 0.4])
+    xs3D_cam3 = np.dot(R3, xs3D.T).T + T3
+    print("xs3D_cam3={0}".format(xs3D_cam3))
+
+    corrupt_with_noise = True
+    if corrupt_with_noise:
+        noise_perc = 0.01
+        np.random.seed(124)
+
+        cell_width = LA.norm(xs3D_cam2[0] - xs3D_cam2[1])
+        print("2Dcell_width={0}".format(cell_width))
+
+        proj_err_pix = noise_perc * cell_width  # 'radius' of an error
+        print("proj_err_pix={0}".format(proj_err_pix))
+        n2 = np.random.rand(len(xs3D), 3) * 2 * proj_err_pix - proj_err_pix
+        n3 = np.random.rand(len(xs3D), 3) * 2 * proj_err_pix - proj_err_pix
+        xs3D_cam2 += n2
+        xs3D_cam3 += n3
+
+    # perform general projection 3D->2D
+    xs_img2 = xs3D_cam2.copy()
+    for i in range(0, len(xs_img2)):
+        xs_img2[i, :] /= xs_img2[i, -1]
+    xs_img3 = xs3D_cam3.copy()
+    for i in range(0, len(xs_img3)):
+        xs_img3[i, :] /= xs_img3[i, -1]
+
+    print(np.hstack((xs3D_cam2, xs_img2, xs3D_cam3, xs_img3)))
+
+    # expected transformation
+    R23 = np.dot(R3, R2.T)
+    T23 = -np.dot(np.dot(R3, R2.T), T2) + T3
+    n23, ang23 = logSO3(R23)
+    print("R23: n={0} ang={1}deg T23={2}\n{3}".format(n23, math.degrees(ang23), T23, R23))
+
+    # recover essential matrix
+    # perror = [0.0]
+    # ess_mat = findEssentialMat(xs_img2, xs_img3, point7=False, unity_translation=True, perror=perror,debug=debug)
+    # print("ess_mat=\n{0} err={1}".format(ess_mat, perror[0]))
+    #
+    # perror = [0.0]
+    # ess_mat_list, real_roots = FindEssentialMatListPoint7(xs_img2, xs_img3, unity_translation=True, perror=perror, debug=debug)
+    # print("ess_mat_list=\n{0} err={1}".format(ess_mat_list, perror[0]))
+
+    ess_mat = None
+    ess_mat_list=FindEssentialMatFivePointStewenius(xs_img2, xs_img3, True, debug, expected_ess_mat=ess_mat)
+    print("ess_mat_list=\n{}".format(ess_mat_list))
+
+    for ess_mat in ess_mat_list:
+        ang_err_pix1 = -1
+        ang23_actual1 = -1
+        suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat, xs_img2, xs_img3)
+        if suc:
+            n23a, ang23a = logSO3(ess_R)
+            print("R23a: n={0} ang={1}deg T23a={2}\n{3}".format(n23a, math.degrees(ang23a), ess_Tvec, ess_R))
+            ang_err_pix1 = math.degrees(math.fabs(targ_ang - ang23a))
+            ang23_actual1 = math.degrees(ang23a)
+
+        #
+        ang_err_pix2 = -1
+        ang23_actual2 = -1
+        suc, ess_mat_refined = RefineFundMat(ess_mat, xs_img2, xs_img3)
+        if suc:
+            suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, xs_img2, xs_img3)
+            if suc:
+                n23a, ang23a = logSO3(ess_R)
+                print("R23a: n={0} ang={1}deg T23a={2}\n{3}".format(n23a, math.degrees(ang23a), ess_Tvec, ess_R))
+                ang_err_pix2 = math.degrees(math.fabs(targ_ang - ang23a))
+                ang23_actual2 = math.degrees(ang23a)
+        print()
 
 def RunGenerateVirtualPointsProjectAndReconstruct():
     debug = 3
@@ -5146,10 +5339,11 @@ if __name__ == '__main__':
     #TestSampsonDistance()
     #testCorrespondencePoly6()
     #TestHomography()
+    TestEssMat(args)
     #TestExtractRTdNFromPlanarHomography()
     #RunVisualizeTwoHomogDecomp()
     #RunGenerateVirtualPointsProjectAndReconstruct()
     #RunReconstructionOfIsolatedImagePairs()
     #RunReconstructionSequential()
-    demo = ReconstructDemo(); demo.mainRun(args)
+    #demo = ReconstructDemo(); demo.mainRun(args)
 
