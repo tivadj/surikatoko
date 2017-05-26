@@ -349,6 +349,20 @@ class SampsonDistanceCalc:
         result2 = sum(map(lambda x1,x2: self.Distance(fund_mat, x1, x2), xs1, xs2))
         return result
 
+def IsEssentialMat(ess_mat, perr_msg = None):
+    nrows, ncols = ess_mat.shape
+    if not (nrows == 3 and ncols == 3):
+        if not perr_msg is None: perr_msg[0] = "size(ess_mat)=3x3"
+        return False
+
+    dVec,u,vt = cv2.SVDecomp(ess_mat)
+    dVec = dVec.ravel()
+    ok = np.isclose(dVec[0],dVec[1]) and np.isclose(0,dVec[2])
+    if not ok:
+        if not perr_msg is None: perr_msg[0] = "eigen_values(ess_mat)=[X X 0]"
+        return False
+    return True
+
 # Projects given noisy essential matrix onto the essential space (such that rank(E)=2)
 def ProjectOntoEssentialSpace(ess_mat_noisy, unity_translation = True):
     # project onto the space of essential matrices
@@ -396,11 +410,12 @@ def FindEssentialMat_FillMatrixA(xs1, xs2, unit_2Dpoint, A):
 # perror={error}
 # algorithm is in MASKS page 117
 # NOTE: E has 6 degrees of freedom (3 for R + 3 for T), but at least 8 points is required
-def findEssentialMat(xs1, xs2, point7 = True,  unity_translation = True, perror = None, debug = 0):
-    if point7:
-        assert len(xs1) >= 7, "At least 7 points are required"
-    else:
-        assert len(xs1) >= 8, "At least 8 points are required"
+def FindEssentialMat8Point(xs1, xs2, unity_translation = True, plinear_sys_err = None, debug = 0, perr_msg = None):
+    ok = len(xs1) >= 8
+    if not ok:
+        perr_msg[0] = "At least 8 points are required"
+        return False, None
+
     dim = len(xs1[0])
     assert dim == 3,  "Must be a homogeneous image point (x,y,w)"
 
@@ -410,106 +425,30 @@ def findEssentialMat(xs1, xs2, point7 = True,  unity_translation = True, perror 
 
     # solve A*EssMat=0
     dVec, u, vt = cv2.SVDecomp(A)
-
-    # for >=8 points, the noisy E is already found
-    # for 7 points, the noisy E is evaluated as E=E1+alpha*E2
-
-    # find alpha, such that det(E1+alpha*E2)=0
-    # then E = E1+alpha*E2, where E1,E2 = is 2-dimensional nullspace basis when 7 points are given
-    # MASKS page 122
-    if point7:
-        ess1_stacked = vt.T[:, -1]
-        ess2_stacked = vt.T[:, -2]
-        e11, e21, e31, e12, e22, e32, e13, e23, e33 = ess1_stacked
-        f11, f21, f31, f12, f22, f32, f13, f23, f33 = ess2_stacked
-
-        # the polynom of degree 0 to 3, total of 4 terms
-        # see Mathematica file ch5_det_E1_alpha_E2.nb
-        poly = np.zeros(4) # from higher to lower degree, deg(poly[0])==3
-        poly[0] = -(f13*f22*f31) + f12*f23*f31 + f13*f21*f32 - f11*f23*f32 - f12*f21*f33 + f11*f22*f33
-        poly[1] = \
-            -(e33*f12*f21) + e32*f13*f21 + e33*f11*f22 - e31*f13*f22 - e32*f11*f23 + \
-            e31*f12*f23 + e23*f12*f31 - e22*f13*f31 - e13*f22*f31 + e12*f23*f31 - \
-            e23*f11*f32 + e21*f13*f32 + e13*f21*f32 - e11*f23*f32 + e22*f11*f33 - \
-            e21*f12*f33 - e12*f21*f33 + e11*f22*f33
-        poly[2] = \
-            -(e23*e32*f11) + e22*e33*f11 + e23*e31*f12 - e21*e33*f12 - e22*e31*f13 + \
-            e21*e32*f13 + e13*e32*f21 - e12*e33*f21 - e13*e31*f22 + e11*e33*f22 + \
-            e12*e31*f23 - e11*e32*f23 - e13*e22*f31 + e12*e23*f31 + e13*e21*f32 - \
-            e11*e23*f32 - e12*e21*f33 + e11*e22*f33
-        poly[3] = -(e13*e22*e31) + e12*e23*e31 + e13*e21*e32 - e11*e23*e32 - e12*e21*e33 + e11*e22*e33
-        rr = np.roots(poly)
-
-        real_roots = [c.real for c in rr if np.isclose(0, c.imag)]
-
-        # there is typically one root close to zero and two roots with larger absolute value (like (-5,0,5)),
-        # which lead to construction of EssMat with large Sampson error
-        # so filter out roots with 'large' abs value
-        if len(real_roots) > 1:
-            real_roots = [r for r in real_roots if abs(r) < 1.3]
-
-        if len(real_roots) == 0:
-            assert False, "Expected only one solution"
-            #assert len(real_roots) == 1, "Expected only one solution"
-
-        alpha_ind = 0
-        if len(real_roots) != 1:
-            #assert len(real_roots) == 1
-            if debug >= 3: print("Expected only one solution, but got {0}".format(len(real_roots)))
-            samp = SampsonDistanceCalc()
-
-            alpha_to_sampson_dist = []
-            for i1 in range(0,len(real_roots)):
-                alpha = real_roots[i1]
-                ess_stacked = ess1_stacked + alpha * ess2_stacked
-                essMat3 = ess_stacked.reshape((3, 3), order='F')  # reshape columnwise
-                ess_mat = ProjectOntoEssentialSpace(essMat3, unity_translation)
-                if debug >= 3: print("ess_mat=\n{0}".format(ess_mat))
-                d=samp.DistanceMult(ess_mat, xs1, xs2)
-                if debug >= 3: print("sampson={0}".format(d))
-                alpha_to_sampson_dist.append((i1, d))
-            alpha_to_sampson_dist.sort(key=lambda p1: p1[1])
-            alpha_ind = alpha_to_sampson_dist[0][0]
-            if debug >= 3: print("")
-
-        #
-        alpha = real_roots[alpha_ind]
-        ess_stacked = ess1_stacked + alpha * ess2_stacked
-    else: # at least 8 points are given
-        ess_stacked = vt.T[:, -1]
+    ess_stacked = vt.T[:, -1]
 
     essMat3 = ess_stacked.reshape((3, 3), order='F') # reshape columnwise
     assert essMat3.size == 9
 
-    #
-
-    # # TODO: ProjectOntoEssentialSpace
-    # # project onto the space of essential matrices
-    # dVec2, u2, vt2 = cv2.SVDecomp(essMat3)
-    #
-    # # MASKS page 120, we may normalize E to unity: norm(E)=norm(T)=1
-    # dVec2 = dVec2.ravel()
-    # sig = 0.5 * (dVec2[0] + dVec2[1])
-    # if unity_translation:
-    #     sig = 1
-    #
-    # newSig = np.diag((sig, sig, 0))
-    # essMat = np.dot(np.dot(u2, newSig), vt2)
-
     essMat = ProjectOntoEssentialSpace(essMat3, unity_translation)
 
-    if not perror is None:
-        perror[0] = LA.norm(np.dot(A, essMat.ravel(order='F')))
+    if not plinear_sys_err is None:
+        plinear_sys_err[0] = LA.norm(np.dot(A, essMat.ravel(order='F')))
 
-    return essMat
+    return True, essMat
 
 # Essential matrix can be recovered only up to scale.
 # normalize, True to set the translation T=1
 # perror={error}
 # algorithm is in MASKS page 117
 # NOTE: E has 6 degrees of freedom (3 for R + 3 for T), but at least 8 points is required
-def FindEssentialMatListPoint7(xs1, xs2, unity_translation = True, perror = None, debug = 0):
-    assert len(xs1) >= 7, "At least 7 points are required"
+def FindEssentialMat7Point(xs1, xs2, unity_translation = True, debug = 0, perr_msg = None):
+    ess_mat_list = None
+    real_roots = None
+    ok = len(xs1) >= 7
+    if not ok:
+        if not perr_msg is None: perr_msg[0] = "At least 7 points are required"
+        return False,ess_mat_list,real_roots
 
     dim = len(xs1[0])
     assert dim == 3,  "Must be a homogeneous image point (x,y,w)"
@@ -521,7 +460,6 @@ def FindEssentialMatListPoint7(xs1, xs2, unity_translation = True, perror = None
     # solve A*EssMat=0
     dVec, u, vt = cv2.SVDecomp(A)
 
-    # for >=8 points, the noisy E is already found
     # for 7 points, the noisy E is evaluated as E=E1+alpha*E2
 
     # find alpha, such that det(E1+alpha*E2)=0
@@ -558,8 +496,8 @@ def FindEssentialMatListPoint7(xs1, xs2, unity_translation = True, perror = None
     #     real_roots = [r for r in real_roots if abs(r) < 1.3]
 
     if len(real_roots) == 0:
-        assert False, "Expected only one solution"
-        #assert len(real_roots) == 1, "Expected only one solution"
+        if not perr_msg is None: perr_msg[0] = "Provided points are in critical configuration (eg: all on the same plane)"
+        return False, ess_mat_list, real_roots
 
     ess_mat_list = []
     for i1 in range(0,len(real_roots)):
@@ -569,17 +507,21 @@ def FindEssentialMatListPoint7(xs1, xs2, unity_translation = True, perror = None
         ess_mat = ProjectOntoEssentialSpace(essMat3, unity_translation)
         ess_mat_list.append(ess_mat)
 
-    return ess_mat_list, real_roots
+    return True, ess_mat_list, real_roots
 
-def FindEssentialMatFivePointStewenius(xs1, xs2, unity_translation = True, debug = 0, expected_ess_mat = None):
+def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 0, expected_ess_mat = None, perr_msg = None):
     """
     Computes essential matrix from at least five 2D homogeneous (3 components) point correspondences.
     source: "Recent developments on direct relative orientation", Stewenius 2006
     'direct' refers to close form algorithm (it won't be trapped in local minimum).
     :return: the list of essential matrix candidates
     """
+    ess_mat_list = None
     points_count = len(xs1)
-    assert points_count >= 5, "Provide the minimal number of point correspondences"
+    ok = points_count >= 5
+    if not ok:
+        if not perr_msg is None: perr_msg[0] = "Provide the minimal number of point correspondences"
+        return False, ess_mat_list
 
     eltype = type(xs1[0][0])
 
@@ -651,24 +593,32 @@ def FindEssentialMatFivePointStewenius(xs1, xs2, unity_translation = True, debug
         ess_mat_stacked3 = x*e1_stacked+y*e2_stacked+z*e3_stacked+e4_stacked
         ess_mat3 = ess_mat_stacked3.reshape((3,3),order='F')
 
-        proj_ess_space = False
+        proj_ess_space = True
         if proj_ess_space:
             ess_mat = ProjectOntoEssentialSpace(ess_mat3, unity_translation)
         else:
             ess_mat = ess_mat3
         ess_mat_list.append(ess_mat)
         if debug >= 3:
+            correct_ess_mat = np.array([[ 0.,-0.82645642,0.],[0.43423191,0.,0.90080112], [0.,-0.5630007,0.]])
+            err2a=LA.norm(+ess_mat/LA.norm(ess_mat)-correct_ess_mat/LA.norm(correct_ess_mat))
+            err2b=LA.norm(-ess_mat/LA.norm(ess_mat)-correct_ess_mat/LA.norm(correct_ess_mat))
+            err2=min(err2a,err2b)
+
             err = CalculateHomogError(ess_mat, xs1, xs2, HomogErrSqrOneWay)
+            eig_vals = cv2.SVDecomp(ess_mat)[0].ravel()
             if proj_ess_space:
                 ess_disp=ess_mat.ravel(order='F')
             else:
                 ess_disp=ess_mat_stacked3/LA.norm(ess_mat_stacked3)*math.sqrt(2)
-            print("i={} E={} xyz={} err={}".format(i_sol, ess_disp,(x,y,z), err))
-    return ess_mat_list
+            print("i={} E={} xyz={} err={} e2={} eig={} IsEss={}".format(i_sol, ess_disp,(x,y,z), err, err2, eig_vals, IsEssentialMat(ess_mat)))
+    return True, ess_mat_list
 
 # xs1_meter is used to select the valid [R,T] camera's position - such that all points viewed in this camera have positive depth.
 def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, debug=3):
     assert len(xs1_meter[0])==3 and len(xs2_meter[0])==3, "Provide homogeneous 2D points [x,y,w]"
+    perr_msg = [""]
+    assert IsEssentialMat(ess_mat, perr_msg), perr_msg[0]
 
     ess_mat_old = ess_mat
     xs1_meter_old = xs1_meter
@@ -907,7 +857,8 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
     xs1_meter = np.array(xs_per_image_meter[0])
     xs2_meter = np.array(xs_per_image_meter[1])
     perror = [0.0]
-    ess_mat = findEssentialMat(xs1_meter, xs2_meter, point7=False, unity_translation=True, perror=perror)
+    suc, ess_mat = FindEssentialMat8Point(xs1_meter, xs2_meter, unity_translation=True, plinear_sys_err=perror)
+    assert suc
     print("essMat=\n{0} err={1}".format(ess_mat, perror[0]))
 
     suc, ess_mat_refined = RefineFundMat(ess_mat, xs1_meter, xs2_meter, debug=debug)
@@ -1079,7 +1030,8 @@ def experimentWithEssentialMat(camMat, xs_per_image_meter):
     xs2_meter = np.array(xs_per_image_meter[1])
 
     perror = [0.0]
-    essMat = findEssentialMat(xs1_meter, xs2_meter, unity_translation=True, perror=perror)
+    suc, essMat = FindEssentialMat8Point(xs1_meter, xs2_meter, unity_translation=True, plinear_sys_err=perror)
+    assert suc
     print("essMat=\n{0} err={1}".format(essMat, perror[0]))
 
     # find epipoles
@@ -1510,8 +1462,8 @@ def MatchKeypointsAndGetEssentialMatNarrowBaselineCore(samp_size, cam_mat, xs1_m
             ShowMatches("sample", image1, image2, samp_xs1_pixels, samp_xs2_pixels)
 
         perror = [0.0]
-        point7 = True if num_points == 7 else False
-        cur_ess_mat = findEssentialMat(samp_xs1_meter, samp_xs2_meter, point7=point7, unity_translation=True, perror=perror, debug=debug)
+        suc, cur_ess_mat = FindEssentialMat8Point(samp_xs1_meter, samp_xs2_meter, unity_translation=True, plinear_sys_err=perror, debug=debug)
+        assert suc
         #print("essMat=\n{0} err={1}".format(ess_mat, perror[0]))
 
         pix_to_meter = LA.inv(cam_mat)
@@ -1559,7 +1511,8 @@ def MatchKeypointsAndGetEssentialMatNarrowBaselineCore(samp_size, cam_mat, xs1_m
         ShowMatches("consensus", image1, image2, xs1_cons_pixels, xs2_cons_pixels)
 
     perror = [0.0]
-    cons_ess_mat = findEssentialMat(xs1_cons, xs2_cons, point7=point7, unity_translation=True, perror=perror, debug=debug)
+    suc, cons_ess_mat = FindEssentialMat8Point(xs1_cons, xs2_cons, unity_translation=True, plinear_sys_err=perror, debug=debug)
+    assert suc
     if debug: print("cons_ess_mat=\n{0} err={1}".format(cons_ess_mat, perror[0]))
 
     return cons_ess_mat, best_cons_set_inds
@@ -1833,7 +1786,8 @@ def MatchKeypointsAndGetEssentialMatSift(samp_size, cam_mat, image1, image2, do_
         xs1_normed, xs2_normed, T1, T2 = GetMatchedCoords(samp_group, do_norming)
 
         perror = [0.0]
-        cur_ess_mat = findEssentialMat(xs1_normed, xs2_normed, point7=False, unity_translation=True, perror=perror)
+        suc, cur_ess_mat = FindEssentialMat8Point(xs1_normed, xs2_normed, unity_translation=True, plinear_sys_err=perror)
+        assert suc
         #print("essMat=\n{0} err={1}".format(ess_mat, perror[0]))
 
         pix_to_meter = LA.inv(cam_mat)
@@ -1884,7 +1838,8 @@ def MatchKeypointsAndGetEssentialMatSift(samp_size, cam_mat, image1, image2, do_
     xs1_normed, xs2_normed, T1, T2 = GetMatchedCoords(best_cons_set, do_norming)
 
     perror = [0.0]
-    cons_ess_mat = findEssentialMat(xs1_normed, xs2_normed, unity_translation=True, perror=perror)
+    suc, cons_ess_mat = FindEssentialMat8Point(xs1_normed, xs2_normed, unity_translation=True, plinear_sys_err=perror)
+    assert suc
     if debug: print("cons_ess_mat=\n{0} err={1}".format(cons_ess_mat, perror[0]))
 
     # denormalize F
@@ -4850,7 +4805,7 @@ def TestHomography():
             err2 = CalculateHomogError(H2, xs_img2, xs_img3, HomogErrSqrOneWay)
             #print("H=\n{0} err={1}".format(H2, err2))
 
-            E = FindEssentialMatFivePointStewenius(xs_img2, xs_img3, True, debug)
+            E = FindEssentialMat5PointStewenius(xs_img2, xs_img3, True, debug)
 
             frame_poses = ExtractRotTransFromPlanarHomography(H2, xs_img2, xs_img3, debug = debug)
 
@@ -4867,7 +4822,10 @@ def TestEssMat(main_args):
     debug = main_args.debug
     xs3D, cell_width, side_mask = GenerateTwoOrthoChess()
 
-    xs3D = np.array([xs3D[0],xs3D[3],xs3D[5],xs3D[11],xs3D[-1]])
+    # choose 5 points
+    #xs3D = np.array([xs3D[0],xs3D[3],xs3D[11],xs3D[13],xs3D[19],xs3D[22]]) # 5 points on two planes
+    xs3D = np.array([xs3D[3],xs3D[7],xs3D[17],xs3D[20],xs3D[22]]) # 5 points on the same plane
+    #xs3D = np.array([p for i,p in enumerate(xs3D) if side_mask[i] >= 2]) # >5 points on the same plane
 
     targ_ang_deg = 30
     targ_ang = math.radians(targ_ang_deg)
@@ -4918,17 +4876,26 @@ def TestEssMat(main_args):
     print("R23: n={0} ang={1}deg T23={2}\n{3}".format(n23, math.degrees(ang23), T23, R23))
 
     # recover essential matrix
-    # perror = [0.0]
-    # ess_mat = findEssentialMat(xs_img2, xs_img3, point7=False, unity_translation=True, perror=perror,debug=debug)
-    # print("ess_mat=\n{0} err={1}".format(ess_mat, perror[0]))
-    #
-    # perror = [0.0]
-    # ess_mat_list, real_roots = FindEssentialMatListPoint7(xs_img2, xs_img3, unity_translation=True, perror=perror, debug=debug)
-    # print("ess_mat_list=\n{0} err={1}".format(ess_mat_list, perror[0]))
+    plinear_sys_err = [0.0]
+    perr_msg = [""]
+    suc, ess_mat = FindEssentialMat8Point(xs_img2, xs_img3, unity_translation=True, plinear_sys_err=plinear_sys_err, debug=debug, perr_msg=perr_msg)
+    if suc:
+        print("8point ess_mat=\n{0} linear_sys_err={1}".format(ess_mat, plinear_sys_err[0]))
+    else:
+        print("8point failed: {0}".format(perr_msg))
+
+    suc, ess_mat_list, real_roots = FindEssentialMat7Point(xs_img2, xs_img3, unity_translation=True, debug=debug, perr_msg=perr_msg)
+    if suc:
+        print("7point ess_mat_list=\n{0}".format(ess_mat_list))
+    else:
+        print("7point failed: {0}".format(perr_msg))
 
     ess_mat = None
-    ess_mat_list=FindEssentialMatFivePointStewenius(xs_img2, xs_img3, True, debug, expected_ess_mat=ess_mat)
-    print("ess_mat_list=\n{}".format(ess_mat_list))
+    suc,ess_mat_list=FindEssentialMat5PointStewenius(xs_img2, xs_img3, True, debug, expected_ess_mat=ess_mat, perr_msg=perr_msg)
+    if suc:
+        print("5point ess_mat_list=\n{}".format(ess_mat_list))
+    else:
+        print("5point failed: {0}".format(perr_msg))
 
     for ess_mat in ess_mat_list:
         ang_err_pix1 = -1
@@ -4943,15 +4910,20 @@ def TestEssMat(main_args):
         #
         ang_err_pix2 = -1
         ang23_actual2 = -1
+        # TODO: why refinement may corrupt essential mat structure
         suc, ess_mat_refined = RefineFundMat(ess_mat, xs_img2, xs_img3)
         if suc:
-            suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, xs_img2, xs_img3)
-            if suc:
-                n23a, ang23a = logSO3(ess_R)
-                print("R23a: n={0} ang={1}deg T23a={2}\n{3}".format(n23a, math.degrees(ang23a), ess_Tvec, ess_R))
-                ang_err_pix2 = math.degrees(math.fabs(targ_ang - ang23a))
-                ang23_actual2 = math.degrees(ang23a)
+            check_is_ess = IsEssentialMat(ess_mat_refined)
+            print("check_is_ess={}".format(check_is_ess))
+            if check_is_ess:
+                suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, xs_img2, xs_img3)
+                if suc:
+                    n23a, ang23a = logSO3(ess_R)
+                    print("R23a: n={0} ang={1}deg T23a={2}\n{3}".format(n23a, math.degrees(ang23a), ess_Tvec, ess_R))
+                    ang_err_pix2 = math.degrees(math.fabs(targ_ang - ang23a))
+                    ang23_actual2 = math.degrees(ang23a)
         print()
+    print()
 
 def RunGenerateVirtualPointsProjectAndReconstruct():
     debug = 3
@@ -5018,11 +4990,12 @@ def RunGenerateVirtualPointsProjectAndReconstruct():
 
             # recover essential matrix
             perror = [0.0]
-            ess_mat = findEssentialMat(xs_img2, xs_img3, point7=False, unity_translation=True, perror=perror, debug = debug)
+            suc, ess_mat = FindEssentialMat8Point(xs_img2, xs_img3, unity_translation=True, plinear_sys_err=perror, debug = debug)
+            assert suc
             print("ess_mat=\n{0} err={1}".format(ess_mat, perror[0]))
 
-            perror = [0.0]
-            ess_mat_list, real_roots = FindEssentialMatListPoint7(xs_img2, xs_img3, unity_translation=True, perror=perror, debug = debug)
+            suc, ess_mat_list, real_roots = FindEssentialMat7Point(xs_img2, xs_img3, unity_translation=True, debug = debug)
+            assert suc
             print("ess_mat_list=\n{0} err={1}".format(ess_mat_list, perror[0]))
 
             ess_mat_to_ang = []
