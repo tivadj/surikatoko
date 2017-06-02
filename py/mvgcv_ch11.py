@@ -6,7 +6,6 @@ import math
 import random
 import time
 import threading
-import typing
 import os
 import argparse
 import numpy as np
@@ -404,6 +403,32 @@ def FindEssentialMat_FillMatrixA(xs1, xs2, unit_2Dpoint, A):
         A[i, 7] = x1[2] * x2[1]
         A[i, 8] = x1[2] * x2[2]
 
+def FindEssentialMat_FillMatrixA_Way2(xs1, xs2, unit_2Dpoint, A):
+    dim = len(xs1[0])
+    assert dim == 3, "Must be a homogeneous image point (x,y,w)"
+
+    pointsCount = len(xs1)
+    x1 = np.zeros(3)
+    x2 = np.zeros(3)
+    for i in range(0, pointsCount):
+        x1[:] = xs1[i]
+        x2[:] = xs2[i]
+
+        # normalize homog point
+        if unit_2Dpoint:
+            x1 = x1 / LA.norm(x1)
+            x2 = x2 / LA.norm(x2)
+
+        A[i, 0] = x1[0] * x2[0]
+        A[i, 1] = x1[1] * x2[0]
+        A[i, 2] = x1[2] * x2[0]
+        A[i, 3] = x1[0] * x2[1]
+        A[i, 4] = x1[1] * x2[1]
+        A[i, 5] = x1[2] * x2[1]
+        A[i, 6] = x1[0] * x2[2]
+        A[i, 7] = x1[1] * x2[2]
+        A[i, 8] = x1[2] * x2[2]
+
 
 # Essential matrix can be recovered only up to scale.
 # normalize, True to set the translation T=1
@@ -509,7 +534,7 @@ def FindEssentialMat7Point(xs1, xs2, unity_translation = True, debug = 0, perr_m
 
     return True, ess_mat_list, real_roots
 
-def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 0, expected_ess_mat = None, perr_msg = None):
+def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation = True, debug = 0, expected_ess_mat = None, perr_msg = None):
     """
     Computes essential matrix from at least five 2D homogeneous (3 components) point correspondences.
     source: "Recent developments on direct relative orientation", Stewenius 2006
@@ -526,16 +551,21 @@ def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 
     eltype = type(xs1[0][0])
 
     A = np.zeros((points_count, 9), dtype=eltype)
-    FindEssentialMat_FillMatrixA(xs1, xs2, True, A)
+    # TODO: do unit_2d_point?
+    FindEssentialMat_FillMatrixA_Way2(xs1, xs2, False, A)
 
     # solve A*EssMat=0
-    dVec, u, vt = cv2.SVDecomp(A)
+    # NOTE: SVD must return full Vt [9x9] matrix
+    # NOTE: for some reason cv2.SVDecomp doesn't produce correct last four columns of Vt.T (first five columns are ok)
+    #dVec, u, vt = cv2.SVDecomp(A, flags=4) # 4=cv2.FULL_UV
+    u, dVec, vt = LA.svd(A, full_matrices=True)
+    assert vt.shape[0] == 9 and vt.shape[1] == 9, "Matrix of right singular vectors Vt must be full (9x9)"
 
     # E=x*E1+y*E2+z*E3+w*E4; w==1 so E4 should be built from eigenvector, corresponding to smallest eigenvalue (latest column)
-    e1_stacked = vt.T[:,-4]
-    e2_stacked = vt.T[:,-3]
-    e3_stacked = vt.T[:,-2]
-    e4_stacked = vt.T[:,-1] # w==1
+    e1_stacked = vt.T[:,-4].reshape((3,3)).ravel(order='F')
+    e2_stacked = vt.T[:,-3].reshape((3,3)).ravel(order='F')
+    e3_stacked = vt.T[:,-2].reshape((3,3)).ravel(order='F')
+    e4_stacked = vt.T[:,-1].reshape((3,3)).ravel(order='F') # w==1
 
     M = np.zeros((10, 20), dtype=eltype)
 
@@ -556,7 +586,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 
 
     # MX=[M1|M2]X=0 => [I|B]X=0
     # B is the Grobner basis
-    grobner_basis_comput = 0 # 0=svd based,1=jordan-gauss elimination (maybe quicker, TODO: check)
+    grobner_basis_comput = 1 # 0=svd based,1=jordan-gauss elimination (maybe quicker, TODO: check)
     if grobner_basis_comput == 0:
         B = np.zeros((10,10), dtype=eltype)
         M1 = M[:,0:10]
@@ -564,9 +594,17 @@ def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 
         suc,B = cv2.solve(M1, M2, dst=B, flags=cv2.DECOMP_SVD)
         assert suc, "Should succeed, because SVD is used and the solution in least squares sense"
     elif grobner_basis_comput == 1:
+        Mold = M.copy()
         suc = py.la_utils.GaussJordanElimination(M) # modify inplace
         B = M[:,10:20]
         assert suc
+
+    fix_accord_to_matlab_impl = False
+    if fix_accord_to_matlab_impl:
+        Bold=B.copy()
+        #new_ord = np.hstack((0, np.reshape(range(0,9), (3,3), order='F').ravel(order='C')+1))
+        new_ord = np.array([1,2,4,7,3,5,8,6,9,10])-1
+        B = B[new_ord,:]
 
     # action matrix
     At = np.zeros((10,10), dtype=eltype)
@@ -576,7 +614,10 @@ def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 
     At[8,3] = 1 # z
     At[9,6] = 1 # free term
 
-    dVec_At, u_At, vt_At = cv2.SVDecomp(At)
+    # NOTE: OpenCV's cv2.eigen works only with symmetric matrices
+    # for C++ impl see the Eigen lib, https://stackoverflow.com/questions/30211091/calculating-the-eigenvector-from-a-complex-eigenvalue-in-opencv
+    # for real matrices
+    w_At, v_At = LA.eig(At)
 
     ess_mat_list = []
     # process left eigenvectors
@@ -584,20 +625,46 @@ def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 
     #sols = np.multiply(u_At[:,6:9].T, 1/u_At[:,9].T) # left, hack
     #sols = np.multiply(u_At[6:9,:], 1/u_At[9,:]) # left
     for i_sol in range(0,10):
-        #x,y,z = sols[:,i_sol]
-        w = vt_At.T[9, i_sol]
+        w = v_At[9, i_sol]
+        # complex scale is zero
         if np.isclose(0, w):
             continue
-        x, y, z = vt_At.T[6:9,i_sol] / w # OK!!!
-        #x, y, z = u_At[i_sol,6:9] / u_At[i_sol, 9]
+
+        # normalize x,y,z
+        x, y, z = v_At[6:9,i_sol] / w
+        if not np.isclose(0, x.imag) or not np.isclose(0, y.imag) or not np.isclose(0, z.imag):
+            print("isol:{} skipped xyz:{}".format(i_sol, (x,y,z)))
+            continue
+
+        if not np.isclose(0, w.imag):
+            assert False, "w is comlex, but x,y,z are reals; how is that can be"
+        x,y,z = x.real, y.real, z.real
+
         ess_mat_stacked3 = x*e1_stacked+y*e2_stacked+z*e3_stacked+e4_stacked
         ess_mat3 = ess_mat_stacked3.reshape((3,3),order='F')
 
-        proj_ess_space = True
+        # eigen values of unprojected ess mat
+        eig_vals = cv2.SVDecomp(ess_mat3)[0].ravel()
+
+        # validate essential matrix
+        determ = LA.det(ess_mat3)
+        if not np.isclose(0, determ):
+            print("Failed det(E)==0, det={}".format(determ))
+
+        zero_mat = ess_mat3.dot(ess_mat3.T).dot(ess_mat3) - np.trace(ess_mat3.dot(ess_mat3.T))*ess_mat3
+        zero_mat_norm = LA.norm(zero_mat)
+        if not np.isclose(0, zero_mat_norm):
+            print("Failed 2E*Et*E-trace(E*Et)E==0 mat_norm={}".format(zero_mat_norm))
+
+        # TODO: no projection should be made, because det(E)==0 and 2E*Et*E-trace(E*Et)E==0 must be satisfied
+        #proj_ess_space = True
         if proj_ess_space:
             ess_mat = ProjectOntoEssentialSpace(ess_mat3, unity_translation)
         else:
             ess_mat = ess_mat3
+
+        ess_mat = ess_mat / LA.norm(ess_mat)
+
         ess_mat_list.append(ess_mat)
         if debug >= 3:
             correct_ess_mat = np.array([[ 0.,-0.82645642,0.],[0.43423191,0.,0.90080112], [0.,-0.5630007,0.]])
@@ -606,7 +673,6 @@ def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 
             err2=min(err2a,err2b)
 
             err = CalculateHomogError(ess_mat, xs1, xs2, HomogErrSqrOneWay)
-            eig_vals = cv2.SVDecomp(ess_mat)[0].ravel()
             if proj_ess_space:
                 ess_disp=ess_mat.ravel(order='F')
             else:
@@ -615,10 +681,16 @@ def FindEssentialMat5PointStewenius(xs1, xs2, unity_translation = True, debug = 
     return True, ess_mat_list
 
 # xs1_meter is used to select the valid [R,T] camera's position - such that all points viewed in this camera have positive depth.
-def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, debug=3):
+def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_mat=True, svd_ess_mat=None, debug=3):
     assert len(xs1_meter[0])==3 and len(xs2_meter[0])==3, "Provide homogeneous 2D points [x,y,w]"
+
     perr_msg = [""]
-    assert IsEssentialMat(ess_mat, perr_msg), perr_msg[0]
+    if validate_ess_mat:
+        assert IsEssentialMat(ess_mat, perr_msg), perr_msg[0]
+    is_ess = IsEssentialMat(ess_mat, perr_msg), perr_msg[0]
+    print("IsEssentialMat={} {}".format(is_ess, perr_msg[0]))
+
+    eltype = ess_mat.dtype
 
     ess_mat_old = ess_mat
     xs1_meter_old = xs1_meter
@@ -642,36 +714,39 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, debug=3):
             xs2_meter = xs2_meter
         ess_mat = np.dot(np.dot(LA.inv(T2).T, ess_mat), LA.inv(T1))
 
-
-    # NOTE: we need u and vt to be SO(3) (special orthogonal, so that det=+1)
-    # TODO: why either +E or -E will always have u and vt in SO3? (see MASKS page 120)
-    # only U and Vt components are required
-    dVec1, u1, vt1 = cv2.SVDecomp(ess_mat)
-    #print("dvec1={0} u1={1} vt1={2}".format(dVec1, u1, vt1))
-    #print("dvec2={0} u2={1} vt2={2}".format(dVec2, u2, vt2))
-
-    det1 = LA.det(u1)
-    det2 = LA.det(vt1)
+    # do svd(ess_mat)
     p_err = [""]
-    #if IsSpecialOrthogonal(u1, p_err):
-    if det1 > 0 and det2 > 0:
-        u = u1
-        vt = vt1
-    elif det1 < 0 and det2 < 0:
-        u = -u1
-        vt = -vt1
-    elif det1 < 0:
-        # dVec2, u2, vt2 = cv2.SVDecomp(-ess_mat)  # minus
-        # assert IsSpecialOrthogonal(u2, p_err), p_err[0]
-        # assert IsSpecialOrthogonal(vt2, p_err), p_err[0]
-        u = -u1 # NOTE: (-E)=(-u)*Sig*vt
-        vt = vt1
+    if svd_ess_mat is None:
+        # NOTE: we need u and vt to be SO(3) (special orthogonal, so that det=+1)
+        # TODO: why either +E or -E will always have u and vt in SO3? (see MASKS page 120)
+        # only U and Vt components are required
+        dVec1, u1, vt1 = cv2.SVDecomp(ess_mat)
+        #print("dvec1={0} u1={1} vt1={2}".format(dVec1, u1, vt1))
+        #print("dvec2={0} u2={1} vt2={2}".format(dVec2, u2, vt2))
+
+        det1 = LA.det(u1)
+        det2 = LA.det(vt1)
+        #if IsSpecialOrthogonal(u1, p_err):
+        if det1 > 0 and det2 > 0:
+            u = u1
+            vt = vt1
+        elif det1 < 0 and det2 < 0:
+            u = -u1
+            vt = -vt1
+        elif det1 < 0:
+            # dVec2, u2, vt2 = cv2.SVDecomp(-ess_mat)  # minus
+            # assert IsSpecialOrthogonal(u2, p_err), p_err[0]
+            # assert IsSpecialOrthogonal(vt2, p_err), p_err[0]
+            u = -u1 # NOTE: (-E)=(-u)*Sig*vt
+            vt = vt1
+        else:
+            assert det2 < 0
+            # NOTE: (-E) = u*Sig*(-vt)
+            u = u1
+            vt = -vt1
+            #assert False, "Can't choose sign of +E and -E"
     else:
-        assert det2 < 0
-        # NOTE: (-E) = u*Sig*(-vt)
-        u = u1
-        vt = -vt1
-        #assert False, "Can't choose sign of +E and -E"
+        dVec1, u, vt = svd_ess_mat
 
     assert IsSpecialOrthogonal(u, p_err), p_err[0]
     assert IsSpecialOrthogonal(vt, p_err), p_err[0]
@@ -685,7 +760,64 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, debug=3):
     rz90p = rotMat([0, 0, 1],  math.pi / 2)
     rz90m = rotMat([0, 0, 1], -math.pi / 2)
 
-    # MASKS page 120, Remark 5.10: construct all four combinations with Rz(+-90)
+    #
+    calc_r0_fromU = True
+    if calc_r0_fromU:
+        r0_fromU = u.dot(rz90p.T).T
+        print("r0_fromU={}".format(r0_fromU))
+
+    # Nister
+    ra = np.dot(np.dot(u, rz90m), vt)
+    rb = np.dot(np.dot(u, rz90m.T), vt)
+    tu = u[:,2]
+    pZ = np.hstack((np.eye(3,3),np.zeros((3,1))))
+    pA = np.hstack((ra, tu.reshape((3,1))))
+    hr = np.diag([1, 1, 1, -1])
+
+    for pnt_ind in range(0, len(xs1_meter)):
+        x1 = xs1_meter[pnt_ind]
+        x2 = xs2_meter[pnt_ind]
+        q3D = triangulateDlt(pZ, pA, x1, x2)
+        c1 = q3D[2]*q3D[3]
+        q_2 = np.dot(pA, q3D)
+        c2 = q_2[2]*q3D[3]
+        case = -1
+        if c1 > 0 and c2 > 0:
+            # pA and q3D are true configuration
+            nister_sol_R = ra
+            nister_sol_T = tu
+            case = "A"
+        elif c1 < 0 and c2 < 0:
+            pB = pA.dot(hr)
+            q3D_new = np.dot(hr, q3D)
+            nister_sol_R = ra
+            nister_sol_T = -tu
+            case = "B"
+        else:
+            # different signs of c1 and c2
+            ht = np.eye(4, dtype=eltype)
+            ht[-1,-1] = -1
+            ht[3,0:3] = -2*vt.T[0:3,2]
+            pC2= np.dot(pA,ht)
+            pC = np.hstack((rb, tu.reshape((3,1))))
+            q3D_new = np.dot(ht, q3D)
+            c_tmp = q3D[2]*q3D_new[3]
+            if c_tmp > 0:
+                # ok
+                nister_sol_R = rb
+                nister_sol_T = tu
+                case = "C"
+            else:
+                pD = pC.dot(hr)
+                q3D_new = np.dot(hr, q3D_new)
+                nister_sol_R = rb
+                nister_sol_T = -tu
+                case = "D"
+
+        n23a, ang23a = logSO3(nister_sol_R)
+        print("nister{}{} ang={}deg T={} Rf={}".format(case, pnt_ind, math.degrees(ang23a), nister_sol_T, nister_sol_R.ravel('F')))
+
+        # MASKS page 120, Remark 5.10: construct all four combinations with Rz(+-90)
     combineSigns = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
     for sign_trans, sign_rot in combineSigns:
         rz_trans = rz90p if sign_trans == 1 else rz90m
@@ -817,7 +949,9 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, debug=3):
         validRT_method1 = pass_counter == len(xs1_meter)
 
         if validRT_method2 != validRT_method1:
-            assert validRT_method2 == validRT_method1, "Two methods of resolving signs of R,T do not match"
+            #assert validRT_method2 == validRT_method1, "Two methods of resolving signs of R,T do not match"
+            if not (validRT_method2 == validRT_method1):
+                print("Two methods of resolving signs of R,T do not match")
 
         if validRT_method1:
             assert sol_ind is None, "Exactly one solution from 4 cases may have both positive lamdas (depths)"
@@ -861,10 +995,12 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
     assert suc
     print("essMat=\n{0} err={1}".format(ess_mat, perror[0]))
 
-    suc, ess_mat_refined = RefineFundMat(ess_mat, xs1_meter, xs2_meter, debug=debug)
-    if suc:
-        if debug >= 3: print("calcCameras refined_ess_mat=\n{0}".format(ess_mat_refined))
-    else:
+    refine_ess = False # refinement is not implemented
+    if refine_ess:
+        suc, ess_mat_refined = RefineFundMat(ess_mat, xs1_meter, xs2_meter, debug=debug)
+        if suc:
+            if debug >= 3: print("calcCameras refined_ess_mat=\n{0}".format(ess_mat_refined))
+    if not (refine_ess and suc):
         ess_mat_refined = ess_mat
 
     #
@@ -4197,7 +4333,8 @@ class ReconstructDemo:
 
 
     # Tries to compute world's 3D structure.
-    def EstimateMap(self, cam_mat, points_life : typing.List[PointLife], cameras_lock, debug):
+    #def EstimateMap(self, cam_mat, points_life : typing.List[PointLife], cameras_lock, debug):
+    def EstimateMap(self, cam_mat, points_life, cameras_lock, debug):
         life_len = len(points_life[0].points_list)
         live_points = np.count_nonzero([p.all_in_consensus for p in points_life]) # point with entire life available
 
@@ -4345,11 +4482,19 @@ class ReconstructDemo:
                 if not pnt_life.is_in_consensus_set[img_ind]:
                     pnt_life.all_in_consensus = False
 
-            suc, ess_mat_refined = RefineFundMat(ess_mat, cons_xs1_meter, cons_xs2_meter, debug=debug)
-            if not suc:
-                print("img_ind={} can't refine ess mat {}".format(img_ind, img2_path))
+            # TODO: refine essential matrix; RefineFundMat refines fundamental matrix and destroys internal constraints of essential matrix
+            refine_ess = False
+            if refine_ess:
+                suc, ess_mat_refined = RefineFundMat(ess_mat, cons_xs1_meter, cons_xs2_meter, debug=debug)
+                if not suc:
+                    print("img_ind={} can't refine ess mat {}".format(img_ind, img2_path))
+                else:
+                    if debug >= 3: print("refined_ess_mat=\n{0}".format(ess_mat_refined))
+
+                perr = [""]
+                assert IsEssentialMat(ess_mat_refined, perr), "essential mat is valid after refinement, " + perr[0]
             else:
-                if debug >= 3: print("refined_ess_mat=\n{0}".format(ess_mat_refined))
+                ess_mat_refined = ess_mat
 
             #
             world_R = None
@@ -4823,8 +4968,9 @@ def TestEssMat(main_args):
     xs3D, cell_width, side_mask = GenerateTwoOrthoChess()
 
     # choose 5 points
-    #xs3D = np.array([xs3D[0],xs3D[3],xs3D[11],xs3D[13],xs3D[19],xs3D[22]]) # 5 points on two planes
-    xs3D = np.array([xs3D[3],xs3D[7],xs3D[17],xs3D[20],xs3D[22]]) # 5 points on the same plane
+    #xs3D = np.array([xs3D[0],xs3D[3],xs3D[11],xs3D[13],xs3D[19],xs3D[22]]) # 6 points on two planes
+    xs3D = np.array([xs3D[0],xs3D[3],xs3D[11],xs3D[13],xs3D[22]]) # 5 points on two planes
+    #xs3D = np.array([xs3D[3],xs3D[7],xs3D[17],xs3D[20],xs3D[22]]) # 5 points on the same plane
     #xs3D = np.array([p for i,p in enumerate(xs3D) if side_mask[i] >= 2]) # >5 points on the same plane
 
     targ_ang_deg = 30
@@ -4844,7 +4990,7 @@ def TestEssMat(main_args):
     xs3D_cam3 = np.dot(R3, xs3D.T).T + T3
     print("xs3D_cam3={0}".format(xs3D_cam3))
 
-    corrupt_with_noise = True
+    corrupt_with_noise = False
     if corrupt_with_noise:
         noise_perc = 0.01
         np.random.seed(124)
@@ -4873,14 +5019,30 @@ def TestEssMat(main_args):
     R23 = np.dot(R3, R2.T)
     T23 = -np.dot(np.dot(R3, R2.T), T2) + T3
     n23, ang23 = logSO3(R23)
-    print("R23: n={0} ang={1}deg T23={2}\n{3}".format(n23, math.degrees(ang23), T23, R23))
+    print("exact R23: n={0} ang={1}deg T23={2}\n{3}".format(n23, math.degrees(ang23), T23, R23))
+    print("expect unity T:{}".format(T23/LA.norm(T23)))
+    print("expect E:\n{}".format(skewSymmeticMat(T23/LA.norm(T23)).dot(R23)))
+
+    calc_R0 = True # calculate R0 from MASKS Theorem 5.5 page 114
+    if calc_R0:
+        tvec= T23
+        tlen = LA.norm(tvec)
+        tlen2 = tlen**2
+        t1,t2,t3 = tvec[:]
+        b1 = np.array([t2**2+t3**2, -t1*t2, -t1*t3]) / math.sqrt((t2**2+t3**2)*tlen2)
+        b2 = np.array([0, t3, -t2]) / math.sqrt(t2**2+t3**2)
+        b3 = np.array([t1, t2, t3]) / tlen
+        B = np.vstack((b1, b2, b3)).T
+        r0_fromT =  LA.inv(B)
+        print("R0_fromT=\n{}".format(r0_fromT))
+
 
     # recover essential matrix
     plinear_sys_err = [0.0]
     perr_msg = [""]
-    suc, ess_mat = FindEssentialMat8Point(xs_img2, xs_img3, unity_translation=True, plinear_sys_err=plinear_sys_err, debug=debug, perr_msg=perr_msg)
+    suc, ess_mat8 = FindEssentialMat8Point(xs_img2, xs_img3, unity_translation=True, plinear_sys_err=plinear_sys_err, debug=debug, perr_msg=perr_msg)
     if suc:
-        print("8point ess_mat=\n{0} linear_sys_err={1}".format(ess_mat, plinear_sys_err[0]))
+        print("8point ess_mat=\n{0} linear_sys_err={1}".format(ess_mat8, plinear_sys_err[0]))
     else:
         print("8point failed: {0}".format(perr_msg))
 
@@ -4890,22 +5052,37 @@ def TestEssMat(main_args):
     else:
         print("7point failed: {0}".format(perr_msg))
 
-    ess_mat = None
-    suc,ess_mat_list=FindEssentialMat5PointStewenius(xs_img2, xs_img3, True, debug, expected_ess_mat=ess_mat, perr_msg=perr_msg)
+    suc,ess_mat_list=FindEssentialMat5PointStewenius(xs_img2, xs_img3, True, True, debug, expected_ess_mat=ess_mat8, perr_msg=perr_msg)
     if suc:
         print("5point ess_mat_list=\n{}".format(ess_mat_list))
     else:
         print("5point failed: {0}".format(perr_msg))
 
-    for ess_mat in ess_mat_list:
+    #em_cands = [ess_mat8]
+    #em_cands = [skewSymmeticMat(-T23/LA.norm(T23)).dot(-R23)]
+
+    rz90p = rotMat([0, 0, 1],  math.pi / 2)
+    rz90m = rotMat([0, 0, 1], -math.pi / 2)
+    u = np.dot(r0_fromT.T, rz90m)
+    sig = np.array([1,1,0])
+    vt = np.dot(r0_fromT, R23)
+    #svd_ess_mat = (sig, u, vt)
+    svd_ess_mat = None
+    #em_cands = [u.dot(np.diag(sig)).dot(vt)]
+
+    em_cands = ess_mat_list
+    for ess_mat in em_cands:
         ang_err_pix1 = -1
         ang23_actual1 = -1
-        suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat, xs_img2, xs_img3)
-        if suc:
-            n23a, ang23a = logSO3(ess_R)
-            print("R23a: n={0} ang={1}deg T23a={2}\n{3}".format(n23a, math.degrees(ang23a), ess_Tvec, ess_R))
-            ang_err_pix1 = math.degrees(math.fabs(targ_ang - ang23a))
-            ang23_actual1 = math.degrees(ang23a)
+        if True:
+            check_is_ess = IsEssentialMat(ess_mat)
+            if check_is_ess:
+                suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat, xs_img2, xs_img3, validate_ess_mat=True, svd_ess_mat=svd_ess_mat)
+                if suc:
+                    n23a, ang23a = logSO3(ess_R)
+                    print("R23a: n={0} ang={1}deg T23a={2}\n{3}".format(n23a, math.degrees(ang23a), ess_Tvec, ess_R))
+                    ang_err_pix1 = math.degrees(math.fabs(targ_ang - ang23a))
+                    ang23_actual1 = math.degrees(ang23a)
 
         #
         ang_err_pix2 = -1
@@ -4915,6 +5092,7 @@ def TestEssMat(main_args):
         if suc:
             check_is_ess = IsEssentialMat(ess_mat_refined)
             print("check_is_ess={}".format(check_is_ess))
+            check_is_ess = IsEssentialMat(ess_mat_refined)
             if check_is_ess:
                 suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, xs_img2, xs_img3)
                 if suc:
@@ -5312,11 +5490,11 @@ if __name__ == '__main__':
     #TestSampsonDistance()
     #testCorrespondencePoly6()
     #TestHomography()
-    TestEssMat(args)
+    #TestEssMat(args)
     #TestExtractRTdNFromPlanarHomography()
     #RunVisualizeTwoHomogDecomp()
     #RunGenerateVirtualPointsProjectAndReconstruct()
     #RunReconstructionOfIsolatedImagePairs()
     #RunReconstructionSequential()
-    #demo = ReconstructDemo(); demo.mainRun(args)
+    demo = ReconstructDemo(); demo.mainRun(args)
 
