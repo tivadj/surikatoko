@@ -4461,18 +4461,83 @@ class ReconstructDemo:
             xs1_meter = xs1_meter[0]
             xs2_meter = xs2_meter[0]
 
+            sampson_dist_calculator = SampsonDistanceCalc()
+
+            def MeasureConsensusFun(items_count, samp_group_inds, cons_set_mask):
+                if debug >= 94:
+                    samp_xs1_pixels = xs1_pixels[samp_group_inds]
+                    samp_xs2_pixels = xs2_pixels[samp_group_inds]
+                    ShowMatches("sample", image1, image2, samp_xs1_pixels, samp_xs2_pixels)
+
+                samp_xs1_meters = xs1_meter[samp_group_inds]
+                samp_xs2_meters = xs2_meter[samp_group_inds]
+
+                suc, ess_mat_list = FindEssentialMat5PointStewenius(samp_xs1_meters, samp_xs2_meters, False, True, debug, None)
+                if not suc:
+                    return 0 # no consensus
+
+                def CalcConsensus(ess_mat, dist_thr, cons_set_mask):
+                    cons_set_card = 0
+                    for i in range(0, items_count):
+                        pt1 = xs1_meter[i]
+                        pt2 = xs2_meter[i]
+
+                        dist = sampson_dist_calculator.Distance(ess_mat, pt1, pt2)
+                        cons = dist < dist_thr
+                        # if debug >= 3: print("err={0} include={1}".format(err, cons))
+                        if cons:
+                            cons_set_card += 1
+                        cons_set_mask[i] = cons
+                    return cons_set_card
+
+                dist_thr = 0.001 # TODO: choose distance
+
+                cand_cons_set_mask = np.zeros_like(cons_set_mask)
+                best_cons_set_card = 0
+                for ess_mat in ess_mat_list:
+                    cons_set_card = CalcConsensus(ess_mat, dist_thr, cand_cons_set_mask)
+                    if cons_set_card > best_cons_set_card:
+                        best_cons_set_card = cons_set_card
+                        cons_set_mask[:] = cand_cons_set_mask[:]
+
+                return best_cons_set_card
+
+            points_count = len(xs1_meter)
+            consens_mask = np.zeros(points_count, np.uint8)
+            suc_prob = 0.99
+            outlier_ratio = 0.3
+            cons_set_card = GetMaxSubsetInConsensus(points_count, 5, outlier_ratio, suc_prob, MeasureConsensusFun, consens_mask)
+            assert cons_set_card >= 5, "need >= 5 points to compute essential mat"
+            if debug >= 3: print("cons_set_card={0}".format(cons_set_card))
+
             # MatchKeypointsAndGetEssentialMatNcc(self.imgLeft, self.imgRight)
             # pr
             # , xs1_meter, xs2_meter = MatchKeypointsAndGetEssentialMatSift(8, cam_mat, image1, image2, do_norming = True, debug = debug)
-            ess_mat, cons_set_inds = MatchKeypointsAndGetEssentialMatNarrowBaselineCore(8, cam_mat, xs1_meter,
-                                                                                        xs2_meter, image1,
-                                                                                        image2, xs1_pixels,
-                                                                                        xs2_pixels, debug=debug)
+            # ess_mat, cons_set_inds = MatchKeypointsAndGetEssentialMatNarrowBaselineCore(8, cam_mat, xs1_meter,
+            #                                                                             xs2_meter, image1,
+            #                                                                             image2, xs1_pixels,
+            #                                                                             xs2_pixels, debug=debug)
+
+            cons_xs1_meter = np.array([p for i, p in enumerate(xs1_meter) if consens_mask[i]])
+            cons_xs2_meter = np.array([p for i, p in enumerate(xs2_meter) if consens_mask[i]])
+
+            if debug >= 4:
+                cons_xs1_pixels = np.array([p for i, p in enumerate(xs1_pixels) if consens_mask[i]])
+                cons_xs2_pixels = np.array([p for i, p in enumerate(xs2_pixels) if consens_mask[i]])
+                ShowMatches("cons", image1, image2, cons_xs1_pixels, cons_xs2_pixels)
+
+            suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, False, True, debug, None)
+            assert suc, "Essential matrix on consensus set must be calculated"
+
+            # choose essential matrix with minimal sampson error
+            sams_errs = [sampson_dist_calculator.DistanceMult(e, cons_xs1_meter, cons_xs2_meter) for e in ess_mat_list]
+            ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
+            ess_mat = ess_mat_best_item[0]
+
+
             if debug >= 3: print("ess_mat=\n{0}".format(ess_mat))
 
-            cons_xs1_meter = [xs1_meter[i] for i in cons_set_inds]
-            cons_xs2_meter = [xs2_meter[i] for i in cons_set_inds]
-
+            cons_set_inds = [i for i in consens_mask if consens_mask[i] > 0]
             for cons_ind in cons_set_inds:
                 parent_ind = head_to_life_inds[cons_ind]
                 points_life[parent_ind].is_in_consensus_set[img_ind] = True
@@ -5480,6 +5545,61 @@ def RunVisualizeTwoHomogDecomp():
     plt.show()
 
     print("")
+
+def EssentialMatSvd(ess_mat, u=None, vt=None, check_ess_mat=True, check_post_cond=True):
+    """
+    Computes SVD of the essential matrix (for which sig1==sig2, sig3==0).
+    source: "An Efficient Solution to the Five-Point Relative Pose Problem", Nister, 2004, page 6
+    """
+    if check_ess_mat:
+        perr_msg = [""]
+        assert IsEssentialMat(ess_mat, perr_msg), "require valid essential mat, " + perr_msg[0]
+
+    ea = ess_mat[0,:]
+    eb = ess_mat[1,:]
+    ec = ess_mat[2,:]
+    vc_cand1 = np.cross(ea, eb) # ea x eb
+    vc_cand2 = np.cross(ea, ec) # ea x ec
+    vc_cand3 = np.cross(eb, ec) # eb x ec
+
+    # (vc, vc_len, ea)
+    vc_items = [(vc_cand1, LA.norm(vc_cand1), ea),
+                (vc_cand2, LA.norm(vc_cand2), ea),
+                (vc_cand3, LA.norm(vc_cand3), eb)]
+    vc_items.sort(key=lambda item: item[1]) # choose longest Vc candidate
+    vc_item = vc_items[1]
+
+    # V
+    vc = vc_item[0] / vc_item[1]
+    va = vc_item[2] / LA.norm(vc_item[2])
+    vb = np.cross(vc, va)
+    if vt is None:
+        vt = np.zeros_like(ess_mat)
+    vt[0,:] = va[:]
+    vt[1,:] = vb[:]
+    vt[2,:] = vc[:]
+
+    # U
+    ua = np.dot(ess_mat, va)
+    ua /= LA.norm(ua)
+    ub = np.dot(ess_mat, vb)
+    ub /= LA.norm(ub)
+    uc = np.cross(ua, ub)
+    if u is None:
+        u = np.zeros_like(ess_mat)
+    u[:,0] = ua[:]
+    u[:,1] = ub[:]
+    u[:,2] = uc[:]
+
+    if check_post_cond:
+        sig1 = LA.norm(np.dot(ess_mat, va))
+        sig2 = LA.norm(np.dot(ess_mat, vb))
+        sig3 = LA.norm(np.dot(ess_mat, vc))
+        assert np.isclose(sig1, sig2), "two equal singular values"
+        assert np.isclose(0, sig3), "two equal singular values"
+        ess_tmp = np.dot(u, np.diag([sig1,sig2,sig3])).dot(vt)
+        assert np.allclose(ess_mat, ess_tmp), "created invalid SVD decomposition of E"
+    return u, vt
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
