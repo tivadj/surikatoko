@@ -204,6 +204,12 @@ def CalculateHomogError(H, xs1, xs2, point_pair_homog_err_fun):
     err1 = sum([point_pair_homog_err_fun(H, x1, x2) for x1, x2 in zip(xs1, xs2)]) / points_count
     return err1
 
+def FundMatEpipolarError(fund_mat, xs1, xs2):
+    """ Error, based on coplanarity (epipolar) constraint x2*F*x1==0 """
+    points_count = len(xs1)
+    err1 = sum([np.dot(x2, fund_mat).dot(x1) for x1, x2 in zip(xs1, xs2)]) / points_count
+    return err1
+
 # Decomposes planar homography into the (R,T/d,N) components. Returns the list of two possible solutions.
 # d=distance to the plane from camera center.
 # N=normal vector to the plane.
@@ -534,7 +540,7 @@ def FindEssentialMat7Point(xs1, xs2, unity_translation = True, debug = 0, perr_m
 
     return True, ess_mat_list, real_roots
 
-def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation = True, debug = 0, expected_ess_mat = None, perr_msg = None):
+def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation = True, check_constr = True, debug = 0, expected_ess_mat = None, perr_msg = None):
     """
     Computes essential matrix from at least five 2D homogeneous (3 components) point correspondences.
     source: "Recent developments on direct relative orientation", Stewenius 2006
@@ -586,7 +592,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
 
     # MX=[M1|M2]X=0 => [I|B]X=0
     # B is the Grobner basis
-    grobner_basis_comput = 1 # 0=svd based,1=jordan-gauss elimination (maybe quicker, TODO: check)
+    grobner_basis_comput = 0 # 0=svd based,1=jordan-gauss elimination (maybe quicker, TODO: check)
     if grobner_basis_comput == 0:
         B = np.zeros((10,10), dtype=eltype)
         M1 = M[:,0:10]
@@ -597,7 +603,9 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
         Mold = M.copy()
         suc = py.la_utils.GaussJordanElimination(M) # modify inplace
         B = M[:,10:20]
-        assert suc
+        # TODO: check why it may not succeed
+        if not suc:
+            assert suc
 
     fix_accord_to_matlab_impl = False
     if fix_accord_to_matlab_impl:
@@ -633,7 +641,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
         # normalize x,y,z
         x, y, z = v_At[6:9,i_sol] / w
         if not np.isclose(0, x.imag) or not np.isclose(0, y.imag) or not np.isclose(0, z.imag):
-            print("isol:{} skipped xyz:{}".format(i_sol, (x,y,z)))
+            if debug >= 3: print("isol:{} skipped xyz:{}".format(i_sol, (x,y,z)))
             continue
 
         if not np.isclose(0, w.imag):
@@ -643,18 +651,30 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
         ess_mat_stacked3 = x*e1_stacked+y*e2_stacked+z*e3_stacked+e4_stacked
         ess_mat3 = ess_mat_stacked3.reshape((3,3),order='F')
 
-        # eigen values of unprojected ess mat
-        eig_vals = cv2.SVDecomp(ess_mat3)[0].ravel()
+        remove_duplicates = True
+        if remove_duplicates:
+            is_dup = False
+            for e in ess_mat_list:
+                if np.allclose(e, ess_mat3, atol=1e-10): is_dup = True
+                break
+            if is_dup: continue
 
         # validate essential matrix
-        determ = LA.det(ess_mat3)
-        if not np.isclose(0, determ):
-            print("Failed det(E)==0, det={}".format(determ))
+        if check_constr or debug >= 3:
+            determ = LA.det(ess_mat3)
+            if not np.isclose(0, determ):
+                if check_constr:
+                    assert False
+                else:
+                    if debug >= 3: print("Failed det(E)==0, det={}".format(determ))
 
-        zero_mat = ess_mat3.dot(ess_mat3.T).dot(ess_mat3) - np.trace(ess_mat3.dot(ess_mat3.T))*ess_mat3
-        zero_mat_norm = LA.norm(zero_mat)
-        if not np.isclose(0, zero_mat_norm):
-            print("Failed 2E*Et*E-trace(E*Et)E==0 mat_norm={}".format(zero_mat_norm))
+            zero_mat = 2*ess_mat3.dot(ess_mat3.T).dot(ess_mat3) - np.trace(ess_mat3.dot(ess_mat3.T))*ess_mat3
+            zero_mat_norm = LA.norm(zero_mat)
+            if not np.isclose(0, zero_mat_norm):
+                if check_constr:
+                    assert False
+                else:
+                    if debug >= 3: print("Failed 2E*Et*E-trace(E*Et)E==0 mat_norm={}".format(zero_mat_norm))
 
         # TODO: no projection should be made, because det(E)==0 and 2E*Et*E-trace(E*Et)E==0 must be satisfied
         #proj_ess_space = True
@@ -667,17 +687,23 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
 
         ess_mat_list.append(ess_mat)
         if debug >= 3:
-            correct_ess_mat = np.array([[ 0.,-0.82645642,0.],[0.43423191,0.,0.90080112], [0.,-0.5630007,0.]])
-            err2a=LA.norm(+ess_mat/LA.norm(ess_mat)-correct_ess_mat/LA.norm(correct_ess_mat))
-            err2b=LA.norm(-ess_mat/LA.norm(ess_mat)-correct_ess_mat/LA.norm(correct_ess_mat))
-            err2=min(err2a,err2b)
+            err_expect = None
+            correct_ess_mat = expected_ess_mat
+            if not correct_ess_mat is None:
+                err2a=LA.norm(+ess_mat/LA.norm(ess_mat)-correct_ess_mat/LA.norm(correct_ess_mat))
+                err2b=LA.norm(-ess_mat/LA.norm(ess_mat)-correct_ess_mat/LA.norm(correct_ess_mat))
+                err_expect=min(err2a,err2b)
 
-            err = CalculateHomogError(ess_mat, xs1, xs2, HomogErrSqrOneWay)
+            err = FundMatEpipolarError(ess_mat, xs1, xs2)
             if proj_ess_space:
                 ess_disp=ess_mat.ravel(order='F')
             else:
                 ess_disp=ess_mat_stacked3/LA.norm(ess_mat_stacked3)*math.sqrt(2)
-            print("i={} E={} xyz={} err={} e2={} eig={} IsEss={}".format(i_sol, ess_disp,(x,y,z), err, err2, eig_vals, IsEssentialMat(ess_mat)))
+
+            # eigen values of unprojected ess mat
+            eig_vals = cv2.SVDecomp(ess_mat3)[0].ravel()
+
+            print("i={} E={} xyz={} err_epipol={} err_expect={} eig={} IsEss={}".format(i_sol, ess_disp,(x,y,z), err, err_expect, eig_vals, IsEssentialMat(ess_mat)))
     return True, ess_mat_list
 
 # xs1_meter is used to select the valid [R,T] camera's position - such that all points viewed in this camera have positive depth.
@@ -688,7 +714,7 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     if validate_ess_mat:
         assert IsEssentialMat(ess_mat, perr_msg), perr_msg[0]
     is_ess = IsEssentialMat(ess_mat, perr_msg), perr_msg[0]
-    print("IsEssentialMat={} {}".format(is_ess, perr_msg[0]))
+    if debug >= 3: print("IsEssentialMat={} {}".format(is_ess, perr_msg[0]))
 
     eltype = ess_mat.dtype
 
@@ -764,7 +790,7 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     calc_r0_fromU = True
     if calc_r0_fromU:
         r0_fromU = u.dot(rz90p.T).T
-        print("r0_fromU={}".format(r0_fromU))
+        if debug >= 3: print("r0_fromU={}".format(r0_fromU))
 
     # Nister
     ra = np.dot(np.dot(u, rz90m), vt)
@@ -777,10 +803,10 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     for pnt_ind in range(0, len(xs1_meter)):
         x1 = xs1_meter[pnt_ind]
         x2 = xs2_meter[pnt_ind]
-        q3D = triangulateDlt(pZ, pA, x1, x2)
+        q3D = triangulateDlt(pZ, pA, x1, x2, normalize=False)
         c1 = q3D[2]*q3D[3]
-        q_2 = np.dot(pA, q3D)
-        c2 = q_2[2]*q3D[3]
+        q2D_A = np.dot(pA, q3D)
+        c2 = q2D_A[2]*q3D[3]
         case = -1
         if c1 > 0 and c2 > 0:
             # pA and q3D are true configuration
@@ -788,9 +814,10 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
             nister_sol_T = tu
             case = "A"
         elif c1 < 0 and c2 < 0:
-            pB = pA.dot(hr)
+            #pB = pA.dot(hr)
+            #pB = hr.dot(pA) # seems to be correct
             q3D_new = np.dot(hr, q3D)
-            nister_sol_R = ra
+            nister_sol_R = ra # NOTE: should be -ra
             nister_sol_T = -tu
             case = "B"
         else:
@@ -815,7 +842,7 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
                 case = "D"
 
         n23a, ang23a = logSO3(nister_sol_R)
-        print("nister{}{} ang={}deg T={} Rf={}".format(case, pnt_ind, math.degrees(ang23a), nister_sol_T, nister_sol_R.ravel('F')))
+        if debug >= 3:  print("nister{}{} ang={}deg T={} Rf={}".format(case, pnt_ind, math.degrees(ang23a), nister_sol_T, nister_sol_R.ravel('F')))
 
         # MASKS page 120, Remark 5.10: construct all four combinations with Rz(+-90)
     combineSigns = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
@@ -990,10 +1017,21 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
     # find transformation [R,T] of camera (frame2) in world (frame1)
     xs1_meter = np.array(xs_per_image_meter[0])
     xs2_meter = np.array(xs_per_image_meter[1])
-    perror = [0.0]
-    suc, ess_mat = FindEssentialMat8Point(xs1_meter, xs2_meter, unity_translation=True, plinear_sys_err=perror)
-    assert suc
-    print("essMat=\n{0} err={1}".format(ess_mat, perror[0]))
+
+    # perror = [0.0]
+    # suc, ess_mat = FindEssentialMat8Point(xs1_meter, xs2_meter, unity_translation=True, plinear_sys_err=perror)
+    # assert suc
+
+    suc, ess_mat_list = FindEssentialMat5PointStewenius(xs1_meter, xs2_meter, True, True, debug, None)
+    assert suc, "Essential matrix on consensus set must be calculated"
+
+    # choose essential matrix with minimal sampson error
+    sampson_dist_calculator = SampsonDistanceCalc()
+    samps_errs = [sampson_dist_calculator.DistanceMult(e, xs1_meter, xs2_meter) for e in ess_mat_list]
+    ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
+    ess_mat = ess_mat_best_item[0]
+
+    print("essMat=\n{}".format(ess_mat))
 
     refine_ess = False # refinement is not implemented
     if refine_ess:
@@ -1010,7 +1048,7 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
         return False, None, None, None
     ess_T = skewSymmeticMat(ess_Tvec)
     ess_wvec, ess_wang = logSO3(ess_R)
-    print("R|T: w={0} ang={1}\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+    if debug >= 3: print("R|T: w={0} ang={1}\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
 
     # find initial distances to all 3D points in frame1 (MASKS formula 8.43)
     points_num = len(xs1_meter)
@@ -1132,6 +1170,13 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
     print("Search succeeded in {0} iterations, reproj_err: {1}".format(iter, reproj_err))
     return True, frames_R, frames_T, world_pnts
 
+def convertPointPixelToMeter(x_pix, world_from_camera_mat):
+    assert len(x_pix) == 2 or len(x_pix) == 3
+
+    pnt_homog = x_pix if len(x_pix) == 3 else [x_pix[0], x_pix[1], 1]
+    pnt_meter = np.dot(world_from_camera_mat, pnt_homog)
+    return pnt_meter
+
 # xs_per_image_meter = result points
 def convertPixelToMeterPoints(camMat, xs_per_image, xs_per_image_meter):
     assert len(xs_per_image[0][0]) == 2, "Provide 2D coordinates (x,y) of pixels"
@@ -1146,9 +1191,10 @@ def convertPixelToMeterPoints(camMat, xs_per_image, xs_per_image_meter):
         xs_meter = []
         for i in range(0, len(xs)):
             pnt = xs[i]
-            assert len(pnt) == 2
-            pnt_hom = [pnt[0], pnt[1], 1]
-            xmeter = np.dot(Km1, pnt_hom)
+            xmeter = convertPointPixelToMeter(pnt, Km1)
+            # assert len(pnt) == 2
+            # pnt_hom = [pnt[0], pnt[1], 1]
+            # xmeter = np.dot(Km1, pnt_hom)
             # print("i:{0} x'={1} x={2} xRe'={3}".format(i, pnt, xmeter, np.dot(camMat, xmeter)))
             # xs_meter.append((xmeter[0], xmeter[1]))
             xs_meter.append(xmeter)
@@ -2226,7 +2272,7 @@ def logSO3(rot_mat, check_rot_mat = True):
 # x1 [1x2] or [2x1]
 # x2 [1x2] or [2x1]
 # X [4x1] homogeneous world coordinate.
-def triangulateDlt(p1, p2, x1, x2):
+def triangulateDlt(p1, p2, x1, x2, normalize=True):
     assert len(x1) == 2 or (len(x1) == 3 and x1[2] == 1)
     assert len(x2) == 2 or (len(x2) == 3 and x2[2] == 1)
 
@@ -2994,7 +3040,7 @@ def RunIterateSecondImageAndReconstruct():
 # x is directed to the right-top
 # y is directed to the bottom
 # z is directed to the left-top
-def GenerateTwoOrthoChess():
+def GenerateTwoOrthoChess(debug=0):
     h = 0.18 / 8
     d = w = h
     xs3D = np.float32([
@@ -3023,7 +3069,7 @@ def GenerateTwoOrthoChess():
         [8, 4, 0],
     ])
     xs3D = np.vstack((xs3D[:,0]*w, xs3D[:,1]*h, xs3D[:,2]*d)).T
-    print("xs3D={0}".format(xs3D))
+    if debug >= 3: print("xs3D={0}".format(xs3D))
 
     # 1=first side, 2=second side, 3=first or second side
     side_mask = np.int32([
@@ -3041,9 +3087,213 @@ def GenerateTwoOrthoChess():
 # Represents point across multiple frame images.
 class PointLife:
     def __init__(self):
-        self.all_in_consensus = True
+        self.point_id = None
         self.points_list = []
-        self.is_in_consensus_set = []
+
+class PointsWorld:
+    def __init__(self):
+        self.frame_ind = None
+        self.last_known_pos_frame_ind = 0 # the latest frame with determined [R,T]
+        self.num_tracked_points_per_frame = []
+        self.points_life = [] # coordinates of 2D points in images
+        self.visual_host = None
+        self.ground_truth_relative_motion = None
+
+    def PutInitialPoints2D(self, points):
+        self.frame_ind = 0
+
+        pnt_ids = []
+
+        self.points_life = [PointLife() for _ in range(0, len(points))]
+        for i, x1 in enumerate(points):
+            pnt_life = self.points_life[i]
+            pnt_life.point_id = i
+            pnt_life.points_list = [x1]
+            pnt_ids.append(i)
+
+        self.num_tracked_points_per_frame.append(len(points))
+
+        # assiciate the world frame with the first camera frame
+        with self.visual_host.cameras_lock:
+            self.visual_host.world_to_cam_R = [np.eye(3, 3)]  # world
+            self.visual_host.world_to_cam_T = [np.zeros(3)]  # world
+
+        with self.visual_host.continue_computation_lock:
+            self.visual_host.world_map_changed_flag = True
+
+        return pnt_ids
+
+    def PutPoints2D(self, pnt_ids, xs2_meter_with_gaps, on_pnt_corresp = None, debug = 1):
+        self.frame_ind += 1
+
+        # reserve space
+        for pnt_life in self.points_life:
+            pnt_life.points_list.append(None)
+
+        tracked_pnts_count = 0
+        for i, id in enumerate(pnt_ids):
+            pnt2 = xs2_meter_with_gaps[i]
+            pnt_life = self.points_life[id]
+            if not pnt2 is None:
+                pnt_life.points_list[self.frame_ind] = pnt2
+                tracked_pnts_count += 1
+
+        self.num_tracked_points_per_frame.append(tracked_pnts_count)
+
+        num_pnts_prev = self.num_tracked_points_per_frame[self.frame_ind - 1]
+        if debug >= 3 or True: print("img={} number of Lucas-Kanade matched points {}->{}".format(self.frame_ind, num_pnts_prev, tracked_pnts_count))
+
+        self.TryFindLastFrameRelativeMotion(on_pnt_corresp, debug)
+
+        return None
+
+    # Tries to find the relative motion between the last frame with determined camera position and the latest frame.
+    def TryFindLastFrameRelativeMotion(self, on_pnt_corresp, debug):
+        # enumerate matched points
+        xs1_meter = []
+        xs2_meter = []
+        matched_pnt_ids = []
+        for pnt_life in self.points_life:
+            x1 = pnt_life.points_list[self.last_known_pos_frame_ind]
+            x2 = pnt_life.points_list[self.frame_ind]
+
+            # check that all frames between [known_frame_ind, latest] have 2D point value
+            is_continuous_match = not x1 is None and not x2 is None
+            if is_continuous_match:
+                assert not x1 is None
+                assert not x2 is None
+                xs1_meter.append(x1)
+                xs2_meter.append(x2)
+
+                matched_pnt_ids.append(pnt_life.point_id)
+
+        num_matched_pnts = len(matched_pnt_ids)
+        assert num_matched_pnts >= 5, "required for 5point relative motion algorithm"
+
+        if debug >= 3 or True: print("finding relative motion between img:{}-{} using {} points".format(self.last_known_pos_frame_ind, self.frame_ind, num_matched_pnts))
+
+        sampson_dist_calculator = SampsonDistanceCalc()
+
+        def MeasureConsensusFun(matched_points_count, samp_group_inds, cons_set_mask):
+            assert len(matched_pnt_ids) == matched_points_count, "must sample matched points"
+            samp_pnt_ids = [matched_pnt_ids[i] for i in samp_group_inds]
+
+            samp_xs1_meters = []
+            samp_xs2_meters = []
+            for id in samp_pnt_ids:
+                pnt_life = self.points_life[id]
+                samp_xs1_meters.append(pnt_life.points_list[self.frame_ind - 1])
+                samp_xs2_meters.append(pnt_life.points_list[self.frame_ind])
+
+            if debug >= 94:
+                on_pnt_corresp("sample", samp_pnt_ids)
+
+            suc, ess_mat_list = FindEssentialMat5PointStewenius(samp_xs1_meters, samp_xs2_meters, True, True, check_constr=False, debug=debug, expected_ess_mat=None)
+            if not suc:
+                return 0 # no consensus
+
+            def CalcConsensus(ess_mat, dist_thr, cons_set_mask):
+                cons_set_card = 0
+                for i in range(0, matched_points_count):
+                    pt1 = xs1_meter[i]
+                    pt2 = xs2_meter[i]
+
+                    dist = sampson_dist_calculator.Distance(ess_mat, pt1, pt2)
+                    cons = dist < dist_thr
+                    # if debug >= 3: print("err={0} include={1}".format(err, cons))
+                    if cons:
+                        cons_set_card += 1
+                    cons_set_mask[i] = cons
+                return cons_set_card
+
+            dist_thr = 0.0001 # TODO: choose distance
+
+            cand_cons_set_mask = np.zeros_like(cons_set_mask)
+            best_cons_set_card = 0
+            for ess_mat in ess_mat_list:
+                cons_set_card = CalcConsensus(ess_mat, dist_thr, cand_cons_set_mask)
+                if cons_set_card > best_cons_set_card:
+                    best_cons_set_card = cons_set_card
+                    cons_set_mask[:] = cand_cons_set_mask[:]
+
+            return best_cons_set_card
+
+        consens_mask = np.zeros(num_matched_pnts, np.uint8)
+        suc_prob = 0.99
+        outlier_ratio = 0.3
+        cons_set_card = GetMaxSubsetInConsensus(num_matched_pnts, 5, outlier_ratio, suc_prob, MeasureConsensusFun, consens_mask)
+        assert cons_set_card >= 5, "need >= 5 points to compute essential mat"
+        if debug >= 3: print("cons_set_card={0}".format(cons_set_card))
+
+        cons_xs1_meter = np.array([p for i, p in enumerate(xs1_meter) if consens_mask[i]])
+        cons_xs2_meter = np.array([p for i, p in enumerate(xs2_meter) if consens_mask[i]])
+        cons_ids = np.array([matched_pnt_ids[i] for i in range(0, len(consens_mask)) if consens_mask[i]])
+
+        if not on_pnt_corresp is None and debug >= 4:
+            on_pnt_corresp("cons", cons_ids)
+
+        expected_ess_mat = None
+        if not self.ground_truth_relative_motion is None:
+            expR,expT = self.ground_truth_relative_motion(self.last_known_pos_frame_ind, self.frame_ind)
+            expected_ess_mat = skewSymmeticMat(expT/LA.norm(expT)).dot(expR)
+            expected_ess_mat /= LA.norm(expected_ess_mat)
+
+        suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, False, True, check_constr=True, debug=debug, expected_ess_mat=expected_ess_mat)
+        assert suc, "Essential matrix on consensus set must be calculated"
+
+        # choose essential matrix with minimal sampson error
+        samps_errs = [sampson_dist_calculator.DistanceMult(e, cons_xs1_meter, cons_xs2_meter) for e in ess_mat_list]
+        ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
+        ess_mat = ess_mat_best_item[0]
+
+        if debug >= 3: print("ess_mat=\n{0}".format(ess_mat))
+
+        # TODO: refine essential matrix; RefineFundMat refines fundamental matrix and destroys internal constraints of essential matrix
+        refine_ess = False
+        if refine_ess:
+            suc, ess_mat_refined = RefineFundMat(ess_mat, cons_xs1_meter, cons_xs2_meter, debug=debug)
+            if not suc:
+                print("img_ind={} can't refine ess mat".format(self.frame_ind))
+            else:
+                if debug >= 3: print("refined_ess_mat=\n{0}".format(ess_mat_refined))
+
+            perr = [""]
+            assert IsEssentialMat(ess_mat_refined, perr), "essential mat is valid after refinement, " + perr[0]
+        else:
+            ess_mat_refined = ess_mat
+
+        #
+        world_R = None
+        world_T = None
+        suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
+        if not suc:
+            print("Failed E->R,T")
+        else:
+            ess_T = skewSymmeticMat(ess_Tvec)
+            ess_wvec, ess_wang = logSO3(ess_R)
+            print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+
+        with self.visual_host.cameras_lock:
+            # map to the world frame
+            if suc:
+                head_R = self.visual_host.world_to_cam_R[self.last_known_pos_frame_ind]
+                head_T = self.visual_host.world_to_cam_T[self.last_known_pos_frame_ind]
+                world_R = np.dot(head_R, ess_R)
+                world_T = np.dot(head_R, ess_Tvec) + head_T
+
+            self.visual_host.world_to_cam_R.append(world_R)
+            self.visual_host.world_to_cam_T.append(world_T)
+
+        with self.visual_host.continue_computation_lock:
+            self.visual_host.world_map_changed_flag = True
+            self.visual_host.processed_images_counter += 1
+
+        # on failure to find [R,T] the head_ind doesn't change
+        if not world_R is None:
+            #self.visual_host.EstimateMap(self.points_life, self.visual_host.cameras_lock, debug)
+            self.last_known_pos_frame_ind = self.frame_ind
+
+        return None
 
 
 # Tries to choose unique homography decomposition from two possible ones (for each frame).
@@ -4009,7 +4259,7 @@ class ReconstructDemo:
                     cam_pos_world[0:3] = cam_pos_world_tmp[0:3]
 
                     # draw trajectory of the camera
-                    if cam_pos_world_prev_inited and False:
+                    if cam_pos_world_prev_inited:
                         glBegin(GL_LINES)
                         glColor3f(0, 0, 1)
                         glVertex3fv(cam_pos_world_prev[0:3])
@@ -4024,10 +4274,17 @@ class ReconstructDemo:
                     cam_pos_world_prev_inited = True
                 pass # frame poses
 
+                # draw head camera at the latest frame position
+                # find the latest frame
+                cam_ind = len(camR_list) - 1
+                while cam_ind >= 0 and camR_list[cam_ind] is None:
+                    cam_ind -= 1
+
                 # current <- the latest frame position
-                if len(camR_list) > 0:
-                    camR = camR_list[-1]
-                    camT = camT_list[-1]
+                if cam_ind >= 0:
+                    camR = camR_list[cam_ind]
+                    camT = camT_list[cam_ind]
+                    assert not camR_list[cam_ind] is None
 
                     # transform to the camera frame
                     # cam_to_world=inv(world_to_cam)=[Rt,-Rt.T]
@@ -4334,13 +4591,13 @@ class ReconstructDemo:
 
     # Tries to compute world's 3D structure.
     #def EstimateMap(self, cam_mat, points_life : typing.List[PointLife], cameras_lock, debug):
-    def EstimateMap(self, cam_mat, points_life, cameras_lock, debug):
+    def EstimateMap(self, points_life, cameras_lock, debug):
         life_len = len(points_life[0].points_list)
         live_points = np.count_nonzero([p.all_in_consensus for p in points_life]) # point with entire life available
 
         # points_life has list of 2D point for each points
         # construct list of 2D point for each image
-        xs_per_image = []
+        xs_per_image_meter = []
         for frame_ind in range(0, life_len):
             # gather point coords
             xs_per_frame = []
@@ -4350,10 +4607,7 @@ class ReconstructDemo:
                     xs_per_frame.append(p)
             assert live_points == len(xs_per_frame), "Point ind:{0} has not a full life".format(pnt_life_ind)
 
-            xs_per_image.append(xs_per_frame)
-
-        xs_per_image_meter = []
-        convertPixelToMeterPoints(cam_mat, xs_per_image, xs_per_image_meter)
+            xs_per_image_meter.append(xs_per_frame)
 
         suc, frames_R, frames_T, world_pnts = calcCameras(xs_per_image_meter, debug=debug)
         if suc:
@@ -4362,50 +4616,38 @@ class ReconstructDemo:
                 self.world_to_cam_T = frames_T
                 self.xs3d = world_pnts
 
-    def WorkerRunCornerMatcherAndFindCameraPos(self, continue_lock, cameras_lock):
-        debug = 0
+    def WorkerRunCornerMatcherAndFindCameraPos(self, continue_lock, cameras_lock, main_args):
+        debug = main_args.debug
         cam_mat = np.array([
             [5.7231451642124046e+02, 0., 3.2393613004134221e+02],
             [0., 5.7231451642124046e+02, 2.8464798761067397e+02],
             [0., 0., 1.]])
+        suc, Km1 = cv2.invert(cam_mat)
+        assert suc
 
         kpd = cv2.xfeatures2d.SIFT_create(nfeatures=50)  # OpenCV-contrib-3
 
         img_dir_path = "/home/mmore/Pictures/roshensweets_201704101700/is"
         img_abs_pathes = [os.path.join(img_dir_path, file_name) for file_name in sorted(os.listdir(img_dir_path))]
-        image1 = cv2.imread(img_abs_pathes[0])
         # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_57.png")
         # image1 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_6.png")
         # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_13.png")
-        assert not image1 is None
-        img1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
-        kp1 = kpd.detect(img1_gray, None)
 
-        # init
-        points = np.array([kp.pt for kp in kp1], np.float32)
-        points_life = [PointLife() for _ in range(0,len(points))]
-        for i, x1 in enumerate(points):
-            points_life[i].all_in_consensus = True
-            points_life[i].points_list = [x1]
-            points_life[i].is_in_consensus_set = [None]
+        track_sys = PointsWorld()
+        track_sys.visual_host = self
 
-        num_tracked_points = []
-        last_reg_frame_ind = 0
-        with cameras_lock:
-            self.world_to_cam_R = [np.eye(3, 3)]  # world
-            self.world_to_cam_T = [np.zeros(3)]  # world
+        class PntInfo:
+            def __init__(self):
+                self.point_id = None
+                self.x1_pixel = None
+                self.x2_pixel = None
+                #self.x1_meter = None # meters are for debugging
+                #self.x2_meter = None
 
-        # gather points to search for a partner
-        head_pixels = []
-        head_to_life_inds = []
-        for i, pnt_life in enumerate(points_life):
-            pnt = pnt_life.points_list[last_reg_frame_ind]
-            if not pnt is None:
-                head_pixels.append(pnt)
-                head_to_life_inds.append(i)
-        num_tracked_points.append(len(head_pixels))
-
-        for img_ind in range(1, len(img_abs_pathes)):  # 518
+        image1 = None
+        img1_gray = None
+        pnt_pixel_info = {} # point id -> PntInfo
+        for img_ind in range(0, len(img_abs_pathes)):
             # check if cancel is requested
             with continue_lock:
                 cont = self.do_computation_flag
@@ -4421,188 +4663,163 @@ class ReconstructDemo:
 
             img2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
 
-            # try to find the corner in the next image
-            head_pixels_array = np.array(head_pixels)
-            next_pts, status, err = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, head_pixels_array, None)
+            def ShowPntCorresp(title, pnt_ids):
+                cons_xs1_pixels = []
+                cons_xs2_pixels = []
+                for id in pnt_ids:
+                    pnt_info = pnt_pixel_info[id]
+                    assert not pnt_info.x1_pixel is None
+                    assert not pnt_info.x2_pixel is None
+                    cons_xs1_pixels.append(pnt_info.x1_pixel)
+                    cons_xs2_pixels.append(pnt_info.x2_pixel)
+                ShowMatches(title, image1, image2, cons_xs1_pixels, cons_xs2_pixels)
 
-            status = status.ravel()
-            xs1_pixels = [p for s, p in zip(status, head_pixels) if s]
-            xs2_pixels = [p for s, p in zip(status, next_pts) if s]
+            if len(pnt_pixel_info) == 0:
+                kp1 = kpd.detect(img2_gray, None)
+                xs2_pixel = np.array([kp.pt for kp in kp1], np.float32)
 
-            num_pnts = len(head_pixels)
-            next_num_pnts = len(xs1_pixels)
-            num_tracked_points.append(next_num_pnts)
-            if debug >= 3: print("Number of active points {0}->{1}".format(num_pnts, next_num_pnts))
+                # convert pixel to image coordinates (pixel -> meters)
+                xs2_meter = []
+                convertPixelToMeterPoints(cam_mat, [xs2_pixel], xs2_meter)
+                xs2_meter = xs2_meter[0]
 
-            # reserve space
-            for pnt_life in points_life:
-                pnt_life.points_list.append(None)
-                pnt_life.is_in_consensus_set.append(None)
-
-            next_to_thread_inds = [0] * len(next_pts)
-            for i, s in enumerate(status):
-                parent_ind = head_to_life_inds[i]  # index in the point_life
-                if s:
-                    pnt2 = next_pts[i]
-                    points_life[parent_ind].points_list[img_ind] = pnt2
-                    points_life[parent_ind].is_in_consensus_set[img_ind] = False
-                    next_to_thread_inds[i] = parent_ind
-                else:
-                    # the point was not matched, exclude it from 3D world reconstruction
-                    points_life[parent_ind].all_in_consensus = False
-                    points_life[parent_ind].is_in_consensus_set[img_ind] = None
-
-
-            # convert pixel to image coordinates (pixel -> meters)
-            xs1_meter = []
-            xs2_meter = []
-            convertPixelToMeterPoints(cam_mat, [xs1_pixels], xs1_meter)
-            convertPixelToMeterPoints(cam_mat, [xs2_pixels], xs2_meter)
-            xs1_meter = xs1_meter[0]
-            xs2_meter = xs2_meter[0]
-
-            sampson_dist_calculator = SampsonDistanceCalc()
-
-            def MeasureConsensusFun(items_count, samp_group_inds, cons_set_mask):
-                if debug >= 94:
-                    samp_xs1_pixels = xs1_pixels[samp_group_inds]
-                    samp_xs2_pixels = xs2_pixels[samp_group_inds]
-                    ShowMatches("sample", image1, image2, samp_xs1_pixels, samp_xs2_pixels)
-
-                samp_xs1_meters = xs1_meter[samp_group_inds]
-                samp_xs2_meters = xs2_meter[samp_group_inds]
-
-                suc, ess_mat_list = FindEssentialMat5PointStewenius(samp_xs1_meters, samp_xs2_meters, False, True, debug, None)
-                if not suc:
-                    return 0 # no consensus
-
-                def CalcConsensus(ess_mat, dist_thr, cons_set_mask):
-                    cons_set_card = 0
-                    for i in range(0, items_count):
-                        pt1 = xs1_meter[i]
-                        pt2 = xs2_meter[i]
-
-                        dist = sampson_dist_calculator.Distance(ess_mat, pt1, pt2)
-                        cons = dist < dist_thr
-                        # if debug >= 3: print("err={0} include={1}".format(err, cons))
-                        if cons:
-                            cons_set_card += 1
-                        cons_set_mask[i] = cons
-                    return cons_set_card
-
-                dist_thr = 0.001 # TODO: choose distance
-
-                cand_cons_set_mask = np.zeros_like(cons_set_mask)
-                best_cons_set_card = 0
-                for ess_mat in ess_mat_list:
-                    cons_set_card = CalcConsensus(ess_mat, dist_thr, cand_cons_set_mask)
-                    if cons_set_card > best_cons_set_card:
-                        best_cons_set_card = cons_set_card
-                        cons_set_mask[:] = cand_cons_set_mask[:]
-
-                return best_cons_set_card
-
-            points_count = len(xs1_meter)
-            consens_mask = np.zeros(points_count, np.uint8)
-            suc_prob = 0.99
-            outlier_ratio = 0.3
-            cons_set_card = GetMaxSubsetInConsensus(points_count, 5, outlier_ratio, suc_prob, MeasureConsensusFun, consens_mask)
-            assert cons_set_card >= 5, "need >= 5 points to compute essential mat"
-            if debug >= 3: print("cons_set_card={0}".format(cons_set_card))
-
-            # MatchKeypointsAndGetEssentialMatNcc(self.imgLeft, self.imgRight)
-            # pr
-            # , xs1_meter, xs2_meter = MatchKeypointsAndGetEssentialMatSift(8, cam_mat, image1, image2, do_norming = True, debug = debug)
-            # ess_mat, cons_set_inds = MatchKeypointsAndGetEssentialMatNarrowBaselineCore(8, cam_mat, xs1_meter,
-            #                                                                             xs2_meter, image1,
-            #                                                                             image2, xs1_pixels,
-            #                                                                             xs2_pixels, debug=debug)
-
-            cons_xs1_meter = np.array([p for i, p in enumerate(xs1_meter) if consens_mask[i]])
-            cons_xs2_meter = np.array([p for i, p in enumerate(xs2_meter) if consens_mask[i]])
-
-            if debug >= 4:
-                cons_xs1_pixels = np.array([p for i, p in enumerate(xs1_pixels) if consens_mask[i]])
-                cons_xs2_pixels = np.array([p for i, p in enumerate(xs2_pixels) if consens_mask[i]])
-                ShowMatches("cons", image1, image2, cons_xs1_pixels, cons_xs2_pixels)
-
-            suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, False, True, debug, None)
-            assert suc, "Essential matrix on consensus set must be calculated"
-
-            # choose essential matrix with minimal sampson error
-            sams_errs = [sampson_dist_calculator.DistanceMult(e, cons_xs1_meter, cons_xs2_meter) for e in ess_mat_list]
-            ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
-            ess_mat = ess_mat_best_item[0]
-
-
-            if debug >= 3: print("ess_mat=\n{0}".format(ess_mat))
-
-            cons_set_inds = [i for i in consens_mask if consens_mask[i] > 0]
-            for cons_ind in cons_set_inds:
-                parent_ind = head_to_life_inds[cons_ind]
-                points_life[parent_ind].is_in_consensus_set[img_ind] = True
-            # the rest of points are not in consensus
-            # remove them from the consensus list
-            for pnt_life in points_life:
-                if not pnt_life.is_in_consensus_set[img_ind]:
-                    pnt_life.all_in_consensus = False
-
-            # TODO: refine essential matrix; RefineFundMat refines fundamental matrix and destroys internal constraints of essential matrix
-            refine_ess = False
-            if refine_ess:
-                suc, ess_mat_refined = RefineFundMat(ess_mat, cons_xs1_meter, cons_xs2_meter, debug=debug)
-                if not suc:
-                    print("img_ind={} can't refine ess mat {}".format(img_ind, img2_path))
-                else:
-                    if debug >= 3: print("refined_ess_mat=\n{0}".format(ess_mat_refined))
-
-                perr = [""]
-                assert IsEssentialMat(ess_mat_refined, perr), "essential mat is valid after refinement, " + perr[0]
+                pnt_ids = track_sys.PutInitialPoints2D(xs2_meter) # initial points
+                for i,id in enumerate(pnt_ids):
+                    pnt_info = PntInfo()
+                    pnt_info.point_id = id
+                    pnt_info.x2_pixel = xs2_pixel[i]
+                    #pnt_info.x2_meter = xs2_meter[i]
+                    pnt_pixel_info.__setitem__(id, pnt_info)
             else:
-                ess_mat_refined = ess_mat
+                # try to find the corner in the next image
+                pnt_ids = []
+                xs1_pixel = []
+                for pnt_info in pnt_pixel_info.values():
+                    if not pnt_info.x1_pixel is None:
+                        xs1_pixel.append(pnt_info.x1_pixel)
+                        pnt_ids.append(pnt_info.point_id)
 
-            #
-            world_R = None
-            world_T = None
-            suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
-            if not suc:
-                print("Failed E->R,T")
-            else:
-                ess_T = skewSymmeticMat(ess_Tvec)
-                ess_wvec, ess_wang = logSO3(ess_R)
-                print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+                xs1_pixel_array = np.array(xs1_pixel)
+                next_pts, status, err = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, xs1_pixel_array, None)
+                
+                assert len(xs1_pixel) == len(next_pts)
 
-            with cameras_lock:
-                # map to the world frame
-                if suc:
-                    head_R = self.world_to_cam_R[last_reg_frame_ind]
-                    head_T = self.world_to_cam_T[last_reg_frame_ind]
-                    world_R = np.dot(head_R, ess_R)
-                    world_T = np.dot(head_R, ess_Tvec) + head_T
+                status = status.ravel()
 
-                self.world_to_cam_R.append(world_R)
-                self.world_to_cam_T.append(world_T)
+                # convert pixel to image coordinates (pixel -> meters)
+                xs2_meter_with_gaps = []
+                for i in range(0, len(xs1_pixel)):
+                    pnt_meter = None
+                    if status[i]:
+                        pnt_pixel = next_pts[i]
+                        pnt_meter = convertPointPixelToMeter(pnt_pixel, Km1)
 
+                        pnt_info = pnt_pixel_info[pnt_ids[i]]
+                        pnt_info.x2_pixel = pnt_pixel
+                        #pnt_info.x2_meter = pnt_meter
 
-            # on failure to find [R,T] the head_ind doesn't change
-            if not world_R is None:
-                last_reg_frame_ind = img_ind
-                head_pixels = xs2_pixels
-                head_to_life_inds = next_to_thread_inds
+                    xs2_meter_with_gaps.append(pnt_meter)
 
-
-                self.EstimateMap(cam_mat, points_life, cameras_lock, debug)
+                track_sys.PutPoints2D(pnt_ids, xs2_meter_with_gaps, on_pnt_corresp=ShowPntCorresp, debug=debug)
 
             # update cursor
             img1_gray = img2_gray
+            image1  = image2
+            for pnt_info in pnt_pixel_info.values():
+                pnt_info.x1_pixel = pnt_info.x2_pixel
+                pnt_info.x2_pixel = None
+                #pnt_info.x1_meter = pnt_info.x2_meter
+                #pnt_info.x2_meter = None
 
-        print("num_tracked_points={0}".format(num_tracked_points))
+        print("num_tracked_points={0}".format(track_sys.num_tracked_points_per_frame))
         with cameras_lock:
             print("cam_poses_R={0}".format(self.world_to_cam_R))
             print("cam_poses_T={0}".format(self.world_to_cam_T))
 
         #return cam_poses_R, cam_poses_T
         print("Exiting WorkerRunCornerMatcherAndFindCameraPos")
+
+    def WorkerWalkThroughVirtualWorld(self, continue_lock, cameras_lock, main_args):
+        debug = main_args.debug
+        xs3D, cell_width, side_mask = GenerateTwoOrthoChess(debug=debug)
+
+        provide_ground_truth = True
+        ground_truth_R_per_frame = []
+        ground_truth_T_per_frame = []
+
+        # returns [R,T], such that X2=[R,T]*X1
+        def GroundTruthRelativeMotion(img_ind1, img_ind2):
+            # ri from world
+            r1 = ground_truth_R_per_frame[img_ind1]
+            t1 = ground_truth_T_per_frame[img_ind1]
+            r2 = ground_truth_R_per_frame[img_ind2]
+            t2 = ground_truth_T_per_frame[img_ind2]
+
+            r2_from1 = r2.dot(r1.T)
+            t2_from1 = -r2_from1.dot(t1)+t2
+            return (r2_from1,t2_from1)
+
+        track_sys = PointsWorld()
+        track_sys.visual_host = self
+        if provide_ground_truth:
+            track_sys.ground_truth_relative_motion = GroundTruthRelativeMotion
+
+        pnt_ids = None
+        R2 = None
+        T2 = None
+        img_ind = 0
+        targ_ang_deg_list = np.arange(30, 60, 1)
+        for targ_ang_deg in targ_ang_deg_list:
+            # check if cancel is requested
+            with continue_lock:
+                cont = self.do_computation_flag
+            if not cont:
+                print("got computation cancel request")
+                break
+
+            if debug >= 3: print("img_ind={0}".format(img_ind))
+            targ_ang = math.radians(targ_ang_deg)
+
+            # cam3
+            R3 = rotMat([0, 1, 0], math.radians(targ_ang_deg)).T
+            T3 = np.array([0, 0, 0.4])
+
+            if provide_ground_truth:
+                ground_truth_R_per_frame.append(R3)
+                ground_truth_T_per_frame.append(T3)
+
+            xs3D_cam3 = np.dot(R3, xs3D.T).T + T3
+
+            # perform general projection 3D->2D
+            xs_img3 = xs3D_cam3.copy()
+            for i in range(0, len(xs_img3)):
+                xs_img3[i, :] /= xs_img3[i, -1]
+
+            if debug >= 3: print("xs2D=\{0}".format(np.hstack((xs3D_cam3, xs_img3))))
+
+            # expected transformation
+            if debug >= 3 and not R2 is None:
+                R23 = np.dot(R3, R2.T)
+                T23 = -np.dot(np.dot(R3, R2.T), T2) + T3
+                n23, ang23 = logSO3(R23)
+                print("exact R23: n={0} ang={1}deg T23={2}\n{3}".format(n23, math.degrees(ang23), T23, R23))
+                print("expect unity T:{}".format(T23 / LA.norm(T23)))
+                ess_mat = skewSymmeticMat(T23 / LA.norm(T23)).dot(R23)
+                ess_mat = ess_mat / LA.norm(ess_mat)
+                print("expect E (for img_ind={}):\n{}".format(img_ind, ess_mat))
+                print("detE==0, actually {}".format(LA.det(ess_mat)))
+                c1 = LA.norm(2 * ess_mat.dot(ess_mat.T).dot(ess_mat) - np.trace(ess_mat.dot(ess_mat.T)) * ess_mat)
+                print("2E*Et*E-trace(E*Et)E==0, actually {}".format(c1))
+
+            if R2 is None:
+                pnt_ids = track_sys.PutInitialPoints2D(xs_img3) # initial points
+            else:
+                track_sys.PutPoints2D(pnt_ids, xs_img3, debug=debug)
+
+            R2 = R3
+            T2 = T3
+            img_ind += 1
+        if debug >= 3: print("exiting worker thread")
 
     def WorkerRunPlanarHomographyReconstruction(self, continue_lock, cameras_lock, main_args):
         debug = main_args.debug
@@ -4882,9 +5099,12 @@ class ReconstructDemo:
         if job_id == 1:
             compute_thread = threading.Thread(name="comput", target=self.WorkerGenerateDummyCameraPositions,\
                 args=(0.033, self.continue_computation_lock, self.cameras_lock))
+        elif job_id == 20:
+            compute_thread = threading.Thread(name="comput", target=self.WorkerWalkThroughVirtualWorld,\
+                args=(self.continue_computation_lock, self.cameras_lock, main_args))
         elif job_id == 2:
             compute_thread = threading.Thread(name="comput", target=self.WorkerRunCornerMatcherAndFindCameraPos,\
-                args=(self.continue_computation_lock, self.cameras_lock))
+                args=(self.continue_computation_lock, self.cameras_lock, main_args))
         elif job_id == 3:
             compute_thread = threading.Thread(name="comput", target=self.WorkerRunPlanarHomographyReconstruction,\
                 args=(self.continue_computation_lock, self.cameras_lock, main_args))
