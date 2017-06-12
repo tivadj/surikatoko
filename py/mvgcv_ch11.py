@@ -664,7 +664,9 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
             determ = LA.det(ess_mat3)
             if not np.isclose(0, determ):
                 if check_constr:
-                    assert False
+                    # assert False
+                    print("isol:{} skipping E:\n{}".format(i_sol, ess_mat3))
+                    print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation)))
                 else:
                     if debug >= 3: print("Failed det(E)==0, det={}".format(determ))
 
@@ -672,10 +674,15 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
             zero_mat_norm = LA.norm(zero_mat)
             if not np.isclose(0, zero_mat_norm):
                 if check_constr:
-                    assert False
+                    #assert False
+                    print("isol:{} skipping E:\n{}".format(i_sol, ess_mat3))
+                    print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation)))
+                    #continue
                 else:
                     if debug >= 3: print("Failed 2E*Et*E-trace(E*Et)E==0 mat_norm={}".format(zero_mat_norm))
 
+        # if we ignore an essential mat E which is outside the space of essentail matrices then we may end up without any hypothesis of E
+        # so the best we can do is to project E on the space of essentail matrices
         # TODO: no projection should be made, because det(E)==0 and 2E*Et*E-trace(E*Et)E==0 must be satisfied
         #proj_ess_space = True
         if proj_ess_space:
@@ -704,10 +711,15 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
             eig_vals = cv2.SVDecomp(ess_mat3)[0].ravel()
 
             print("i={} E={} xyz={} err_epipol={} err_expect={} eig={} IsEss={}".format(i_sol, ess_disp,(x,y,z), err, err_expect, eig_vals, IsEssentialMat(ess_mat)))
-    return True, ess_mat_list
 
-# xs1_meter is used to select the valid [R,T] camera's position - such that all points viewed in this camera have positive depth.
-def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_mat=True, svd_ess_mat=None, debug=3):
+    suc = len(ess_mat_list) > 0
+    return suc, ess_mat_list
+
+def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_mat=True, svd_ess_mat=None, almost_zero = 1e-10, debug=3):
+    """ E->R,T
+    param:xs1_meter is used to select the valid [R,T] camera's position - such that all points viewed in this camera have positive depth.
+    param:almost_zero used to check if a value is almost zero
+    """
     assert len(xs1_meter[0])==3 and len(xs2_meter[0])==3, "Provide homogeneous 2D points [x,y,w]"
 
     perr_msg = [""]
@@ -792,18 +804,26 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
         r0_fromU = u.dot(rz90p.T).T
         if debug >= 3: print("r0_fromU={}".format(r0_fromU))
 
-    # Nister
+    # way4 Nister
     ra = np.dot(np.dot(u, rz90m), vt)
     rb = np.dot(np.dot(u, rz90m.T), vt)
     tu = u[:,2]
     pZ = np.hstack((np.eye(3,3),np.zeros((3,1))))
     pA = np.hstack((ra, tu.reshape((3,1))))
     hr = np.diag([1, 1, 1, -1])
+    cands_per_ind_wayNister = np.array([0,0,0,0])
+    cands_per_ind_wayNister_singular = np.array([0,0,0,0])
 
     for pnt_ind in range(0, len(xs1_meter)):
         x1 = xs1_meter[pnt_ind]
         x2 = xs2_meter[pnt_ind]
         q3D = triangulateDlt(pZ, pA, x1, x2, normalize=False)
+        almost_zero_nister = 1e-4 # slightly bigger value to catch 1.059e-5
+        if abs(q3D[-1]) < almost_zero_nister:
+            # algorithm failed to determine the valid [R,T] candidate
+            cands_per_ind_wayNister_singular += 1
+            continue
+
         c1 = q3D[2]*q3D[3]
         q2D_A = np.dot(pA, q3D)
         c2 = q2D_A[2]*q3D[3]
@@ -813,6 +833,7 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
             nister_sol_R = ra
             nister_sol_T = tu
             case = "A"
+            cands_per_ind_wayNister[0] += 1
         elif c1 < 0 and c2 < 0:
             #pB = pA.dot(hr)
             #pB = hr.dot(pA) # seems to be correct
@@ -820,6 +841,7 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
             nister_sol_R = ra # NOTE: should be -ra
             nister_sol_T = -tu
             case = "B"
+            cands_per_ind_wayNister[1] += 1
         else:
             # different signs of c1 and c2
             ht = np.eye(4, dtype=eltype)
@@ -834,18 +856,20 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
                 nister_sol_R = rb
                 nister_sol_T = tu
                 case = "C"
+                cands_per_ind_wayNister[2] += 1
             else:
                 pD = pC.dot(hr)
                 q3D_new = np.dot(hr, q3D_new)
                 nister_sol_R = rb
                 nister_sol_T = -tu
                 case = "D"
+                cands_per_ind_wayNister[3] += 1
 
         n23a, ang23a = logSO3(nister_sol_R)
         if debug >= 3:  print("nister{}{} ang={}deg T={} Rf={}".format(case, pnt_ind, math.degrees(ang23a), nister_sol_T, nister_sol_R.ravel('F')))
 
         # MASKS page 120, Remark 5.10: construct all four combinations with Rz(+-90)
-    combineSigns = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+    combineSigns = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
     for sign_trans, sign_rot in combineSigns:
         rz_trans = rz90p if sign_trans == 1 else rz90m
         rz_rot   = rz90p if sign_rot   == 1 else rz90m
@@ -863,71 +887,64 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     # only one solution from four available has positive depth of points
     # find it
     sol_ind = None
-    cands_per_ind = np.zeros(4, np.int32)
+    cands_per_ind_way1 = np.zeros(4, np.int32)
+    cands_per_ind_way1_singular = np.zeros(4, np.int32)
     cands_per_ind_way2 = np.zeros(4, np.int32)
-    singularA_counter_per_ind = np.zeros(4, np.int32)
+    cands_per_ind_way2_singular = np.zeros(4, np.int32)
+    cands_per_ind_bundle = np.zeros(4, np.int32)
     for cand_ind in range(0, len(cands_T)):
         if debug >= 3: print("cand_ind={0}".format(cand_ind))
         candT = cands_T[cand_ind]
         candTvec = unskew(candT)
         candR = cands_R[cand_ind]
 
-        # Way2 validate chosen sign of R,T
+        # validate chosen sign of R,T
+        # Way3
         # Compose aggregate matrix of all depths constraints for left and right frames
         # lams=(lam1, lam2, gamma) see MASKS p125, formula 5.20
         points_count = len(xs1_meter)
-        M = np.zeros((points_count * 3, points_count + 1), np.float32)
+        M1 = np.zeros((points_count * 3, points_count + 1), np.float32)
         for pnt_ind in range(0, points_count):
             x1 = xs1_meter[pnt_ind]
             x2 = xs2_meter[pnt_ind]
             x2_hat = skewSymmeticMat(x2)
 
             col1 = x2_hat.dot(candR).dot(x1)
-            M[pnt_ind*3:(pnt_ind+1)*3, pnt_ind] = col1
+            M1[pnt_ind*3:(pnt_ind+1)*3, pnt_ind] = col1
 
             col2 = x2_hat.dot(candTvec)
-            M[pnt_ind * 3:(pnt_ind + 1) * 3, -1] = col2
+            M1[pnt_ind * 3:(pnt_ind + 1) * 3, -1] = col2
 
-        dVecM, uM, vtM = cv2.SVDecomp(M)
+        dVecM1, uM1, vtM1 = cv2.SVDecomp(M1)
 
         # depths in frame1 (lam1, lam2, ..., lamN, gamma), where gamma is a translation scale
-        lams_frame1 = vtM.T[:, -1]
+        lams_frame_left = vtM1.T[:, -1]
 
         # it is possible for all lamdas to be negative - negate all
-        if lams_frame1[-1] < 0:
-            lams_frame1[:] = -lams_frame1[:]
+        # due to noise, the we may get the depthes with eg. universal_scale=0.004 instead of 0
+        universal_scale = lams_frame_left[-1]
 
-        # depths in right frame
-        for pnt_ind in range(0, points_count):
-            x1 = xs1_meter[pnt_ind]
-            x2 = xs2_meter[pnt_ind]
-            rx1_hat = skewSymmeticMat(candR.dot(x1))
+        almost_zero_bundle = almost_zero
+        #almost_zero_bundle = 1e-2  # slightly bigger value to catch 4.28e-3
+        if abs(universal_scale) < almost_zero_bundle:
+            # algorithm fails to reconstruct depthes of all points
+            # -1 may indicate failure better, but to keep results format similar to other methods, use 0
+            pass_count1 = 0 # or -1
+        else:
+            # keep positive universal scale (due to SVD)
+            if universal_scale < 0:
+                lams_frame_left[:] = -lams_frame_left[:]
 
-            col1 = x2.dot(rx1_hat)
-            M[pnt_ind*3:(pnt_ind+1)*3, pnt_ind] = col1
+            pass_count1 = np.sum([1 for i in range(0, points_count) if lams_frame_left[i] > almost_zero])
 
-            col2 = -candTvec.dot(rx1_hat)
-            M[pnt_ind * 3:(pnt_ind + 1) * 3, -1] = col2
-
-        dVecM2, uM2, vtM2 = cv2.SVDecomp(M)
-
-        # depths in frame2 (lam1, lam2, ..., lamN, gamma), where gamma is a translation scale
-        lams_frame2 = vtM2.T[:, -1]
-
-        # it is possible for all lamdas to be negative - negate all
-        if lams_frame2[-1] < 0:
-            lams_frame2[:] = -lams_frame2[:]
-
-        pass_count1 = np.sum([1 for i in range(0, points_count) if lams_frame1[i] > 0])
-        pass_count2 = np.sum([1 for i in range(0, points_count) if lams_frame2[i] > 0])
-        validRT_method2 = pass_count1 == points_count and pass_count2 == points_count
-        if debug >=3: print("validRT_method2={0}".format(validRT_method2))
+        cands_per_ind_bundle[cand_ind] = pass_count1
 
         # Way1 validate chosen sign of R,T
         # Evaluate depth constraint for each pair of points from two images separately.
-        pass_counter = 0
+        pass_counter_way1 = 0
         pass_counter_way2 = 0
         singularA_counter = 0
+        singularB_counter = 0
         for pnt_ind in range(0, len(xs1_meter)):
             x1 = xs1_meter[pnt_ind]
             x2 = xs2_meter[pnt_ind]
@@ -936,59 +953,67 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
 
             # solve for lamdas: lam2 * x2 = lam1 * R*x1 + T
             # MASKS page 161, exercise 5.11
+            err1 = -1
+            lams2 = np.empty(0)
             col1 = np.dot(candR, x1)
             A = np.hstack((np.reshape(col1, (3, 1)), -np.reshape(x2, (3, 1))))
             if LA.matrix_rank(A) < 2:
                 singularA_counter += 1
-            suc, lams2 = cv2.solve(A, -candTvec, flags=cv2.DECOMP_SVD)
-            assert suc
+            else:
+                suc, lams2 = cv2.solve(A, -candTvec, flags=cv2.DECOMP_SVD)
+                assert suc
 
-            aaaleft = lams2[1] * x2
-            aaaright = lams2[0] * np.dot(candR, x1) + candTvec
-            err1 = LA.norm(aaaleft-aaaright)
+                aaaleft = lams2[1] * x2
+                aaaright = lams2[0] * np.dot(candR, x1) + candTvec
+                err1 = LA.norm(aaaleft-aaaright)
 
-            positive_lams = lams2[0] > 0 and lams2[1] > 0
-            if positive_lams:
-                pass_counter += 1
+                positive_lams = lams2[0] > 0 and lams2[1] > 0
+                if positive_lams:
+                    pass_counter_way1 += 1
 
-            # way2
+            # way2 put R*lam1*x1-lam2*x2+T=0 into rows of B and find B*[lam1,lam2,lam3]=0, lam3==1
             B = np.zeros((3,3), dtype=np.float64)
             B[:,0] = col1
             B[:,1] = -x2
             B[:,2] = candTvec
             dVec4, u4, vt4 = cv2.SVDecomp(B)
             lams3 = vt4.T[:,-1]
-            lams3 = lams3 / lams3[-1]
 
-            positive_lams = lams3[0] > 0 and lams3[1] > 0
-            if positive_lams:
-                pass_counter_way2 += 1
+            # det(B) is always =0 hence the nullspace always has one solution
+            # the solution is at infinity if lam3=0
+            if abs(lams3[-1]) < almost_zero:
+                singularB_counter += 1
+            else:
+                lams3 = lams3 / lams3[-1]
+
+                positive_lams = lams3[0] > 0 and lams3[1] > 0
+                if positive_lams:
+                    pass_counter_way2 += 1
 
             if debug >= 3: print("{0}: lams={1} lams3={2} e={3:.4f} x1={4} x2={5}".format(pnt_ind, lams2.ravel(), lams3.ravel(), err1, x1, x2))
 
-        cands_per_ind[cand_ind] = pass_counter
+        cands_per_ind_way1[cand_ind] = pass_counter_way1
+        cands_per_ind_way1_singular[cand_ind] = singularA_counter
         cands_per_ind_way2[cand_ind] = pass_counter_way2
-        singularA_counter_per_ind[cand_ind] = singularA_counter
+        cands_per_ind_way2_singular[cand_ind] = singularB_counter
 
-        if debug >= 3: print("cand_ind={0} pass_counter={1} pass_counter_way2={2}".format(cand_ind, pass_counter, pass_counter_way2))
+        if debug >= 3: print("cand_ind={0} pass_counter={1} pass_counter_way2={2}".format(cand_ind, pass_counter_way1, pass_counter_way2))
 
         # assert pass_counter == 1, "Exactly one solution from 4 cases may have both positive lamdas (depths)"
-        validRT_method1 = pass_counter == len(xs1_meter)
-
-        if validRT_method2 != validRT_method1:
-            #assert validRT_method2 == validRT_method1, "Two methods of resolving signs of R,T do not match"
-            if not (validRT_method2 == validRT_method1):
-                print("Two methods of resolving signs of R,T do not match")
-
+        validRT_method1 = pass_counter_way1 == len(xs1_meter)
         if validRT_method1:
             assert sol_ind is None, "Exactly one solution from 4 cases may have both positive lamdas (depths)"
             sol_ind = cand_ind
 
     if debug >= 3:
         print("number of depth tests points={0}".format(len(xs1_meter)))
-        print("cands_per_ind={0}".format(cands_per_ind))
-        print("cands_per_ind_way2={0}".format(cands_per_ind_way2))
-        print("singularA_counter_per_ind={0}".format(singularA_counter_per_ind))
+        print("cands_per_ind1={0} (3x2-3x1)".format(cands_per_ind_way1))
+        print("cands_per_ind1_singular={0}".format(cands_per_ind_way1_singular))
+        print("cands_per_ind2={0} (3x3)".format(cands_per_ind_way2))
+        print("cands_per_ind2_singular={0}".format(cands_per_ind_way2_singular))
+        print("cands_per_ind3={0} (bundle)".format(cands_per_ind_bundle))
+        print("cands_per_ind4={0} (Nister)".format(cands_per_ind_wayNister))
+        print("cands_per_ind4_singular={0}".format(cands_per_ind_wayNister_singular))
 
     if sol_ind is None:
         # May be, it is because:
@@ -1005,6 +1030,11 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     assert IsSpecialOrthogonal(sol_R, p_err), p_err[0]
 
     #
+    match_1 = np.allclose(cands_per_ind_way1, cands_per_ind_way2)
+    match_2 = np.allclose(cands_per_ind_way1, cands_per_ind_bundle)
+    match_3 = np.allclose(cands_per_ind_way1, cands_per_ind_wayNister)
+    if not match_1 or not match_2 or not match_3:
+        print("can't match way3 cheirality")
 
     return True, sol_R, sol_Tvec
 
@@ -2292,7 +2322,8 @@ def triangulateDlt(p1, p2, x1, x2, normalize=True):
     # AX=0
     [dVec, u, vt] = cv2.SVDecomp(A)
     X = vt.T[:, -1]
-    X = X / X[-1]
+    if normalize:
+        X = X / X[-1] # TODO: what if the last component is 0
 
     # postcondition
     # TODO: the conditions below are too flaky
@@ -3238,15 +3269,20 @@ class PointsWorld:
             expected_ess_mat = skewSymmeticMat(expT/LA.norm(expT)).dot(expR)
             expected_ess_mat /= LA.norm(expected_ess_mat)
 
-        suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, False, True, check_constr=True, debug=debug, expected_ess_mat=expected_ess_mat)
-        assert suc, "Essential matrix on consensus set must be calculated"
+        world_R = None
+        world_T = None
+        suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, True, True, check_constr=True, debug=debug, expected_ess_mat=expected_ess_mat)
+        #assert suc, "Essential matrix on consensus set must be calculated"
+        if not suc:
+            print("Failed xs->E")
+            ess_mat = None
+        else:
+            # choose essential matrix with minimal sampson error
+            samps_errs = [sampson_dist_calculator.DistanceMult(e, cons_xs1_meter, cons_xs2_meter) for e in ess_mat_list]
+            ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
+            ess_mat = ess_mat_best_item[0]
 
-        # choose essential matrix with minimal sampson error
-        samps_errs = [sampson_dist_calculator.DistanceMult(e, cons_xs1_meter, cons_xs2_meter) for e in ess_mat_list]
-        ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
-        ess_mat = ess_mat_best_item[0]
-
-        if debug >= 3: print("ess_mat=\n{0}".format(ess_mat))
+            if debug >= 3: print("ess_mat=\n{0}".format(ess_mat))
 
         # TODO: refine essential matrix; RefineFundMat refines fundamental matrix and destroys internal constraints of essential matrix
         refine_ess = False
@@ -3263,15 +3299,14 @@ class PointsWorld:
             ess_mat_refined = ess_mat
 
         #
-        world_R = None
-        world_T = None
-        suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
-        if not suc:
-            print("Failed E->R,T")
-        else:
-            ess_T = skewSymmeticMat(ess_Tvec)
-            ess_wvec, ess_wang = logSO3(ess_R)
-            print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+        if not ess_mat is None:
+            suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
+            if not suc:
+                print("Failed E->R,T")
+            else:
+                ess_T = skewSymmeticMat(ess_Tvec)
+                ess_wvec, ess_wang = logSO3(ess_R)
+                print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
 
         with self.visual_host.cameras_lock:
             # map to the world frame
@@ -3280,6 +3315,12 @@ class PointsWorld:
                 head_T = self.visual_host.world_to_cam_T[self.last_known_pos_frame_ind]
                 world_R = np.dot(head_R, ess_R)
                 world_T = np.dot(head_R, ess_Tvec) + head_T
+
+                pos_prev = -head_R.T.dot(head_T)
+                pos = -world_R.T.dot(world_T)
+                dx = LA.norm(pos - pos_prev)
+                if dx > 10:
+                    print("too big relative motion")
 
             self.visual_host.world_to_cam_R.append(world_R)
             self.visual_host.world_to_cam_T.append(world_T)
@@ -4627,7 +4668,8 @@ class ReconstructDemo:
 
         kpd = cv2.xfeatures2d.SIFT_create(nfeatures=50)  # OpenCV-contrib-3
 
-        img_dir_path = "/home/mmore/Pictures/roshensweets_201704101700/is"
+        #img_dir_path = "/home/mmore/Pictures/roshensweets_201704101700/is"
+        img_dir_path = "/home/mmore/Pictures/blue_tapis4_640x480_n45deg/is_always_shift"
         img_abs_pathes = [os.path.join(img_dir_path, file_name) for file_name in sorted(os.listdir(img_dir_path))]
         # image2 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_57.png")
         # image1 = cv2.imread("/home/mmore/Pictures/roshensweets_201704101700/frame_6.png")
@@ -4742,6 +4784,8 @@ class ReconstructDemo:
     def WorkerWalkThroughVirtualWorld(self, continue_lock, cameras_lock, main_args):
         debug = main_args.debug
         xs3D, cell_width, side_mask = GenerateTwoOrthoChess(debug=debug)
+        xs3Dold = xs3D.copy()
+        #xs3D = xs3D[side_mask >= 2]
 
         provide_ground_truth = True
         ground_truth_R_per_frame = []
@@ -4768,7 +4812,9 @@ class ReconstructDemo:
         R2 = None
         T2 = None
         img_ind = 0
-        targ_ang_deg_list = np.arange(30, 60, 1)
+        cell_width = None
+        targ_ang_deg_list = np.arange(-10, 360+180, 0.01)
+        #targ_ang_deg_list = np.arange(303, 360+180, 1)
         for targ_ang_deg in targ_ang_deg_list:
             # check if cancel is requested
             with continue_lock:
@@ -4789,6 +4835,19 @@ class ReconstructDemo:
                 ground_truth_T_per_frame.append(T3)
 
             xs3D_cam3 = np.dot(R3, xs3D.T).T + T3
+
+            corrupt_with_noise = True
+            if corrupt_with_noise:
+                np.random.seed(124)
+                if cell_width is None:
+                    cell_width = LA.norm(xs3D_cam3[0] - xs3D_cam3[1])
+                    print("2Dcell_width={0}".format(cell_width))
+
+                noise_perc = 0.02
+                proj_err_pix = noise_perc * cell_width # 'radius' of an error
+                print("proj_err_pix={0}".format(proj_err_pix))
+                n3 = np.random.rand(len(xs3D), 3) * 2*proj_err_pix - proj_err_pix
+                xs3D_cam3 += n3
 
             # perform general projection 3D->2D
             xs_img3 = xs3D_cam3.copy()
