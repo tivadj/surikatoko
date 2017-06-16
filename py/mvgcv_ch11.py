@@ -35,6 +35,20 @@ import py.la_utils
 
 # debug = {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}
 
+def FixOpenCVCalcOpticalFlowPyrLK(prev_pts, next_pts, status, win_size):
+    # cv2.calcOpticalFlowPyrLK returns points outside the window size borders
+    # ignore them by setting the status=0
+    radx = win_size[0] / 2
+    rady = win_size[1] / 2
+    for i, stat in enumerate(status):
+        if stat == 0: continue
+        p1 = prev_pts[i]
+        p2 = next_pts[i]
+        shift = p2-p1
+        if abs(shift[0]) > radx or abs(shift[1]) > rady:
+            status[i] = 0
+            continue
+
 def IntPnt(pnt):
     if isinstance(pnt, list):
         return [int(v) for v in pnt]
@@ -540,7 +554,7 @@ def FindEssentialMat7Point(xs1, xs2, unity_translation = True, debug = 0, perr_m
 
     return True, ess_mat_list, real_roots
 
-def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation = True, check_constr = True, debug = 0, expected_ess_mat = None, perr_msg = None):
+def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation = True, check_constr = True, debug = 0, expected_ess_mat = None, perr_msg = None, close_tol = 1e-5):
     """
     Computes essential matrix from at least five 2D homogeneous (3 components) point correspondences.
     source: "Recent developments on direct relative orientation", Stewenius 2006
@@ -564,7 +578,11 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
     # NOTE: SVD must return full Vt [9x9] matrix
     # NOTE: for some reason cv2.SVDecomp doesn't produce correct last four columns of Vt.T (first five columns are ok)
     #dVec, u, vt = cv2.SVDecomp(A, flags=4) # 4=cv2.FULL_UV
-    u, dVec, vt = LA.svd(A, full_matrices=True)
+    try:
+        u, dVec, vt = LA.svd(A, full_matrices=True)
+    except LA.LinAlgError:
+        return False, ess_mat_list # svd didn't converge
+
     assert vt.shape[0] == 9 and vt.shape[1] == 9, "Matrix of right singular vectors Vt must be full (9x9)"
 
     # E=x*E1+y*E2+z*E3+w*E4; w==1 so E4 should be built from eigenvector, corresponding to smallest eigenvalue (latest column)
@@ -574,21 +592,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
     e4_stacked = vt.T[:,-1].reshape((3,3)).ravel(order='F') # w==1
 
     M = np.zeros((10, 20), dtype=eltype)
-
-    if not expected_ess_mat is None:
-        z9=np.zeros(9)
-        ess9 = expected_ess_mat.ravel(order='F')
-        even_inds = [i for i in range(0,9) if i % 3 == 1] # split original ess_mat into two portions
-        odd_inds = [i for i in range(0,9) if i % 3 != 1]
-        ess9_p1 = np.zeros(9, dtype=eltype)
-        ess9_p2 = np.zeros(9, dtype=eltype)
-        ess9_p1[even_inds] = ess9[ even_inds]
-        ess9_p2[odd_inds] = ess9[odd_inds]
-        # #r9=np.array(range(2,11))
-        # r9=np.array([[10,1,3],[3,10,2],[2,1,10]]).ravel(order='F')
-        py.ess_5point_stewenius.EssentialMat_Stewenius_FillM(ess9_p1*1/3.0, ess9_p2*1/5.0, z9, z9, M=M)
-    else:
-        py.ess_5point_stewenius.EssentialMat_Stewenius_FillM(e1_stacked, e2_stacked, e3_stacked, e4_stacked, M)
+    py.ess_5point_stewenius.EssentialMat_Stewenius_FillM(e1_stacked, e2_stacked, e3_stacked, e4_stacked, M)
 
     # MX=[M1|M2]X=0 => [I|B]X=0
     # B is the Grobner basis
@@ -655,18 +659,19 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
         if remove_duplicates:
             is_dup = False
             for e in ess_mat_list:
-                if np.allclose(e, ess_mat3, atol=1e-10): is_dup = True
+                if np.allclose(e, ess_mat3, atol=close_tol): is_dup = True
                 break
             if is_dup: continue
 
         # validate essential matrix
         if check_constr or debug >= 3:
             determ = LA.det(ess_mat3)
-            if not np.isclose(0, determ):
+            if not np.isclose(0, determ, atol=close_tol):
                 if check_constr:
                     # assert False
-                    print("isol:{} skipping E:\n{}".format(i_sol, ess_mat3))
-                    print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation)))
+                    if debug >= 3:
+                        print("isol:{} skipping E:\n{}".format(i_sol, ess_mat3))
+                        print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation)))
                 else:
                     if debug >= 3: print("Failed det(E)==0, det={}".format(determ))
 
@@ -675,8 +680,9 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
             if not np.isclose(0, zero_mat_norm):
                 if check_constr:
                     #assert False
-                    print("isol:{} skipping E:\n{}".format(i_sol, ess_mat3))
-                    print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation)))
+                    if debug >= 3:
+                        print("isol:{} skipping E:\n{}".format(i_sol, ess_mat3))
+                        print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation)))
                     #continue
                 else:
                     if debug >= 3: print("Failed 2E*Et*E-trace(E*Et)E==0 mat_norm={}".format(zero_mat_norm))
@@ -1034,13 +1040,13 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     match_2 = np.allclose(cands_per_ind_way1, cands_per_ind_bundle)
     match_3 = np.allclose(cands_per_ind_way1, cands_per_ind_wayNister)
     if not match_1 or not match_2 or not match_3:
-        print("can't match way3 cheirality")
+        if debug >= 3: print("can't match way3 cheirality")
 
     return True, sol_R, sol_Tvec
 
 # Do SLAM on calibrated coordinates (images of 3D points in meters).
 # MASKS Algo 8.1, Factorization algorithm for multiple-view reconstruction, page 281
-def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
+def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, max_iter=20, debug = 3):
     frames_num = len(xs_per_image_meter)
     assert frames_num >= 2, "Algo works on multiple image frames"
 
@@ -1052,7 +1058,7 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
     # suc, ess_mat = FindEssentialMat8Point(xs1_meter, xs2_meter, unity_translation=True, plinear_sys_err=perror)
     # assert suc
 
-    suc, ess_mat_list = FindEssentialMat5PointStewenius(xs1_meter, xs2_meter, True, True, debug, None)
+    suc, ess_mat_list = FindEssentialMat5PointStewenius(xs1_meter, xs2_meter, proj_ess_space=True, check_constr=True, debug=debug)
     assert suc, "Essential matrix on consensus set must be calculated"
 
     # choose essential matrix with minimal sampson error
@@ -1061,7 +1067,7 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
     ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
     ess_mat = ess_mat_best_item[0]
 
-    print("essMat=\n{}".format(ess_mat))
+    if debug >= 3: print("essMat=\n{}".format(ess_mat))
 
     refine_ess = False # refinement is not implemented
     if refine_ess:
@@ -1073,7 +1079,7 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
 
     #
     # TODO: what if R,T can't be extracted from ess_mat
-    suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, xs1_meter, xs2_meter)
+    suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, xs1_meter, xs2_meter, debug=debug)
     if not suc:
         return False, None, None, None
     ess_T = skewSymmeticMat(ess_Tvec)
@@ -1095,7 +1101,7 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
         alphas[pnt_ind] = alpha
         dist = 1/alpha
         assert dist > 0, "distances are positive"
-    print("Dist: {0}".format(1 / alphas))
+    if debug >= 3: print("Dist: {0}".format(1 / alphas))
 
     # the first view frame is the world frame
     # frame's [Ri,Ti], Ri is the world axes as viewed from i-s frame
@@ -1105,7 +1111,8 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
     frames_R = np.zeros((frames_num,3,3), dtype=np.float32)
     frames_T = np.zeros((frames_num,3), dtype=np.float32)
     world_pnts =  np.zeros((points_num,3), dtype=np.float32)
-    while iter<1000:
+    reproj_err_history = []
+    while iter < max_iter:
         if debug >= 3: print("iter={0}".format(iter))
 
         # estimage camera position [R,T] given distances to all 3D points pj in frame1
@@ -1191,13 +1198,20 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, debug = 3):
                 if debug >= 3: print("xexpect={0} xact={1} err={2} meters".format(x_expect, xact_camiN, err))
                 reproj_err += err
 
-        if debug: print("Xs3D:\n{0}".format(world_pnts))
-        if debug: print("reproj_err={0} meters".format(reproj_err))
+        if debug >= 3: print("Xs3D:\n{0}".format(world_pnts))
+        if debug >= 3: print("reproj_err={0} meters".format(reproj_err))
+
+        reproj_err_history.append(reproj_err)
 
         if reproj_err < min_reproj_err:
             break
         iter += 1
-    print("Search succeeded in {0} iterations, reproj_err: {1}".format(iter, reproj_err))
+    if debug >= 3: print("Search succeeded in {0} iterations, reproj_err: {1}".format(iter, reproj_err))
+    if debug >= 3: print("reproj_err_history={0}".format(reproj_err_history))
+
+    if iter < max_iter:
+        return False, frames_R, frames_T, world_pnts # is not converged
+
     return True, frames_R, frames_T, world_pnts
 
 def convertPointPixelToMeter(x_pix, world_from_camera_mat):
@@ -1387,6 +1401,7 @@ def FuseInteractive(win_name, img1_adorn, img2_adorn, transit = 0, print_transit
             transit = transit_new
             update_image = True
             if print_transit: print('transit={0}'.format(transit))
+    cv2.destroyWindow(win_name)
 
 def ShowMatches(win_name, image1, image2, points, next_pts):
     color_from = [255,0,0]
@@ -2223,7 +2238,7 @@ def IsSpecialOrthogonal(rot_mat, p_msg = None):
 def rotMat(n, ang, check_log_SO3 = True):
     if np.isclose(0, ang):
         return np.eye(3,3)
-    assert np.isclose(1, LA.norm(n)), "direction must be a unity vector"
+    assert np.isclose(1, LA.norm(n), atol=1e-3), "direction must be a unity vector"
     s = math.sin(ang)
     c = math.cos(ang)
     skew1 = skewSymmeticMat(n)
@@ -2288,10 +2303,15 @@ def logSO3(rot_mat, check_rot_mat = True):
     n[2] = rot_mat[1,0]-rot_mat[0,1]
 
     n = (0.5 / sin_ang) * n
+    # direction vector is already close to unity, but due to rounding errors it diverges
+    # TODO: check where the rounding error appears
+    n_len = LA.norm(n)
+    n = n / n_len
 
     if check_rot_mat:
         rot_mat_new = rotMat(n, ang, check_log_SO3=False)
-        assert np.allclose(rot_mat, rot_mat_new), "initial rotation matrix doesn't persist the conversion"
+        # atol=1e-4 to ignore 1.950215e-5 error
+        assert np.allclose(rot_mat, rot_mat_new, atol=1e-4), "initial rotation matrix doesn't persist the conversion"
     return n, ang
 
 
@@ -3123,60 +3143,98 @@ class PointLife:
 
 class PointsWorld:
     def __init__(self):
-        self.frame_ind = None
+        self.frame_ind = -1
         self.last_known_pos_frame_ind = 0 # the latest frame with determined [R,T]
         self.num_tracked_points_per_frame = []
         self.points_life = [] # coordinates of 2D points in images
         self.visual_host = None
         self.ground_truth_relative_motion = None
 
-    def PutInitialPoints2D(self, points):
-        self.frame_ind = 0
-
+    def __AllocateNewPoints(self, points):
         pnt_ids = []
 
-        self.points_life = [PointLife() for _ in range(0, len(points))]
+        frames_count = self.frame_ind + 1
         for i, x1 in enumerate(points):
-            pnt_life = self.points_life[i]
-            pnt_life.point_id = i
-            pnt_life.points_list = [x1]
-            pnt_ids.append(i)
+            id = len(self.points_life)
 
-        self.num_tracked_points_per_frame.append(len(points))
+            pnt_life = PointLife()
+            pnt_life.point_id = id
+            pnt_life.points_list = [None] * frames_count
 
-        # assiciate the world frame with the first camera frame
-        with self.visual_host.cameras_lock:
-            self.visual_host.world_to_cam_R = [np.eye(3, 3)]  # world
-            self.visual_host.world_to_cam_T = [np.zeros(3)]  # world
-
-        with self.visual_host.continue_computation_lock:
-            self.visual_host.world_map_changed_flag = True
-
+            self.points_life.append(pnt_life)
+            pnt_ids.append(id)
         return pnt_ids
 
-    def PutPoints2D(self, pnt_ids, xs2_meter_with_gaps, on_pnt_corresp = None, debug = 1):
+    def __SetPoints2DCoords(self, targ_frame_ind, pnt_ids, xs2_meter_with_gaps):
+        tracked_pnts_count = 0
+        lost_pnts_count = 0
+        for i, id in enumerate(pnt_ids):
+            pnt2 = xs2_meter_with_gaps[i]
+            pnt_life = self.points_life[id]
+            if pnt2 is None:
+                lost_pnts_count += 1
+            else:
+                pnt_life.points_list[targ_frame_ind] = pnt2
+                tracked_pnts_count += 1
+        return lost_pnts_count, tracked_pnts_count
+
+    def StartNewFrame(self):
         self.frame_ind += 1
 
         # reserve space
         for pnt_life in self.points_life:
             pnt_life.points_list.append(None)
 
-        tracked_pnts_count = 0
-        for i, id in enumerate(pnt_ids):
-            pnt2 = xs2_meter_with_gaps[i]
-            pnt_life = self.points_life[id]
-            if not pnt2 is None:
-                pnt_life.points_list[self.frame_ind] = pnt2
-                tracked_pnts_count += 1
+    def PutNewPoints2D(self, points2D):
+        pnt_ids = self.__AllocateNewPoints(points2D)
+        lost,tracked = self.__SetPoints2DCoords(self.frame_ind, pnt_ids, points2D)
+        assert lost == 0, "there can't be lost points amont new points"
 
-        self.num_tracked_points_per_frame.append(tracked_pnts_count)
+        return pnt_ids
 
-        num_pnts_prev = self.num_tracked_points_per_frame[self.frame_ind - 1]
-        if debug >= 3 or True: print("img={} number of Lucas-Kanade matched points {}->{}".format(self.frame_ind, num_pnts_prev, tracked_pnts_count))
-
-        self.TryFindLastFrameRelativeMotion(on_pnt_corresp, debug)
-
+    def PutMatchedPoints2D(self, pnt_ids, xs2_meter_with_gaps):
+        old_lost, old_tracked  = self.__SetPoints2DCoords(self.frame_ind, pnt_ids, xs2_meter_with_gaps)
         return None
+
+    # calculate statistics of points change
+    def __CalcMapPointsStat(self):
+        matched_pnts_count = 0
+        new_pnts_count = 0
+        lost_pnts_count = 0
+        for pnt_life in self.points_life:
+            x = pnt_life.points_list[self.frame_ind]
+            x_prev = None
+            if self.frame_ind > 0:
+                x_prev = pnt_life.points_list[self.frame_ind - 1]
+            if not x is None:
+                if x_prev is None:
+                    new_pnts_count += 1
+                else:
+                    matched_pnts_count += 1
+            else:
+                if not x_prev is None:
+                    lost_pnts_count += 1
+        return matched_pnts_count, new_pnts_count, lost_pnts_count
+
+    def Process(self, on_pnt_corresp = None, debug = 1):
+        matched_pnts_count, new_pnts_count, lost_pnts_count = self.__CalcMapPointsStat()
+        self.num_tracked_points_per_frame.append(matched_pnts_count)
+
+        if debug >= 3 or True:
+            print("img={} change of points, matched:{} lost:{} new:{}".format(self.frame_ind, matched_pnts_count, lost_pnts_count, new_pnts_count))
+
+        if self.frame_ind == 0:
+            # assiciate the world frame with the first camera frame
+            with self.visual_host.cameras_lock:
+                self.visual_host.world_to_cam_R = [np.eye(3, 3)]  # world
+                self.visual_host.world_to_cam_T = [np.zeros(3)]  # world
+
+            with self.visual_host.continue_computation_lock:
+                self.visual_host.world_map_changed_flag = True
+
+        if self.frame_ind > 0:
+            self.TryFindLastFrameRelativeMotion(on_pnt_corresp, debug)
+
 
     # Tries to find the relative motion between the last frame with determined camera position and the latest frame.
     def TryFindLastFrameRelativeMotion(self, on_pnt_corresp, debug):
@@ -3201,7 +3259,7 @@ class PointsWorld:
         num_matched_pnts = len(matched_pnt_ids)
         assert num_matched_pnts >= 5, "required for 5point relative motion algorithm"
 
-        if debug >= 3 or True: print("finding relative motion between img:{}-{} using {} points".format(self.last_known_pos_frame_ind, self.frame_ind, num_matched_pnts))
+        if debug >= 3: print("finding relative motion between img:{}-{} using {} points".format(self.last_known_pos_frame_ind, self.frame_ind, num_matched_pnts))
 
         sampson_dist_calculator = SampsonDistanceCalc()
 
@@ -3271,7 +3329,7 @@ class PointsWorld:
 
         world_R = None
         world_T = None
-        suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, True, True, check_constr=True, debug=debug, expected_ess_mat=expected_ess_mat)
+        suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, proj_ess_space=True, check_constr=True, debug=debug, expected_ess_mat=expected_ess_mat)
         #assert suc, "Essential matrix on consensus set must be calculated"
         if not suc:
             print("Failed xs->E")
@@ -3289,7 +3347,7 @@ class PointsWorld:
         if refine_ess:
             suc, ess_mat_refined = RefineFundMat(ess_mat, cons_xs1_meter, cons_xs2_meter, debug=debug)
             if not suc:
-                print("img_ind={} can't refine ess mat".format(self.frame_ind))
+                if debug >= 3: print("img_ind={} can't refine ess mat".format(self.frame_ind))
             else:
                 if debug >= 3: print("refined_ess_mat=\n{0}".format(ess_mat_refined))
 
@@ -3302,11 +3360,12 @@ class PointsWorld:
         if not ess_mat is None:
             suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
             if not suc:
-                print("Failed E->R,T")
+                if debug >= 3: print("Failed E->R,T")
+                #on_pnt_corresp("cons", cons_ids)
             else:
                 ess_T = skewSymmeticMat(ess_Tvec)
                 ess_wvec, ess_wang = logSO3(ess_R)
-                print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+                if debug >= 3: print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
 
         with self.visual_host.cameras_lock:
             # map to the world frame
@@ -3324,18 +3383,64 @@ class PointsWorld:
 
             self.visual_host.world_to_cam_R.append(world_R)
             self.visual_host.world_to_cam_T.append(world_T)
+            pass
+
+        # on failure to find [R,T] the head_ind doesn't change
+        if not world_R is None:
+            suc, frames_R, frames_T, world_pnts = self.EstimateMap(debug=debug)
+            if suc:
+                with self.visual_host.cameras_lock:
+                    self.visual_host.world_to_cam_R_alt = frames_R
+                    self.visual_host.world_to_cam_T_alt = frames_T
+                    self.visual_host.xs3d = world_pnts
+                    pass
+
+            self.last_known_pos_frame_ind = self.frame_ind
 
         with self.visual_host.continue_computation_lock:
             self.visual_host.world_map_changed_flag = True
             self.visual_host.processed_images_counter += 1
 
-        # on failure to find [R,T] the head_ind doesn't change
-        if not world_R is None:
-            #self.visual_host.EstimateMap(self.points_life, self.visual_host.cameras_lock, debug)
-            self.last_known_pos_frame_ind = self.frame_ind
-
         return None
 
+    def IsLive3DPoint(self, pnt_id, from_frame_ind, to_frame_ind):
+        """Whether the point has registered 2D point in each frame"""
+        pnt_life = self.points_life[pnt_id]
+        for fid in range(from_frame_ind, to_frame_ind):
+            x = pnt_life.points_list[fid]
+            if x is None: return False
+        return True
+
+    # Tries to compute world's 3D structure.
+    #def EstimateMap(self, cam_mat, points_life : typing.List[PointLife], cameras_lock, debug):
+    def EstimateMap(self, debug=0):
+        frames_count = self.frame_ind + 1
+
+        live_points = 0
+        points_count = len(self.points_life)
+        is_live_list = [False] * points_count
+        for pnt_ind in range(0, points_count):
+            is_live = self.IsLive3DPoint(pnt_ind, 0, frames_count)
+            is_live_list[pnt_ind] = is_live
+            if is_live: live_points += 1
+
+        # points_life has list of 2D point for each 3D point
+        # construct list of 2D point for each image
+        xs_per_image_meter = []
+        for frame_ind in range(0, frames_count):
+            # gather point coords
+            xs_per_frame = []
+            for pnt_ind, pnt_life in enumerate(self.points_life):
+                if is_live_list[pnt_ind]:
+                    x2D = pnt_life.points_list[frame_ind]
+                    assert not x2D is None
+                    xs_per_frame.append(x2D)
+            assert live_points == len(xs_per_frame), "Point ind:{0} has not a full life".format(pnt_ind)
+
+            xs_per_image_meter.append(xs_per_frame)
+
+        res = calcCameras(xs_per_image_meter, debug=debug)
+        return res
 
 # Tries to choose unique homography decomposition from two possible ones (for each frame).
 # source: "Advances in Unmanned Aerial Vehicles", Kimon P. Valavanis, Springer, 2007, page 285
@@ -4384,7 +4489,7 @@ class ReconstructDemo:
             pass # two H decompositions
         pass # lock
 
-    def setup(self, width, height):
+    def setup(self, width, height, debug=0):
         glutInit()
 
         """ Setup window and pygame environment. """
@@ -4428,7 +4533,7 @@ class ReconstructDemo:
             cent = np.average(self.xs3d, axis=0)
         else:
             cent = np.array([0,0,0])
-        print("model average={0}".format(cent))
+        if debug >= 3: print("model average={0}".format(cent))
         self.eye = np.array([0, 0, -2], dtype=np.float32)
         self.center = cent
         self.up = np.array([0, -1, 0], dtype=np.float32)
@@ -4593,7 +4698,8 @@ class ReconstructDemo:
         return moved
 
     # Dummy generation thread
-    def WorkerGenerateDummyCameraPositions(self, sleep_time_sec, continue_lock, cameras_lock):
+    def WorkerGenerateDummyCameraPositions(self, sleep_time_sec, continue_lock, cameras_lock, main_args):
+        debug = main_args.debug
         yaw = 0
         stroke = 0
         for it in range(0,10000):
@@ -4601,7 +4707,7 @@ class ReconstructDemo:
             with continue_lock:
                 cont = self.do_computation_flag
             if not cont:
-                print("got computation cancel request")
+                if debug >= 3: print("got computation cancel request")
                 break
 
             time.sleep(sleep_time_sec)
@@ -4629,34 +4735,6 @@ class ReconstructDemo:
             yaw += math.radians(10)
             stroke += 0.01
 
-
-    # Tries to compute world's 3D structure.
-    #def EstimateMap(self, cam_mat, points_life : typing.List[PointLife], cameras_lock, debug):
-    def EstimateMap(self, points_life, cameras_lock, debug):
-        life_len = len(points_life[0].points_list)
-        live_points = np.count_nonzero([p.all_in_consensus for p in points_life]) # point with entire life available
-
-        # points_life has list of 2D point for each points
-        # construct list of 2D point for each image
-        xs_per_image_meter = []
-        for frame_ind in range(0, life_len):
-            # gather point coords
-            xs_per_frame = []
-            for pnt_life_ind, pnt_life in enumerate(points_life):
-                if pnt_life.all_in_consensus:
-                    p = pnt_life.points_list[frame_ind]
-                    xs_per_frame.append(p)
-            assert live_points == len(xs_per_frame), "Point ind:{0} has not a full life".format(pnt_life_ind)
-
-            xs_per_image_meter.append(xs_per_frame)
-
-        suc, frames_R, frames_T, world_pnts = calcCameras(xs_per_image_meter, debug=debug)
-        if suc:
-            with cameras_lock:
-                self.world_to_cam_R = frames_R
-                self.world_to_cam_T = frames_T
-                self.xs3d = world_pnts
-
     def WorkerRunCornerMatcherAndFindCameraPos(self, continue_lock, cameras_lock, main_args):
         debug = main_args.debug
         cam_mat = np.array([
@@ -4666,7 +4744,8 @@ class ReconstructDemo:
         suc, Km1 = cv2.invert(cam_mat)
         assert suc
 
-        kpd = cv2.xfeatures2d.SIFT_create(nfeatures=50)  # OpenCV-contrib-3
+        min_num_3Dpoints = 50
+        kpd = cv2.xfeatures2d.SIFT_create(nfeatures=min_num_3Dpoints)  # OpenCV-contrib-3
 
         #img_dir_path = "/home/mmore/Pictures/roshensweets_201704101700/is"
         img_dir_path = "/home/mmore/Pictures/blue_tapis4_640x480_n45deg/is_always_shift"
@@ -4678,7 +4757,7 @@ class ReconstructDemo:
         track_sys = PointsWorld()
         track_sys.visual_host = self
 
-        class PntInfo:
+        class MapPntInfo:
             def __init__(self):
                 self.point_id = None
                 self.x1_pixel = None
@@ -4689,12 +4768,23 @@ class ReconstructDemo:
         image1 = None
         img1_gray = None
         pnt_pixel_info = {} # point id -> PntInfo
+
+        # checks if there is an existent feature point close to the point in question
+        def IsCloseToExistingFeatures(x_pixel, radius):
+            for pnt_info in pnt_pixel_info.values():
+                pix = pnt_info.x1_pixel
+                if pix is None: continue
+                len = LA.norm(pix - x_pixel)
+
+                if len < radius: return True
+            return False
+
         for img_ind in range(0, len(img_abs_pathes)):
             # check if cancel is requested
             with continue_lock:
                 cont = self.do_computation_flag
             if not cont:
-                print("got computation cancel request")
+                if debug >= 3: print("got computation cancel request")
                 break
 
             print("img_ind={0}".format(img_ind))
@@ -4710,59 +4800,129 @@ class ReconstructDemo:
                 cons_xs2_pixels = []
                 for id in pnt_ids:
                     pnt_info = pnt_pixel_info[id]
-                    assert not pnt_info.x1_pixel is None
-                    assert not pnt_info.x2_pixel is None
-                    cons_xs1_pixels.append(pnt_info.x1_pixel)
-                    cons_xs2_pixels.append(pnt_info.x2_pixel)
+                    x1 = pnt_info.x1_pixel
+                    x2 = pnt_info.x2_pixel
+                    assert not x1 is None
+                    assert not x2 is None
+                    cons_xs1_pixels.append(x1)
+                    cons_xs2_pixels.append(x2)
                 ShowMatches(title, image1, image2, cons_xs1_pixels, cons_xs2_pixels)
+
+            track_sys.StartNewFrame()
 
             if len(pnt_pixel_info) == 0:
                 kp1 = kpd.detect(img2_gray, None)
-                xs2_pixel = np.array([kp.pt for kp in kp1], np.float32)
+                # OpenCV cv2.xfeatures2d.SIFT_create.detect may return duplicates, - remove them
+                xs2_pixel = np.array(sorted(set([kp.pt for kp in kp1])), np.float32)
 
                 # convert pixel to image coordinates (pixel -> meters)
                 xs2_meter = []
                 convertPixelToMeterPoints(cam_mat, [xs2_pixel], xs2_meter)
                 xs2_meter = xs2_meter[0]
 
-                pnt_ids = track_sys.PutInitialPoints2D(xs2_meter) # initial points
+                pnt_ids = track_sys.PutNewPoints2D(xs2_meter) # initial points
                 for i,id in enumerate(pnt_ids):
-                    pnt_info = PntInfo()
+                    pnt_info = MapPntInfo()
                     pnt_info.point_id = id
                     pnt_info.x2_pixel = xs2_pixel[i]
-                    #pnt_info.x2_meter = xs2_meter[i]
                     pnt_pixel_info.__setitem__(id, pnt_info)
             else:
                 # try to find the corner in the next image
-                pnt_ids = []
+                # track old (existing) features
+                old_pnt_ids = []
                 xs1_pixel = []
                 for pnt_info in pnt_pixel_info.values():
                     if not pnt_info.x1_pixel is None:
                         xs1_pixel.append(pnt_info.x1_pixel)
-                        pnt_ids.append(pnt_info.point_id)
+                        old_pnt_ids.append(pnt_info.point_id)
 
-                xs1_pixel_array = np.array(xs1_pixel)
-                next_pts, status, err = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, xs1_pixel_array, None)
-                
-                assert len(xs1_pixel) == len(next_pts)
+                persist_feat_count_old = 0
+                if len(xs1_pixel) > 0:
+                    xs1_pixel_array = np.array(xs1_pixel, np.float32)
+                    lk_win_size = (21,21)
+                    next_pts_old, status_old, err_old = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, xs1_pixel_array, None, winSize=lk_win_size)
+                    FixOpenCVCalcOpticalFlowPyrLK(xs1_pixel, next_pts_old, status_old, lk_win_size)
 
-                status = status.ravel()
+                    persist_feat_count_old = sum([1 for s in status_old if s > 0])
 
-                # convert pixel to image coordinates (pixel -> meters)
-                xs2_meter_with_gaps = []
-                for i in range(0, len(xs1_pixel)):
-                    pnt_meter = None
-                    if status[i]:
-                        pnt_pixel = next_pts[i]
-                        pnt_meter = convertPointPixelToMeter(pnt_pixel, Km1)
+                    # convert pixel to image coordinates (pixel -> meters)
+                    xs2_meter_with_gaps = []
+                    for i in range(0, len(status_old)):
+                        x2_meter = None
+                        if status_old[i]:
+                            x2_pixel = next_pts_old[i]
+                            x2_meter = convertPointPixelToMeter(x2_pixel, Km1)
+                        xs2_meter_with_gaps.append(x2_meter)
 
-                        pnt_info = pnt_pixel_info[pnt_ids[i]]
-                        pnt_info.x2_pixel = pnt_pixel
-                        #pnt_info.x2_meter = pnt_meter
+                    # store pixel values
+                    for i in range(0, len(status_old)):
+                        if status_old[i]:
+                            x2_pixel = next_pts_old[i]
 
-                    xs2_meter_with_gaps.append(pnt_meter)
+                            pnt_id = old_pnt_ids[i]
+                            pnt_info = pnt_pixel_info[pnt_id]
+                            pnt_info.x2_pixel = x2_pixel
+                    if debug >= 4:
+                        xs1_pixel_tmp = [x for s, x in zip(status_old, xs1_pixel) if s > 0]
+                        xs2_pixel_tmp = [x for s, x in zip(status_old, next_pts_old) if s > 0]
+                        ShowMatches("matches", image1, image2, xs1_pixel_tmp, xs2_pixel_tmp)
 
-                track_sys.PutPoints2D(pnt_ids, xs2_meter_with_gaps, on_pnt_corresp=ShowPntCorresp, debug=debug)
+                    track_sys.PutMatchedPoints2D(old_pnt_ids, xs2_meter_with_gaps)
+
+                # check if new features are required
+                next_pts_new = []
+                status_new = []
+                err_new = []
+                xs2_new_pixel_no_gaps = []
+                xs2_new_meter_no_gaps = []
+                if persist_feat_count_old < min_num_3Dpoints:
+                    # try to find more features in the previous frame, which persist in current frame
+                    kp1 = kpd.detect(img1_gray, None)
+                    xs1_new_pixel = []
+                    for x2 in sorted(set([kp.pt for kp in kp1])):
+                        x2 = np.array(x2, np.float32)
+                        dist_to_existing_feat = 5
+                        if IsCloseToExistingFeatures(x2, dist_to_existing_feat):
+                            continue
+                        xs1_new_pixel.append(x2)
+
+                    if len(xs1_new_pixel) > 0:
+                        xs1_new_pixel_array = np.array(xs1_new_pixel, np.float32)
+                        next_pts_new, status_new, err_new = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, xs1_new_pixel_array, None, winSize=lk_win_size)
+                        FixOpenCVCalcOpticalFlowPyrLK(xs1_new_pixel, next_pts_new, status_new, lk_win_size)
+
+                        if debug >= 4:
+                            xs1_pixel_tmp = [x for s,x in zip(status_new, xs1_new_pixel) if s > 0]
+                            xs2_pixel_tmp = [x for s,x in zip(status_new, next_pts_new) if s > 0]
+                            ShowMatches("matches", image1, image2, xs1_pixel_tmp, xs2_pixel_tmp)
+
+                        # convert pixel to image coordinates (pixel -> meters)
+                        xs1_new_meter_no_gaps = []
+                        xs1_new_pixel_no_gaps = []
+                        for i in range(0, len(status_new)):
+                            if status_new[i]:
+                                x1_pixel = xs1_new_pixel[i]
+                                xs1_new_pixel_no_gaps.append(x1_pixel)
+
+                                x1_meter = convertPointPixelToMeter(x1_pixel, Km1)
+                                xs1_new_meter_no_gaps.append(x1_meter)
+
+                                x2_pixel = next_pts_new[i]
+                                xs2_new_pixel_no_gaps.append(x2_pixel)
+
+                                x2_meter = convertPointPixelToMeter(x2_pixel, Km1)
+                                xs2_new_meter_no_gaps.append(x2_meter)
+
+                        new_pnt_ids = track_sys.PutNewPoints2D(xs1_new_meter_no_gaps)  # initial points
+                        for i, id in enumerate(new_pnt_ids):
+                            pnt_info = MapPntInfo()
+                            pnt_info.point_id = id
+                            pnt_info.x2_pixel = xs1_new_pixel_no_gaps[i]
+                            pnt_pixel_info.__setitem__(id, pnt_info)
+
+                        track_sys.PutMatchedPoints2D(new_pnt_ids, xs2_new_meter_no_gaps)
+            #
+            track_sys.Process(on_pnt_corresp=ShowPntCorresp, debug=debug)
 
             # update cursor
             img1_gray = img2_gray
@@ -4813,14 +4973,15 @@ class ReconstructDemo:
         T2 = None
         img_ind = 0
         cell_width = None
-        targ_ang_deg_list = np.arange(-10, 360+180, 0.01)
+        targ_ang_deg_list = np.arange(30, 360+180, 1)
+        #targ_ang_deg_list = np.arange(-10, 360+180, 0.01)
         #targ_ang_deg_list = np.arange(303, 360+180, 1)
         for targ_ang_deg in targ_ang_deg_list:
             # check if cancel is requested
             with continue_lock:
                 cont = self.do_computation_flag
             if not cont:
-                print("got computation cancel request")
+                if debug >= 3: print("got computation cancel request")
                 break
 
             if debug >= 3: print("img_ind={0}".format(img_ind))
@@ -4836,7 +4997,7 @@ class ReconstructDemo:
 
             xs3D_cam3 = np.dot(R3, xs3D.T).T + T3
 
-            corrupt_with_noise = True
+            corrupt_with_noise = False
             if corrupt_with_noise:
                 np.random.seed(124)
                 if cell_width is None:
@@ -4870,10 +5031,12 @@ class ReconstructDemo:
                 c1 = LA.norm(2 * ess_mat.dot(ess_mat.T).dot(ess_mat) - np.trace(ess_mat.dot(ess_mat.T)) * ess_mat)
                 print("2E*Et*E-trace(E*Et)E==0, actually {}".format(c1))
 
+            track_sys.StartNewFrame()
             if R2 is None:
-                pnt_ids = track_sys.PutInitialPoints2D(xs_img3) # initial points
+                pnt_ids = track_sys.PutNewPoints2D(xs_img3) # initial points
             else:
-                track_sys.PutPoints2D(pnt_ids, xs_img3, debug=debug)
+                track_sys.PutMatchedPoints2D(pnt_ids, xs_img3)
+            track_sys.Process(debug=debug)
 
             R2 = R3
             T2 = T3
@@ -5149,15 +5312,16 @@ class ReconstructDemo:
         return cam_poses_R, cam_poses_T
 
     def mainRun(self, main_args):
+        debug = main_args.debug
         #self.run()
 
         width, height = 1024, 768
-        self.setup(width, height)
+        self.setup(width, height, debug=debug)
 
         job_id = main_args.job or 1
         if job_id == 1:
             compute_thread = threading.Thread(name="comput", target=self.WorkerGenerateDummyCameraPositions,\
-                args=(0.033, self.continue_computation_lock, self.cameras_lock))
+                args=(0.033, self.continue_computation_lock, self.cameras_lock, main_args))
         elif job_id == 20:
             compute_thread = threading.Thread(name="comput", target=self.WorkerWalkThroughVirtualWorld,\
                 args=(self.continue_computation_lock, self.cameras_lock, main_args))
@@ -5176,6 +5340,7 @@ class ReconstructDemo:
         while True:
             if pygame.event.peek():
                 event = pygame.event.poll()
+                #pygame.event.clear()  # clear all other events; try if got transparent window which is not redrawen
                 if event.type == pygame.QUIT:
                     break
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
@@ -5199,7 +5364,6 @@ class ReconstructDemo:
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
                 # self.drawBackground(width,height,None)
                 self.drawData(width, height)
-                pygame.display.flip()
 
                 # images per sec
                 if t2 - t1 > 0.5: # display images per sec every X seconds
@@ -5210,6 +5374,7 @@ class ReconstructDemo:
                     processed_images_counter_prev = processed_images_counter
                     t1 = t2
 
+                pygame.display.flip() # flip after ALL updates have been made
                 require_redraw = False
             pass # require redraw
 
@@ -5223,7 +5388,7 @@ class ReconstructDemo:
             self.do_computation_flag = False
 
         compute_thread.join()
-        print("exiting mainRun")
+        if debug >= 3: print("exiting mainRun")
 
 
 def testCorrespondencePoly6():
@@ -5882,8 +6047,8 @@ def EssentialMatSvd(ess_mat, u=None, vt=None, check_ess_mat=True, check_post_con
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int)
-    parser.add_argument("--job", help="specify worker thread to run", type=int)
+    parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int, default=2)
+    parser.add_argument("--job", help="specify worker thread to run", type=int, default=2)
     args = parser.parse_args()
 
     #TestSampsonDistance()
