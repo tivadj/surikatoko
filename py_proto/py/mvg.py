@@ -1,5 +1,3 @@
-# TODO: affine reconstruction; implicit method doesn't work (doesn't produce any reconstruction)
-# TODO: metric reconstruction; get skewed models (lost orthogonality)
 # MVGCV=Multiple View Geometry In Computer Vision, Hartley, 2003
 # MASKS=An Invitation to 3-D visioning From Images to Geometric Volumes, Yi Ma, 2004
 import math
@@ -3139,7 +3137,8 @@ def GenerateTwoOrthoChess(debug=0):
 class PointLife:
     def __init__(self):
         self.point_id = None
-        self.points_list = []
+        self.points_list_meter = []
+        self.points_list_pixel = []
 
 class PointsWorld:
     def __init__(self):
@@ -3150,31 +3149,200 @@ class PointsWorld:
         self.visual_host = None
         self.ground_truth_relative_motion = None
 
-    def __AllocateNewPoints(self, points):
+        self.img1_bgr = None
+        self.img1_gray = None
+
+        self.min_num_3Dpoints = 50
+        self.kpd = cv2.xfeatures2d.SIFT_create(nfeatures=self.min_num_3Dpoints)  # OpenCV-contrib-3
+        self.cam_mat = None
+        self.Km1 = None # inverse of cam_mat
+
+    def SetCamMat(self, cam_mat):
+        self.cam_mat = cam_mat
+        suc, Km1 = cv2.invert(cam_mat)
+        assert suc
+        self.Km1 = Km1
+
+    def PrintStat(self):
+        print("allocated map points: {}".format(len(self.points_life)))
+
+    # checks if there is an existent feature point close to the point in question
+    def IsCloseToExistingFeatures(self, x_pixel, radius, targ_frame_ind):
+        for pnt_life in self.points_life:
+            pix = pnt_life.points_list_pixel[targ_frame_ind]
+            if pix is None: continue
+            len = LA.norm(pix - x_pixel)
+
+            if len < radius: return True
+        return False
+
+    def ProcessNextImage(self, image_bgr, debug = 0):
+        track_sys = self
+        img2_bgr = image_bgr
+        img2_gray = cv2.cvtColor(img2_bgr, cv2.COLOR_BGR2GRAY)
+
+        def ShowPntCorresp(title, pnt_ids):
+            cons_xs1_pixels = []
+            cons_xs2_pixels = []
+            for id in pnt_ids:
+                pnt_life = self.points_life[id]
+                x1 = pnt_life.points_list_pixel[self.frame_ind-1]
+                x2 = pnt_life.points_list_pixel[self.frame_ind]
+                assert not x1 is None
+                assert not x2 is None
+                cons_xs1_pixels.append(x1)
+                cons_xs2_pixels.append(x2)
+            ShowMatches(title, self.img1_bgr, img2_bgr, cons_xs1_pixels, cons_xs2_pixels)
+
+        track_sys.StartNewFrame()
+
+        if self.frame_ind == 0:
+            kp1 = self.kpd.detect(img2_gray, None)
+            # OpenCV cv2.xfeatures2d.SIFT_create.detect may return duplicates, - remove them
+            xs2_pixel = np.array(sorted(set([kp.pt for kp in kp1])), np.float32)
+
+            # convert pixel to image coordinates (pixel -> meters)
+            xs2_meter = []
+            convertPixelToMeterPoints(self.cam_mat, [xs2_pixel], xs2_meter)
+            xs2_meter = xs2_meter[0]
+
+            pnt_ids = track_sys.PutNewPoints2D(xs2_meter, xs2_pixel, self.frame_ind)  # initial points
+        else:
+            # 1. Match OLD features
+            # try to find the corner in the next image
+            # track old (existing) features
+            old_pnt_ids = []
+            xs1_pixel = []
+            for pnt_life in self.points_life:
+                x1_pixel = pnt_life.points_list_pixel[self.frame_ind-1]
+                if not x1_pixel is None:
+                    xs1_pixel.append(x1_pixel)
+                    old_pnt_ids.append(pnt_life.point_id)
+
+            lk_win_size = (21, 21)
+            persist_feat_count_old = 0
+            if len(xs1_pixel) > 0:
+                xs1_pixel_array = np.array(xs1_pixel, np.float32)
+                next_pts_old, status_old, err_old = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray, xs1_pixel_array, None, winSize=lk_win_size)
+                FixOpenCVCalcOpticalFlowPyrLK(xs1_pixel, next_pts_old, status_old, lk_win_size)
+
+                persist_feat_count_old = sum([1 for s in status_old if s > 0])
+
+                # convert pixel to image coordinates (pixel -> meters)
+                xs2_meter_with_gaps = []
+                xs2_pixel_with_gaps = []
+                for i in range(0, len(status_old)):
+                    x2_pixel = None
+                    x2_meter = None
+                    if status_old[i]:
+                        x2_pixel = next_pts_old[i]
+                        x2_meter = convertPointPixelToMeter(x2_pixel, self.Km1)
+                    xs2_pixel_with_gaps.append(x2_pixel)
+                    xs2_meter_with_gaps.append(x2_meter)
+
+                if debug >= 4:
+                    xs1_pixel_tmp = [x for s, x in zip(status_old, xs1_pixel) if s > 0]
+                    xs2_pixel_tmp = [x for s, x in zip(status_old, next_pts_old) if s > 0]
+                    ShowMatches("matches", self.img1_bgr, img2_bgr, xs1_pixel_tmp, xs2_pixel_tmp)
+
+                track_sys.PutMatchedPoints2D(old_pnt_ids, xs2_meter_with_gaps, xs2_pixel_with_gaps)
+
+            # 2. Match NEW features
+            # check if new features are required
+            next_pts_new = []
+            status_new = []
+            err_new = []
+            xs2_new_pixel_no_gaps = []
+            xs2_new_meter_no_gaps = []
+            if persist_feat_count_old < self.min_num_3Dpoints:
+                # try to find more features in the previous frame, which persist in current frame
+                kp1 = self.kpd.detect(self.img1_gray, None)
+                xs1_new_pixel = []
+                for x2 in sorted(set([kp.pt for kp in kp1])):
+                    x2 = np.array(x2, np.float32)
+                    dist_to_existing_feat = 5
+                    if self.IsCloseToExistingFeatures(x2, dist_to_existing_feat, self.frame_ind):
+                        continue
+                    xs1_new_pixel.append(x2)
+
+                if len(xs1_new_pixel) > 0:
+                    xs1_new_pixel_array = np.array(xs1_new_pixel, np.float32)
+                    next_pts_new, status_new, err_new = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray,xs1_new_pixel_array, None,winSize=lk_win_size)
+                    FixOpenCVCalcOpticalFlowPyrLK(xs1_new_pixel, next_pts_new, status_new, lk_win_size)
+
+                    if debug >= 4:
+                        xs1_pixel_tmp = [x for s, x in zip(status_new, xs1_new_pixel) if s > 0]
+                        xs2_pixel_tmp = [x for s, x in zip(status_new, next_pts_new) if s > 0]
+                        ShowMatches("matches", self.img1_bgr, img2_bgr, xs1_pixel_tmp, xs2_pixel_tmp)
+
+                    # convert pixel to image coordinates (pixel -> meters)
+                    xs1_new_meter_no_gaps = []
+                    xs1_new_pixel_no_gaps = []
+                    for i in range(0, len(status_new)):
+                        if status_new[i]:
+                            x1_pixel = xs1_new_pixel[i]
+                            xs1_new_pixel_no_gaps.append(x1_pixel)
+
+                            x1_meter = convertPointPixelToMeter(x1_pixel, self.Km1)
+                            xs1_new_meter_no_gaps.append(x1_meter)
+
+                            x2_pixel = next_pts_new[i]
+                            xs2_new_pixel_no_gaps.append(x2_pixel)
+
+                            x2_meter = convertPointPixelToMeter(x2_pixel, self.Km1)
+                            xs2_new_meter_no_gaps.append(x2_meter)
+
+                    new_pnt_ids = track_sys.PutNewPoints2D(xs1_new_meter_no_gaps, xs1_new_pixel_no_gaps, self.frame_ind-1)  # initial points
+                    track_sys.PutMatchedPoints2D(new_pnt_ids, xs2_new_meter_no_gaps, xs2_new_pixel_no_gaps)
+        draw_camera_trackview = True
+        if draw_camera_trackview:
+            self.DrawCameraTrackView(img2_bgr)
+            cv2.waitKey(1)
+
+        track_sys.Process(on_pnt_corresp=ShowPntCorresp, debug=debug)
+
+        # update cursor
+        self.img1_gray = img2_gray
+        self.img1_bgr = img2_bgr
+        return None
+
+    def __AllocateNewPoints(self, new_pnts_count):
         pnt_ids = []
 
         frames_count = self.frame_ind + 1
-        for i, x1 in enumerate(points):
+        for _ in range(0, new_pnts_count):
             id = len(self.points_life)
 
             pnt_life = PointLife()
             pnt_life.point_id = id
-            pnt_life.points_list = [None] * frames_count
+            pnt_life.points_list_meter = [None] * frames_count
+            pnt_life.points_list_pixel = [None] * frames_count
 
             self.points_life.append(pnt_life)
             pnt_ids.append(id)
         return pnt_ids
 
-    def __SetPoints2DCoords(self, targ_frame_ind, pnt_ids, xs2_meter_with_gaps):
+    def __SetPoints2DCoords(self, targ_frame_ind, pnt_ids, points2D_meter_with_gaps, points2D_pixel_with_gaps):
+        assert len(pnt_ids) == len(points2D_meter_with_gaps)
+
+        has_pixels = not points2D_pixel_with_gaps is None
+        if has_pixels:
+            assert len(pnt_ids) == len(points2D_pixel_with_gaps)
+
         tracked_pnts_count = 0
         lost_pnts_count = 0
         for i, id in enumerate(pnt_ids):
-            pnt2 = xs2_meter_with_gaps[i]
+            pnt2_meter = points2D_meter_with_gaps[i]
+            pnt2_pixel = points2D_pixel_with_gaps[i] if not points2D_pixel_with_gaps is None else None
+            if has_pixels:
+                assert pnt2_meter is None and pnt2_pixel is None or not pnt2_meter is None and not pnt2_pixel is None
+
             pnt_life = self.points_life[id]
-            if pnt2 is None:
+            if pnt2_meter is None:
                 lost_pnts_count += 1
             else:
-                pnt_life.points_list[targ_frame_ind] = pnt2
+                pnt_life.points_list_meter[targ_frame_ind] = pnt2_meter
+                pnt_life.points_list_pixel[targ_frame_ind] = pnt2_pixel
                 tracked_pnts_count += 1
         return lost_pnts_count, tracked_pnts_count
 
@@ -3183,17 +3351,22 @@ class PointsWorld:
 
         # reserve space
         for pnt_life in self.points_life:
-            pnt_life.points_list.append(None)
+            pnt_life.points_list_meter.append(None)
+            pnt_life.points_list_pixel.append(None)
 
-    def PutNewPoints2D(self, points2D):
-        pnt_ids = self.__AllocateNewPoints(points2D)
-        lost,tracked = self.__SetPoints2DCoords(self.frame_ind, pnt_ids, points2D)
+    def PutNewPoints2D(self, points2D_meter, points2D_pixel, targ_frame_ind = None):
+        pnt_ids = self.__AllocateNewPoints(len(points2D_meter))
+
+        if targ_frame_ind is None: # default to the current frame
+            targ_frame_ind = self.frame_ind
+
+        lost,tracked = self.__SetPoints2DCoords(targ_frame_ind, pnt_ids, points2D_meter, points2D_pixel)
         assert lost == 0, "there can't be lost points amont new points"
 
         return pnt_ids
 
-    def PutMatchedPoints2D(self, pnt_ids, xs2_meter_with_gaps):
-        old_lost, old_tracked  = self.__SetPoints2DCoords(self.frame_ind, pnt_ids, xs2_meter_with_gaps)
+    def PutMatchedPoints2D(self, pnt_ids, points2D_meter_with_gaps, points2D_pixel_with_gaps):
+        old_lost, old_tracked  = self.__SetPoints2DCoords(self.frame_ind, pnt_ids, points2D_meter_with_gaps, points2D_pixel_with_gaps)
         return None
 
     # calculate statistics of points change
@@ -3202,10 +3375,10 @@ class PointsWorld:
         new_pnts_count = 0
         lost_pnts_count = 0
         for pnt_life in self.points_life:
-            x = pnt_life.points_list[self.frame_ind]
+            x = pnt_life.points_list_meter[self.frame_ind]
             x_prev = None
             if self.frame_ind > 0:
-                x_prev = pnt_life.points_list[self.frame_ind - 1]
+                x_prev = pnt_life.points_list_meter[self.frame_ind - 1]
             if not x is None:
                 if x_prev is None:
                     new_pnts_count += 1
@@ -3243,8 +3416,8 @@ class PointsWorld:
         xs2_meter = []
         matched_pnt_ids = []
         for pnt_life in self.points_life:
-            x1 = pnt_life.points_list[self.last_known_pos_frame_ind]
-            x2 = pnt_life.points_list[self.frame_ind]
+            x1 = pnt_life.points_list_meter[self.last_known_pos_frame_ind]
+            x2 = pnt_life.points_list_meter[self.frame_ind]
 
             # check that all frames between [known_frame_ind, latest] have 2D point value
             is_continuous_match = not x1 is None and not x2 is None
@@ -3271,8 +3444,8 @@ class PointsWorld:
             samp_xs2_meters = []
             for id in samp_pnt_ids:
                 pnt_life = self.points_life[id]
-                samp_xs1_meters.append(pnt_life.points_list[self.frame_ind - 1])
-                samp_xs2_meters.append(pnt_life.points_list[self.frame_ind])
+                samp_xs1_meters.append(pnt_life.points_list_meter[self.frame_ind - 1])
+                samp_xs2_meters.append(pnt_life.points_list_meter[self.frame_ind])
 
             if debug >= 94:
                 on_pnt_corresp("sample", samp_pnt_ids)
@@ -3407,7 +3580,7 @@ class PointsWorld:
         """Whether the point has registered 2D point in each frame"""
         pnt_life = self.points_life[pnt_id]
         for fid in range(from_frame_ind, to_frame_ind):
-            x = pnt_life.points_list[fid]
+            x = pnt_life.points_list_meter[fid]
             if x is None: return False
         return True
 
@@ -3432,7 +3605,7 @@ class PointsWorld:
             xs_per_frame = []
             for pnt_ind, pnt_life in enumerate(self.points_life):
                 if is_live_list[pnt_ind]:
-                    x2D = pnt_life.points_list[frame_ind]
+                    x2D = pnt_life.points_list_meter[frame_ind]
                     assert not x2D is None
                     xs_per_frame.append(x2D)
             assert live_points == len(xs_per_frame), "Point ind:{0} has not a full life".format(pnt_ind)
@@ -3441,6 +3614,38 @@ class PointsWorld:
 
         res = calcCameras(xs_per_image_meter, debug=debug)
         return res
+
+    def DrawCameraTrackView(self, img2_bgr, max_track_len=20):
+        def DrawFeatTrack(pnt_life):
+            # draw track of a point
+            x_pix_pre = None
+            start_frame_ind = max(0, self.frame_ind - max_track_len)
+            for fr_ind in range(start_frame_ind, self.frame_ind + 1):
+                x_pix = None
+                if fr_ind >= 0 and fr_ind < len(pnt_life.points_list_pixel):
+                    x_pix = pnt_life.points_list_pixel[fr_ind]
+
+                if x_pix is None:
+                    if x_pix_pre is None:
+                        continue  # after the last pixel value
+                    else:
+                        break  # before the first pixel value
+                if not x_pix_pre is None:
+                    cv2.line(img2_bgr, tuple(x_pix_pre), tuple(x_pix), (0, 255, 0))
+                x_pix_pre = x_pix
+        def DrawHead(pnt_life):
+            # draw the last pixel
+            head_pixel = None
+            if self.frame_ind >= 0 and self.frame_ind < len(pnt_life.points_list_pixel):
+                head_pixel = pnt_life.points_list_pixel[self.frame_ind]
+            if not head_pixel is None:
+                cv2.circle(img2_bgr, tuple(head_pixel), 3, (0, 255, 0))
+        for pnt_life in self.points_life:
+            DrawFeatTrack(pnt_life)
+            DrawHead(pnt_life)
+
+        cv2.imshow("camera_trackview", img2_bgr)
+
 
 # Tries to choose unique homography decomposition from two possible ones (for each frame).
 # source: "Advances in Unmanned Aerial Vehicles", Kimon P. Valavanis, Springer, 2007, page 285
@@ -4741,11 +4946,6 @@ class ReconstructDemo:
             [5.7231451642124046e+02, 0., 3.2393613004134221e+02],
             [0., 5.7231451642124046e+02, 2.8464798761067397e+02],
             [0., 0., 1.]])
-        suc, Km1 = cv2.invert(cam_mat)
-        assert suc
-
-        min_num_3Dpoints = 50
-        kpd = cv2.xfeatures2d.SIFT_create(nfeatures=min_num_3Dpoints)  # OpenCV-contrib-3
 
         #img_dir_path = "/home/mmore/Pictures/roshensweets_201704101700/is"
         img_dir_path = "/home/mmore/Pictures/blue_tapis4_640x480_n45deg/is_always_shift"
@@ -4756,28 +4956,7 @@ class ReconstructDemo:
 
         track_sys = PointsWorld()
         track_sys.visual_host = self
-
-        class MapPntInfo:
-            def __init__(self):
-                self.point_id = None
-                self.x1_pixel = None
-                self.x2_pixel = None
-                #self.x1_meter = None # meters are for debugging
-                #self.x2_meter = None
-
-        image1 = None
-        img1_gray = None
-        pnt_pixel_info = {} # point id -> PntInfo
-
-        # checks if there is an existent feature point close to the point in question
-        def IsCloseToExistingFeatures(x_pixel, radius):
-            for pnt_info in pnt_pixel_info.values():
-                pix = pnt_info.x1_pixel
-                if pix is None: continue
-                len = LA.norm(pix - x_pixel)
-
-                if len < radius: return True
-            return False
+        track_sys.SetCamMat(cam_mat)
 
         for img_ind in range(0, len(img_abs_pathes)):
             # check if cancel is requested
@@ -4787,158 +4966,19 @@ class ReconstructDemo:
                 if debug >= 3: print("got computation cancel request")
                 break
 
-            print("img_ind={0}".format(img_ind))
-
             img2_path = img_abs_pathes[img_ind]
-            image2 = cv2.imread(img2_path)
-            assert not image2 is None
+            img2_bgr = cv2.imread(img2_path)
+            assert not img2_bgr is None, "can't read image {}".format(img2_path)
 
-            img2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-
-            def ShowPntCorresp(title, pnt_ids):
-                cons_xs1_pixels = []
-                cons_xs2_pixels = []
-                for id in pnt_ids:
-                    pnt_info = pnt_pixel_info[id]
-                    x1 = pnt_info.x1_pixel
-                    x2 = pnt_info.x2_pixel
-                    assert not x1 is None
-                    assert not x2 is None
-                    cons_xs1_pixels.append(x1)
-                    cons_xs2_pixels.append(x2)
-                ShowMatches(title, image1, image2, cons_xs1_pixels, cons_xs2_pixels)
-
-            track_sys.StartNewFrame()
-
-            if len(pnt_pixel_info) == 0:
-                kp1 = kpd.detect(img2_gray, None)
-                # OpenCV cv2.xfeatures2d.SIFT_create.detect may return duplicates, - remove them
-                xs2_pixel = np.array(sorted(set([kp.pt for kp in kp1])), np.float32)
-
-                # convert pixel to image coordinates (pixel -> meters)
-                xs2_meter = []
-                convertPixelToMeterPoints(cam_mat, [xs2_pixel], xs2_meter)
-                xs2_meter = xs2_meter[0]
-
-                pnt_ids = track_sys.PutNewPoints2D(xs2_meter) # initial points
-                for i,id in enumerate(pnt_ids):
-                    pnt_info = MapPntInfo()
-                    pnt_info.point_id = id
-                    pnt_info.x2_pixel = xs2_pixel[i]
-                    pnt_pixel_info.__setitem__(id, pnt_info)
-            else:
-                # try to find the corner in the next image
-                # track old (existing) features
-                old_pnt_ids = []
-                xs1_pixel = []
-                for pnt_info in pnt_pixel_info.values():
-                    if not pnt_info.x1_pixel is None:
-                        xs1_pixel.append(pnt_info.x1_pixel)
-                        old_pnt_ids.append(pnt_info.point_id)
-
-                persist_feat_count_old = 0
-                if len(xs1_pixel) > 0:
-                    xs1_pixel_array = np.array(xs1_pixel, np.float32)
-                    lk_win_size = (21,21)
-                    next_pts_old, status_old, err_old = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, xs1_pixel_array, None, winSize=lk_win_size)
-                    FixOpenCVCalcOpticalFlowPyrLK(xs1_pixel, next_pts_old, status_old, lk_win_size)
-
-                    persist_feat_count_old = sum([1 for s in status_old if s > 0])
-
-                    # convert pixel to image coordinates (pixel -> meters)
-                    xs2_meter_with_gaps = []
-                    for i in range(0, len(status_old)):
-                        x2_meter = None
-                        if status_old[i]:
-                            x2_pixel = next_pts_old[i]
-                            x2_meter = convertPointPixelToMeter(x2_pixel, Km1)
-                        xs2_meter_with_gaps.append(x2_meter)
-
-                    # store pixel values
-                    for i in range(0, len(status_old)):
-                        if status_old[i]:
-                            x2_pixel = next_pts_old[i]
-
-                            pnt_id = old_pnt_ids[i]
-                            pnt_info = pnt_pixel_info[pnt_id]
-                            pnt_info.x2_pixel = x2_pixel
-                    if debug >= 4:
-                        xs1_pixel_tmp = [x for s, x in zip(status_old, xs1_pixel) if s > 0]
-                        xs2_pixel_tmp = [x for s, x in zip(status_old, next_pts_old) if s > 0]
-                        ShowMatches("matches", image1, image2, xs1_pixel_tmp, xs2_pixel_tmp)
-
-                    track_sys.PutMatchedPoints2D(old_pnt_ids, xs2_meter_with_gaps)
-
-                # check if new features are required
-                next_pts_new = []
-                status_new = []
-                err_new = []
-                xs2_new_pixel_no_gaps = []
-                xs2_new_meter_no_gaps = []
-                if persist_feat_count_old < min_num_3Dpoints:
-                    # try to find more features in the previous frame, which persist in current frame
-                    kp1 = kpd.detect(img1_gray, None)
-                    xs1_new_pixel = []
-                    for x2 in sorted(set([kp.pt for kp in kp1])):
-                        x2 = np.array(x2, np.float32)
-                        dist_to_existing_feat = 5
-                        if IsCloseToExistingFeatures(x2, dist_to_existing_feat):
-                            continue
-                        xs1_new_pixel.append(x2)
-
-                    if len(xs1_new_pixel) > 0:
-                        xs1_new_pixel_array = np.array(xs1_new_pixel, np.float32)
-                        next_pts_new, status_new, err_new = cv2.calcOpticalFlowPyrLK(img1_gray, img2_gray, xs1_new_pixel_array, None, winSize=lk_win_size)
-                        FixOpenCVCalcOpticalFlowPyrLK(xs1_new_pixel, next_pts_new, status_new, lk_win_size)
-
-                        if debug >= 4:
-                            xs1_pixel_tmp = [x for s,x in zip(status_new, xs1_new_pixel) if s > 0]
-                            xs2_pixel_tmp = [x for s,x in zip(status_new, next_pts_new) if s > 0]
-                            ShowMatches("matches", image1, image2, xs1_pixel_tmp, xs2_pixel_tmp)
-
-                        # convert pixel to image coordinates (pixel -> meters)
-                        xs1_new_meter_no_gaps = []
-                        xs1_new_pixel_no_gaps = []
-                        for i in range(0, len(status_new)):
-                            if status_new[i]:
-                                x1_pixel = xs1_new_pixel[i]
-                                xs1_new_pixel_no_gaps.append(x1_pixel)
-
-                                x1_meter = convertPointPixelToMeter(x1_pixel, Km1)
-                                xs1_new_meter_no_gaps.append(x1_meter)
-
-                                x2_pixel = next_pts_new[i]
-                                xs2_new_pixel_no_gaps.append(x2_pixel)
-
-                                x2_meter = convertPointPixelToMeter(x2_pixel, Km1)
-                                xs2_new_meter_no_gaps.append(x2_meter)
-
-                        new_pnt_ids = track_sys.PutNewPoints2D(xs1_new_meter_no_gaps)  # initial points
-                        for i, id in enumerate(new_pnt_ids):
-                            pnt_info = MapPntInfo()
-                            pnt_info.point_id = id
-                            pnt_info.x2_pixel = xs1_new_pixel_no_gaps[i]
-                            pnt_pixel_info.__setitem__(id, pnt_info)
-
-                        track_sys.PutMatchedPoints2D(new_pnt_ids, xs2_new_meter_no_gaps)
-            #
-            track_sys.Process(on_pnt_corresp=ShowPntCorresp, debug=debug)
-
-            # update cursor
-            img1_gray = img2_gray
-            image1  = image2
-            for pnt_info in pnt_pixel_info.values():
-                pnt_info.x1_pixel = pnt_info.x2_pixel
-                pnt_info.x2_pixel = None
-                #pnt_info.x1_meter = pnt_info.x2_meter
-                #pnt_info.x2_meter = None
+            track_sys.ProcessNextImage(img2_bgr)
+        #
+        track_sys.PrintStat()
 
         print("num_tracked_points={0}".format(track_sys.num_tracked_points_per_frame))
         with cameras_lock:
             print("cam_poses_R={0}".format(self.world_to_cam_R))
             print("cam_poses_T={0}".format(self.world_to_cam_T))
 
-        #return cam_poses_R, cam_poses_T
         print("Exiting WorkerRunCornerMatcherAndFindCameraPos")
 
     def WorkerWalkThroughVirtualWorld(self, continue_lock, cameras_lock, main_args):
@@ -4984,11 +5024,10 @@ class ReconstructDemo:
                 if debug >= 3: print("got computation cancel request")
                 break
 
-            if debug >= 3: print("img_ind={0}".format(img_ind))
             targ_ang = math.radians(targ_ang_deg)
 
             # cam3
-            R3 = rotMat([0, 1, 0], math.radians(targ_ang_deg)).T
+            R3 = rotMat([0, 1, 0], targ_ang).T
             T3 = np.array([0, 0, 0.4])
 
             if provide_ground_truth:
@@ -5033,9 +5072,9 @@ class ReconstructDemo:
 
             track_sys.StartNewFrame()
             if R2 is None:
-                pnt_ids = track_sys.PutNewPoints2D(xs_img3) # initial points
+                pnt_ids = track_sys.PutNewPoints2D(xs_img3, None) # initial points
             else:
-                track_sys.PutMatchedPoints2D(pnt_ids, xs_img3)
+                track_sys.PutMatchedPoints2D(pnt_ids, xs_img3, None)
             track_sys.Process(debug=debug)
 
             R2 = R3
