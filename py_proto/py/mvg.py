@@ -48,13 +48,16 @@ def FixOpenCVCalcOpticalFlowPyrLK(prev_pts, next_pts, status, win_size):
             continue
 
 def IntPnt(pnt):
+    if pnt is None: return None
     if isinstance(pnt, list):
         return [int(v) for v in pnt]
     if isinstance(pnt, tuple):
         return tuple(int(v) for v in pnt)
     if isinstance(pnt, np.ndarray):
-        return np.array([int(v) for v in pnt])
-    assert False, "Unknown type"
+        #return np.array([int(v) for v in pnt])
+        # cv2.line require tuple, otherwise {SystemError}new style getargs format but argument is not a tuple
+        return tuple([int(v) for v in pnt])
+    assert False, "Unknown type: {}".format(type(pnt))
 
 def clamp(n, smallest, largest): return max(smallest, min(n, largest))
 
@@ -63,6 +66,9 @@ def clamp(n, smallest, largest): return max(smallest, min(n, largest))
 def rootCube(x):
     if 0<=x: return x**(1./3.)
     return -(-x)**(1./3.)
+
+def unzip(iterable):
+    return zip(*iterable)
 
 # Square of the vector norm.
 def NormSqr(v):
@@ -85,6 +91,24 @@ def FillRT4x4(R, T, result = None):
     result[0:3, 0:3] = R[:,:]
     result[0:3, 3] = T[:]
     return result
+
+def SE3Apply(rt_tup, x):
+    """ Applies Special Euclidian SE3 transformation to a 3-element point. """
+    r,t = rt_tup
+    return np.dot(r, x) +t
+
+def SE3Compose(rt1, rt2):
+    """ Computes [r1|t1]*[r2|t2] """
+    r1,t1 = rt1
+    r2,t2 = rt2
+    rnew = np.dot(r1, r2)
+    tnew = np.dot(r1, t2) + t1
+    return (rnew, tnew)
+
+def SE3Inv(rt_tup):
+    """ Inverts Special Euclidian SE3 transformation"""
+    r, t = rt_tup
+    return (r.T, -np.dot(r.T,t))
 
 
 # get transformation of image points so that the center of mass is in the origin and
@@ -794,6 +818,7 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     assert IsSpecialOrthogonal(vt, p_err), p_err[0]
 
     bigSig = np.diag((1, 1, 0))
+    #bigSig = np.diag(dVec1.ravel())
 
     # recover (R,T)
     cands_T = []
@@ -1401,23 +1426,36 @@ def FuseInteractive(win_name, img1_adorn, img2_adorn, transit = 0, print_transit
             if print_transit: print('transit={0}'.format(transit))
     cv2.destroyWindow(win_name)
 
-def ShowMatches(win_name, image1, image2, points, next_pts):
+def ShowMatches(win_name, image1, image2, points, next_pts, transit = None, print_transit=False):
     color_from = [255,0,0]
     #color_to = [255,0,255]
     color_to = color_from
+    color_new = [0,255,0] # p1=None p2=Obj
+    color_deleted = [0,0,255] # p1=Obj p2=None
     img1_adorn = image1.copy()
     img2_adorn = image2.copy()
     for p1f,p2f in zip(points, next_pts):
         p1 = IntPnt(p1f)
         p2 = IntPnt(p2f)
-        cv2.circle(img1_adorn, (p1[0], p1[1]), 5, color_from)
-        cv2.circle(img1_adorn, (p2[0], p2[1]), 3, color_to)
-        cv2.line(img1_adorn, (p1[0], p1[1]), (p2[0], p2[1]), color_from)
+        if not p1 is None:
+            is_del = p2 is None
+            c = color_deleted if is_del else color_from
+            cv2.circle(img1_adorn, (p1[0], p1[1]), 5, c)
+        # if not p2 is None:
+        #     cv2.circle(img1_adorn, (p2[0], p2[1]), 3, color_to)
 
-        cv2.circle(img2_adorn, (p1[0], p1[1]), 5, color_to)
-        cv2.circle(img2_adorn, (p2[0], p2[1]), 3, color_from)
+        if not p1 is None and not p2 is None:
+            cv2.line(img1_adorn, (p1[0], p1[1]), (p2[0], p2[1]), color_from)
 
-    FuseInteractive(win_name, img1_adorn, img2_adorn, 0.5)
+        # if not p1 is None:
+        #     cv2.circle(img2_adorn, (p1[0], p1[1]), 5, color_to)
+        if not p2 is None:
+            is_new = p1 is None
+            c = color_new if is_new else color_from
+            cv2.circle(img2_adorn, (p2[0], p2[1]), 3, c)
+
+    transit = transit if not transit is None else 0.5
+    FuseInteractive(win_name, img1_adorn, img2_adorn, transit=transit,print_transit=print_transit)
 
 
 # Fills 3x3 fundamental matrix from 8-parameters parameterization fvec[8].
@@ -2286,7 +2324,9 @@ def logSO3(rot_mat, check_rot_mat = True):
     p_err = [""]
     assert IsSpecialOrthogonal(rot_mat, p_err), p_err[0]
 
-    ang = math.acos(0.5*(np.trace(rot_mat)-1))
+    cos_ang = 0.5*(np.trace(rot_mat)-1)
+    cos_ang = clamp(cos_ang, -1, 1) # the cosine may be slightly off due to rounding errors
+    ang = math.acos(cos_ang)
     sin_ang = math.sin(ang)
 
     # TODO: return False when ambiguous reconstruction
@@ -2314,7 +2354,7 @@ def logSO3(rot_mat, check_rot_mat = True):
 
 
 # MVGCV Linear Triangulation Method, Ch12, page 312
-# Finds world coordinate of a point from two image coordinates in two images.
+# Finds the 3D coordinate of a point (in the first camera frame) from the 2D projection to the frist and to the second image.
 # P1 [3x4]
 # P2 [3x4]
 # x1 [1x2] or [2x1]
@@ -2339,9 +2379,9 @@ def triangulateDlt(p1, p2, x1, x2, normalize=True):
 
     # AX=0
     [dVec, u, vt] = cv2.SVDecomp(A)
-    X = vt.T[:, -1]
+    X_frame1 = vt.T[:, -1]
     if normalize:
-        X = X / X[-1] # TODO: what if the last component is 0
+        X_frame1 = X_frame1 / X_frame1[-1] # TODO: what if the last component is 0
 
     # postcondition
     # TODO: the conditions below are too flaky
@@ -2355,7 +2395,7 @@ def triangulateDlt(p1, p2, x1, x2, normalize=True):
     # r2=r2/r2[-1]
     # assert np.isclose(x2[0], r2[0], rtol=tol)
     # assert np.isclose(x2[1], r2[1], rtol=tol)
-    return X
+    return X_frame1
 
 # Fix xs1 and xs2 so that each x1 and x2 conforms to the fundamental matrix.
 # MVGCV Sampson approximation, page 315
@@ -3133,12 +3173,71 @@ def GenerateTwoOrthoChess(debug=0):
 
     return xs3D, cell_width, side_mask
 
+class ImageFeatureTracker:
+    """ Detects and tracks features in the image """
+    def __init__(self, min_num_3Dpoints):
+        self.kpd = cv2.xfeatures2d.SIFT_create(nfeatures=self.min_num_3Dpoints)  # OpenCV-contrib-3
+        self.lk_win_size = (21, 21)
+
+    def DetectFeats(self, img_ind, img_gray):
+        kp1 = self.kpd.detect(img_gray, None)
+        # OpenCV cv2.xfeatures2d.SIFT_create.detect may return duplicates, - remove them
+        xs2_pixel = np.array(sorted(set([kp.pt for kp in kp1])), np.float32)
+        map_point_ids = None
+        return map_point_ids, xs2_pixel
+
+    def TrackFeats(self, img1_ind, img1_gray, img2_ind, img2_gray, xs1_map_point_ids, xs1_pixel):
+        xs1_pixel_array = np.array(xs1_pixel, np.float32)
+        next_pts_old, status_old, err_old = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray, xs1_pixel_array, None, winSize=self.lk_win_size)
+        FixOpenCVCalcOpticalFlowPyrLK(xs1_pixel, next_pts_old, status_old, self.lk_win_size)
+        return next_pts_old, status_old
+
+
+class VirtualImageFeatureTracker:
+    def __init__(self, min_num_3Dpoints):
+        self.img_ind_to_detected_2d_points = {}
+
+    def DetectFeats(self, img_ind, img_gray):
+        xs_objs = self.img_ind_to_detected_2d_points[img_ind]
+        map_point_ids, xs_pixel = unzip(xs_objs)
+        return map_point_ids, xs_pixel
+
+    def SetImage2DPoints(self, img_ind, xs_pixel_clipped):
+        self.img_ind_to_detected_2d_points[img_ind] = xs_pixel_clipped
+
+    def TrackFeats(self, img1_ind, img1_gray, img2_ind, img2_gray, xs1_map_point_ids, xs1_pixel):
+        xs2_objs = self.img_ind_to_detected_2d_points[img2_ind]
+
+        N = len(xs1_map_point_ids)
+        status = np.zeros(N, np.uint8)
+        next_pts = [None] * N
+        for i,map_point_id1 in enumerate(xs1_map_point_ids):
+            # find this feature in the second image
+            match_pixel = None
+            for map_point_id2, x2_pixel in xs2_objs:
+                if map_point_id1 == map_point_id2:
+                    match_pixel = x2_pixel
+                    break
+
+            stat = 0 if match_pixel is None else 1
+            status[i] = stat
+            next_pts[i] = match_pixel
+        return next_pts, status
+
+
 # Represents point across multiple frame images.
 class PointLife:
     def __init__(self):
-        self.point_id = None
+        self.map_point_id = None # the identifier created for map point in a virtual world TODO: rename into map_point_virtual_id
+        self.point_id = None # the identifier associated with a track  TODO: rename into map_point_track_id
+        # ids vary in such a way:
+        # x) if a track is lost, another track_id may be assiciated with the same map point later
+        # x) there may be map point, but a track is not associated because the tracker is overloaded
+
+        self.inception_frame_ind = None # the frame when tracker decided to create a tracked point, may be later than the first time, the point was observed
         self.points_list_meter = []
         self.points_list_pixel = []
+        self.is_mapped = False
 
 class PointsWorld:
     def __init__(self):
@@ -3148,179 +3247,76 @@ class PointsWorld:
         self.points_life = [] # coordinates of 2D points in images
         self.visual_host = None
         self.ground_truth_relative_motion = None
+        self.ground_truth_map_pnt_pos = None
 
         self.img1_bgr = None
         self.img1_gray = None
+        self.img1_ind = None
+        self.img_trackview_bgr = None
 
-        self.min_num_3Dpoints = 50
-        self.kpd = cv2.xfeatures2d.SIFT_create(nfeatures=self.min_num_3Dpoints)  # OpenCV-contrib-3
-        self.cam_mat = None
-        self.Km1 = None # inverse of cam_mat
+        self.min_num_3Dpoints = None
+        self.img_feat_tracker = None
+        self.cam_mat_pixel_from_meter = None
+        self.cam_mat_meter_from_pixel = None # inverse of cam_mat
+        self.focal_len = None # foucus distance in millimeters
+        self.slam_impl = None
 
-    def SetCamMat(self, cam_mat):
-        self.cam_mat = cam_mat
-        suc, Km1 = cv2.invert(cam_mat)
+    def SetCamMat(self, cam_mat_pixel_from_meter):
+        self.cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
+        suc, Km1 = cv2.invert(cam_mat_pixel_from_meter)
         assert suc
-        self.Km1 = Km1
+        self.cam_mat_meter_from_pixel = Km1
+
+        # sx=number of pixels per one millimeter
+        # pix_len=number of millimieters per one pixel
+        # sx = 1/pix_len, if pix_len=0.006mm => sx=166.667
+        pix_len_mm = 0.006  # millimieters
+        sx = 1 / pix_len_mm
+        alpha_x = cam_mat_pixel_from_meter[0, 0]
+        alpha_y = cam_mat_pixel_from_meter[1, 1]
+        focal_len_x = alpha_x / sx
+        focal_len_y = alpha_y / sx
+        focal_len = max(focal_len_x, focal_len_y)
+        self.focal_len = focal_len
 
     def PrintStat(self):
         print("allocated map points: {}".format(len(self.points_life)))
 
     # checks if there is an existent feature point close to the point in question
-    def IsCloseToExistingFeatures(self, x_pixel, radius, targ_frame_ind):
+    def IsCloseToExistingFeatures(self, x_pixel, radius_pixel, targ_frame_ind):
         for pnt_life in self.points_life:
             pix = pnt_life.points_list_pixel[targ_frame_ind]
             if pix is None: continue
             len = LA.norm(pix - x_pixel)
 
-            if len < radius: return True
+            if len < radius_pixel: return True
         return False
 
-    def ProcessNextImage(self, image_bgr, debug = 0):
-        track_sys = self
-        img2_bgr = image_bgr
-        img2_gray = cv2.cvtColor(img2_bgr, cv2.COLOR_BGR2GRAY)
-
-        def ShowPntCorresp(title, pnt_ids):
-            cons_xs1_pixels = []
-            cons_xs2_pixels = []
-            for id in pnt_ids:
-                pnt_life = self.points_life[id]
-                x1 = pnt_life.points_list_pixel[self.frame_ind-1]
-                x2 = pnt_life.points_list_pixel[self.frame_ind]
-                assert not x1 is None
-                assert not x2 is None
-                cons_xs1_pixels.append(x1)
-                cons_xs2_pixels.append(x2)
-            ShowMatches(title, self.img1_bgr, img2_bgr, cons_xs1_pixels, cons_xs2_pixels)
-
-        track_sys.StartNewFrame()
-
-        if self.frame_ind == 0:
-            kp1 = self.kpd.detect(img2_gray, None)
-            # OpenCV cv2.xfeatures2d.SIFT_create.detect may return duplicates, - remove them
-            xs2_pixel = np.array(sorted(set([kp.pt for kp in kp1])), np.float32)
-
-            # convert pixel to image coordinates (pixel -> meters)
-            xs2_meter = []
-            convertPixelToMeterPoints(self.cam_mat, [xs2_pixel], xs2_meter)
-            xs2_meter = xs2_meter[0]
-
-            pnt_ids = track_sys.PutNewPoints2D(xs2_meter, xs2_pixel, self.frame_ind)  # initial points
-        else:
-            # 1. Match OLD features
-            # try to find the corner in the next image
-            # track old (existing) features
-            old_pnt_ids = []
-            xs1_pixel = []
-            for pnt_life in self.points_life:
-                x1_pixel = pnt_life.points_list_pixel[self.frame_ind-1]
-                if not x1_pixel is None:
-                    xs1_pixel.append(x1_pixel)
-                    old_pnt_ids.append(pnt_life.point_id)
-
-            lk_win_size = (21, 21)
-            persist_feat_count_old = 0
-            if len(xs1_pixel) > 0:
-                xs1_pixel_array = np.array(xs1_pixel, np.float32)
-                next_pts_old, status_old, err_old = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray, xs1_pixel_array, None, winSize=lk_win_size)
-                FixOpenCVCalcOpticalFlowPyrLK(xs1_pixel, next_pts_old, status_old, lk_win_size)
-
-                persist_feat_count_old = sum([1 for s in status_old if s > 0])
-
-                # convert pixel to image coordinates (pixel -> meters)
-                xs2_meter_with_gaps = []
-                xs2_pixel_with_gaps = []
-                for i in range(0, len(status_old)):
-                    x2_pixel = None
-                    x2_meter = None
-                    if status_old[i]:
-                        x2_pixel = next_pts_old[i]
-                        x2_meter = convertPointPixelToMeter(x2_pixel, self.Km1)
-                    xs2_pixel_with_gaps.append(x2_pixel)
-                    xs2_meter_with_gaps.append(x2_meter)
-
-                if debug >= 4:
-                    xs1_pixel_tmp = [x for s, x in zip(status_old, xs1_pixel) if s > 0]
-                    xs2_pixel_tmp = [x for s, x in zip(status_old, next_pts_old) if s > 0]
-                    ShowMatches("matches", self.img1_bgr, img2_bgr, xs1_pixel_tmp, xs2_pixel_tmp)
-
-                track_sys.PutMatchedPoints2D(old_pnt_ids, xs2_meter_with_gaps, xs2_pixel_with_gaps)
-
-            # 2. Match NEW features
-            # check if new features are required
-            next_pts_new = []
-            status_new = []
-            err_new = []
-            xs2_new_pixel_no_gaps = []
-            xs2_new_meter_no_gaps = []
-            if persist_feat_count_old < self.min_num_3Dpoints:
-                # try to find more features in the previous frame, which persist in current frame
-                kp1 = self.kpd.detect(self.img1_gray, None)
-                xs1_new_pixel = []
-                for x2 in sorted(set([kp.pt for kp in kp1])):
-                    x2 = np.array(x2, np.float32)
-                    dist_to_existing_feat = 5
-                    if self.IsCloseToExistingFeatures(x2, dist_to_existing_feat, self.frame_ind):
-                        continue
-                    xs1_new_pixel.append(x2)
-
-                if len(xs1_new_pixel) > 0:
-                    xs1_new_pixel_array = np.array(xs1_new_pixel, np.float32)
-                    next_pts_new, status_new, err_new = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray,xs1_new_pixel_array, None,winSize=lk_win_size)
-                    FixOpenCVCalcOpticalFlowPyrLK(xs1_new_pixel, next_pts_new, status_new, lk_win_size)
-
-                    if debug >= 4:
-                        xs1_pixel_tmp = [x for s, x in zip(status_new, xs1_new_pixel) if s > 0]
-                        xs2_pixel_tmp = [x for s, x in zip(status_new, next_pts_new) if s > 0]
-                        ShowMatches("matches", self.img1_bgr, img2_bgr, xs1_pixel_tmp, xs2_pixel_tmp)
-
-                    # convert pixel to image coordinates (pixel -> meters)
-                    xs1_new_meter_no_gaps = []
-                    xs1_new_pixel_no_gaps = []
-                    for i in range(0, len(status_new)):
-                        if status_new[i]:
-                            x1_pixel = xs1_new_pixel[i]
-                            xs1_new_pixel_no_gaps.append(x1_pixel)
-
-                            x1_meter = convertPointPixelToMeter(x1_pixel, self.Km1)
-                            xs1_new_meter_no_gaps.append(x1_meter)
-
-                            x2_pixel = next_pts_new[i]
-                            xs2_new_pixel_no_gaps.append(x2_pixel)
-
-                            x2_meter = convertPointPixelToMeter(x2_pixel, self.Km1)
-                            xs2_new_meter_no_gaps.append(x2_meter)
-
-                    new_pnt_ids = track_sys.PutNewPoints2D(xs1_new_meter_no_gaps, xs1_new_pixel_no_gaps, self.frame_ind-1)  # initial points
-                    track_sys.PutMatchedPoints2D(new_pnt_ids, xs2_new_meter_no_gaps, xs2_new_pixel_no_gaps)
-        draw_camera_trackview = True
-        if draw_camera_trackview:
-            self.DrawCameraTrackView(img2_bgr)
-            cv2.waitKey(1)
-
-        track_sys.Process(on_pnt_corresp=ShowPntCorresp, debug=debug)
-
-        # update cursor
-        self.img1_gray = img2_gray
-        self.img1_bgr = img2_bgr
-        return None
-
-    def __AllocateNewPoints(self, new_pnts_count):
-        pnt_ids = []
+    def __AllocateNewPoints(self, inception_frame_ind, new_pnts_count, map_point_ids):
+        """map_point_ids virtual ids associated with new points or None"""
+        if not map_point_ids is None:
+            assert new_pnts_count == len(map_point_ids)
+        track_pnt_ids = []
 
         frames_count = self.frame_ind + 1
-        for _ in range(0, new_pnts_count):
+        for i in range(0, new_pnts_count):
             id = len(self.points_life)
 
+            map_point_id = None
+            if not map_point_ids is None:
+                map_point_id = map_point_ids[i]
+                assert not map_point_id is None
+
             pnt_life = PointLife()
+            pnt_life.inception_frame_ind = inception_frame_ind
+            pnt_life.map_point_id = map_point_id
             pnt_life.point_id = id
             pnt_life.points_list_meter = [None] * frames_count
             pnt_life.points_list_pixel = [None] * frames_count
 
             self.points_life.append(pnt_life)
-            pnt_ids.append(id)
-        return pnt_ids
+            track_pnt_ids.append(id)
+        return track_pnt_ids
 
     def __SetPoints2DCoords(self, targ_frame_ind, pnt_ids, points2D_meter_with_gaps, points2D_pixel_with_gaps):
         assert len(pnt_ids) == len(points2D_meter_with_gaps)
@@ -3354,16 +3350,20 @@ class PointsWorld:
             pnt_life.points_list_meter.append(None)
             pnt_life.points_list_pixel.append(None)
 
-    def PutNewPoints2D(self, points2D_meter, points2D_pixel, targ_frame_ind = None):
-        pnt_ids = self.__AllocateNewPoints(len(points2D_meter))
+    def PutNewPoints2D(self, first_coord_frame_ind, inception_frame_ind, points2D_meter, points2D_pixel, map_point_ids):
+        """
+        :param first_coord_frame_ind: the first frame where the point was detected  
+        :param inception_frame_ind: the frame when tracker decided to create a tracked point, may be later then it was observed at first 
+        """
+        track_pnt_ids = self.__AllocateNewPoints(inception_frame_ind, len(points2D_meter), map_point_ids)
 
-        if targ_frame_ind is None: # default to the current frame
-            targ_frame_ind = self.frame_ind
+        # if targ_frame_ind is None: # default to the current frame
+        #     targ_frame_ind = self.frame_ind
 
-        lost,tracked = self.__SetPoints2DCoords(targ_frame_ind, pnt_ids, points2D_meter, points2D_pixel)
+        lost,tracked = self.__SetPoints2DCoords(first_coord_frame_ind, track_pnt_ids, points2D_meter, points2D_pixel)
         assert lost == 0, "there can't be lost points amont new points"
 
-        return pnt_ids
+        return track_pnt_ids
 
     def PutMatchedPoints2D(self, pnt_ids, points2D_meter_with_gaps, points2D_pixel_with_gaps):
         old_lost, old_tracked  = self.__SetPoints2DCoords(self.frame_ind, pnt_ids, points2D_meter_with_gaps, points2D_pixel_with_gaps)
@@ -3379,15 +3379,165 @@ class PointsWorld:
             x_prev = None
             if self.frame_ind > 0:
                 x_prev = pnt_life.points_list_meter[self.frame_ind - 1]
-            if not x is None:
-                if x_prev is None:
-                    new_pnts_count += 1
-                else:
-                    matched_pnts_count += 1
-            else:
-                if not x_prev is None:
+            if not x_prev is None:
+                if x is None:
                     lost_pnts_count += 1
+                else:
+                    if pnt_life.inception_frame_ind == self.frame_ind:
+                        new_pnts_count += 1
+                    else:
+                        matched_pnts_count += 1
+            else:
+                if not x is None:
+                    assert pnt_life.inception_frame_ind == self.frame_ind
+                    new_pnts_count += 1
+
         return matched_pnts_count, new_pnts_count, lost_pnts_count
+
+    def ProcessNextImage(self, img_ind, image_bgr, debug = 0):
+        img2_ind = img_ind
+        img2_bgr = image_bgr
+        img2_gray = cv2.cvtColor(img2_bgr, cv2.COLOR_BGR2GRAY)
+
+        def ShowPntCorresp(title, pnt_ids):
+            cons_xs1_pixels = []
+            cons_xs2_pixels = []
+            for id in pnt_ids:
+                pnt_life = self.points_life[id]
+                x1 = pnt_life.points_list_pixel[self.frame_ind-1]
+                x2 = pnt_life.points_list_pixel[self.frame_ind]
+                assert not x1 is None
+                assert not x2 is None
+                cons_xs1_pixels.append(x1)
+                cons_xs2_pixels.append(x2)
+            ShowMatches(title, self.img1_bgr, img2_bgr, cons_xs1_pixels, cons_xs2_pixels)
+
+        self.StartNewFrame()
+
+        if self.frame_ind == 0:
+            map_point_ids, xs2_pixel = self.img_feat_tracker.DetectFeats(img_ind, img2_bgr)
+
+            # convert pixel to image coordinates (pixel -> meters)
+            xs2_meter = []
+            convertPixelToMeterPoints(self.cam_mat_pixel_from_meter, [xs2_pixel], xs2_meter)
+            xs2_meter = xs2_meter[0]
+
+            self.PutNewPoints2D(self.frame_ind, self.frame_ind, xs2_meter, xs2_pixel, map_point_ids)  # initial points
+        else:
+            # 1. Match OLD features
+            # try to find the corner in the next image
+            # track old (existing) features
+            old_map_pnt_ids = []
+            old_track_pnt_ids = []
+            xs1_pixel = []
+            for pnt_life in self.points_life:
+                x1_pixel = pnt_life.points_list_pixel[self.frame_ind-1]
+                if not x1_pixel is None:
+                    xs1_pixel.append(x1_pixel)
+                    old_track_pnt_ids.append(pnt_life.point_id)
+
+                    map_pnt_id = pnt_life.map_point_id
+                    old_map_pnt_ids.append(map_pnt_id)
+
+
+            persist_feat_count_old = 0
+            if len(xs1_pixel) > 0:
+                next_pts_old, status_old = self.img_feat_tracker.TrackFeats(self.img1_ind, self.img1_gray, img2_ind, img2_gray, old_map_pnt_ids, xs1_pixel)
+
+                persist_feat_count_old = sum([1 for s in status_old if s > 0])
+
+                # convert pixel to image coordinates (pixel -> meters)
+                xs2_meter_with_gaps = []
+                xs2_pixel_with_gaps = []
+                for i in range(0, len(status_old)):
+                    x2_pixel = None
+                    x2_meter = None
+                    if status_old[i]:
+                        x2_pixel = next_pts_old[i]
+                        x2_meter = convertPointPixelToMeter(x2_pixel, self.cam_mat_meter_from_pixel)
+                    xs2_pixel_with_gaps.append(x2_pixel)
+                    xs2_meter_with_gaps.append(x2_meter)
+
+                if debug >= 4:
+                    xs1_pixel_tmp = [x for s, x in zip(status_old, xs1_pixel) if s > 0]
+                    xs2_pixel_tmp = [x for s, x in zip(status_old, next_pts_old) if s > 0]
+                    ShowMatches("matches", self.img1_bgr, img2_bgr, xs1_pixel_tmp, xs2_pixel_tmp)
+
+                self.PutMatchedPoints2D(old_track_pnt_ids, xs2_meter_with_gaps, xs2_pixel_with_gaps)
+
+            # 2. Match NEW features
+            # check if new features are required
+            next_pts_new = []
+            status_new = []
+            err_new = []
+            xs2_new_pixel_no_gaps = []
+            xs2_new_meter_no_gaps = []
+            if persist_feat_count_old < self.min_num_3Dpoints:
+                # try to find more features in the previous frame, which persist in current frame
+                new_map_point_ids_tmp, xs1_pixel_tmp = self.img_feat_tracker.DetectFeats(self.img1_ind, self.img1_gray)
+
+                # we are interested only in those features, which do not overlap with existing ones
+                new_map_point_ids = []
+                xs1_new_pixel = []
+                for i,x1 in enumerate(xs1_pixel_tmp):
+                    x1 = np.array(x1, np.float32)
+                    dist_to_existing_feat = 2.0
+                    if self.IsCloseToExistingFeatures(x1, dist_to_existing_feat, self.frame_ind-1):
+                        continue
+                    xs1_new_pixel.append(x1)
+                    map_point_id = new_map_point_ids_tmp[i]
+                    new_map_point_ids.append(map_point_id)
+
+                if len(xs1_new_pixel) > 0:
+                    # xs1_new_pixel_array = np.array(xs1_new_pixel, np.float32)
+                    # next_pts_new, status_new, err_new = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray,xs1_new_pixel_array, None,winSize=lk_win_size)
+                    # FixOpenCVCalcOpticalFlowPyrLK(xs1_new_pixel, next_pts_new, status_new, lk_win_size)
+                    next_pts_new, status_new = self.img_feat_tracker.TrackFeats(self.img1_ind, self.img1_gray, img2_ind, img2_gray, new_map_point_ids, xs1_new_pixel)
+
+                    if debug >= 4:
+                        xs1_pixel_tmp = [x for s, x in zip(status_new, xs1_new_pixel) if s > 0]
+                        xs2_pixel_tmp = [x for s, x in zip(status_new, next_pts_new) if s > 0]
+                        ShowMatches("matches", self.img1_bgr, img2_bgr, xs1_pixel_tmp, xs2_pixel_tmp)
+
+                    # convert pixel to image coordinates (pixel -> meters)
+                    xs1_new_meter_no_gaps = []
+                    xs1_new_pixel_no_gaps = []
+                    new_map_point_ids_no_gaps = []
+                    for i in range(0, len(status_new)):
+                        if status_new[i]:
+                            x1_pixel = xs1_new_pixel[i]
+                            xs1_new_pixel_no_gaps.append(x1_pixel)
+
+                            x1_meter = convertPointPixelToMeter(x1_pixel, self.cam_mat_meter_from_pixel)
+                            xs1_new_meter_no_gaps.append(x1_meter)
+
+                            x2_pixel = next_pts_new[i]
+                            xs2_new_pixel_no_gaps.append(x2_pixel)
+
+                            x2_meter = convertPointPixelToMeter(x2_pixel, self.cam_mat_meter_from_pixel)
+                            xs2_new_meter_no_gaps.append(x2_meter)
+
+                            new_map_point_ids_no_gaps.append(new_map_point_ids[i])
+
+                    # append new points into the previous frame
+                    new_pnt_ids = self.PutNewPoints2D(self.frame_ind-1, self.frame_ind, xs1_new_meter_no_gaps, xs1_new_pixel_no_gaps, new_map_point_ids_no_gaps)  # initial points
+                    self.PutMatchedPoints2D(new_pnt_ids, xs2_new_meter_no_gaps, xs2_new_pixel_no_gaps)
+        draw_camera_trackview = True
+        if draw_camera_trackview:
+            if self.img_trackview_bgr is None:
+                self.img_trackview_bgr = img2_bgr.copy()
+            else:
+                self.img_trackview_bgr[:,:,:] = img2_bgr[:,:,:]
+            self.DrawCameraTrackView(self.img_trackview_bgr) # draw on a dedicated (image) surface
+            cv2.waitKey(1)
+
+        self.Process(on_pnt_corresp=ShowPntCorresp, debug=debug)
+
+        # update cursor
+        self.img1_gray = img2_gray
+        self.img1_bgr = img2_bgr
+        self.img1_ind = img2_ind
+        return None
 
     def Process(self, on_pnt_corresp = None, debug = 1):
         matched_pnts_count, new_pnts_count, lost_pnts_count = self.__CalcMapPointsStat()
@@ -3396,21 +3546,37 @@ class PointsWorld:
         if debug >= 3 or True:
             print("img={} change of points, matched:{} lost:{} new:{}".format(self.frame_ind, matched_pnts_count, lost_pnts_count, new_pnts_count))
 
+        if self.slam_impl == 1:
+            self.LocateCamAndMapLatestFrameSequentialNaive(on_pnt_corresp, debug)
+
+    def LocateCamAndMapLatestFrameSequentialNaive(self, on_pnt_corresp, debug):
+        """ Naive SLAM implementation.
+        Localization: tries to find the relative motion between the last frame with determined 3D camera position and the latest (current) frame.
+        Mapping: if relative motion to the latest frame is found, then it triangulates all new points and adds them to the map (forever). 
+        """
         if self.frame_ind == 0:
             # assiciate the world frame with the first camera frame
+            worldR = np.eye(3, 3)
+            worldT = np.zeros(3)
             with self.visual_host.cameras_lock:
-                self.visual_host.world_to_cam_R = [np.eye(3, 3)]  # world
-                self.visual_host.world_to_cam_T = [np.zeros(3)]  # world
+                self.visual_host.world_to_cam_R.append(worldR)
+                self.visual_host.world_to_cam_T.append(worldT)
 
             with self.visual_host.continue_computation_lock:
                 self.visual_host.world_map_changed_flag = True
+            return
+        # initialization step
+        if self.frame_ind < 50 and True:
+            worldR = None
+            worldT = None
+            with self.visual_host.cameras_lock:
+                self.visual_host.world_to_cam_R.append(worldR)
+                self.visual_host.world_to_cam_T.append(worldT)
 
-        if self.frame_ind > 0:
-            self.TryFindLastFrameRelativeMotion(on_pnt_corresp, debug)
+            with self.visual_host.continue_computation_lock:
+                self.visual_host.world_map_changed_flag = True
+            return
 
-
-    # Tries to find the relative motion between the last frame with determined camera position and the latest frame.
-    def TryFindLastFrameRelativeMotion(self, on_pnt_corresp, debug):
         # enumerate matched points
         xs1_meter = []
         xs2_meter = []
@@ -3500,8 +3666,8 @@ class PointsWorld:
             expected_ess_mat = skewSymmeticMat(expT/LA.norm(expT)).dot(expR)
             expected_ess_mat /= LA.norm(expected_ess_mat)
 
-        world_R = None
-        world_T = None
+        cur_cam_from_world_R = None
+        cur_cam_from_world_T = None
         suc, ess_mat_list = FindEssentialMat5PointStewenius(cons_xs1_meter, cons_xs2_meter, proj_ess_space=True, check_constr=True, debug=debug, expected_ess_mat=expected_ess_mat)
         #assert suc, "Essential matrix on consensus set must be calculated"
         if not suc:
@@ -3531,36 +3697,107 @@ class PointsWorld:
 
         #
         if not ess_mat is None:
-            suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
+            cur_cam_from_world_R, cur_cam_from_world_T = None, None
+            suc, rel_R, rel_T = ExtractRotTransFromEssentialMat(ess_mat_refined, cons_xs1_meter, cons_xs2_meter, debug=debug)
             if not suc:
                 if debug >= 3: print("Failed E->R,T")
                 #on_pnt_corresp("cons", cons_ids)
             else:
-                ess_T = skewSymmeticMat(ess_Tvec)
-                ess_wvec, ess_wang = logSO3(ess_R)
-                if debug >= 3: print("R|T: w={0} ang={1}deg\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+                ess_wvec, ess_wang = logSO3(rel_R)
+
+                expect_R = None
+                expect_T = None
+                expect_Rw = None
+                expect_Rang_deg = None
+                if not self.ground_truth_relative_motion is None:
+                    expect_R, expect_T = self.ground_truth_relative_motion(self.last_known_pos_frame_ind, self.frame_ind)
+                    expect_Rw, expect_Rang = logSO3(expect_R)
+                    expect_Rang_deg = math.degrees(expect_Rang)
+                    # make T to be the unity
+                    expect_Tuni = expect_T / LA.norm(expect_T)
+
+
+                if debug >= 3:
+                    print("R|T: w={0} ang={1}deg T:{2} expectRw:{3} expectRang:{4}deg expectT:{5} R:expectR\n{6}\n{7}"
+                         .format(ess_wvec, math.degrees(ess_wang), rel_T,
+                         expect_Rw, expect_Rang_deg, expect_Tuni, rel_R, expect_R))
+
+                # relative camera motion -> camera from world
+                head_R, head_T = None, None
+                with self.visual_host.cameras_lock:
+                    head_R = self.visual_host.world_to_cam_R[self.last_known_pos_frame_ind]
+                    head_T = self.visual_host.world_to_cam_T[self.last_known_pos_frame_ind]
+
+                #use_rel_T = rel_T
+                use_rel_T = rel_T / self.focal_len
+                cur_cam_from_world = SE3Compose((rel_R, use_rel_T), (head_R, head_T))
+                cur_cam_from_world_R, cur_cam_from_world_T = cur_cam_from_world
+
+                # reconstruct map
+                reconstruct_map = True
+                if reconstruct_map:
+                    world_from_head = SE3Inv((head_R, head_T))
+                    world_from_cur_cam = SE3Inv(cur_cam_from_world)
+                    pZ = np.hstack((np.eye(3, 3), np.zeros((3, 1))))
+                    for pnt_life in self.points_life:
+                        if pnt_life.is_mapped: continue
+                        # TODO: map all points in consensus, which are not mapped yet
+                        x1_meter = pnt_life.points_list_meter[self.last_known_pos_frame_ind]
+                        x2_meter = pnt_life.points_list_meter[self.frame_ind]
+                        if x1_meter is None or x2_meter is None:
+                            continue
+                        pA = np.hstack((rel_R, rel_T.reshape((3, 1))))
+                        q3D = triangulateDlt(pZ, pA, x1_meter, x2_meter, normalize=False)
+                        almost_zero = 1e-4  # slightly bigger value to catch 1.059e-5
+                        if abs(q3D[-1]) < almost_zero:
+                            # algorithm failed to determine the valid [R,T] candidate
+                            continue
+                        pos3D_head = q3D / q3D[-1]
+                        pos3D_head = pos3D_head[0:3]
+                        pos3D_head_f = pos3D_head / self.focal_len # measure distance in terms of focal lengths
+                        # TODO: how to scale pos3D_head?
+
+                        lam1 = x1_meter.dot(pos3D_head) / LA.norm(x1_meter)**2
+                        pos3D_cur = rel_R.dot(pos3D_head) + rel_T
+                        lam2 = x2_meter.dot(pos3D_cur) / LA.norm(x2_meter)**2
+                        aaaleft = lam2 * x2_meter
+                        aaarigh = lam1 * rel_R.dot(x1_meter) + rel_T
+                        # assert left==right
+
+                        pos3D_world = SE3Apply(world_from_head, pos3D_head)
+                        #pos3D_world_f = SE3Apply(world_from_head, pos3D_head_f)
+                        if debug >= 3:
+                            map_pnt_true_pos = None
+                            if not self.ground_truth_map_pnt_pos is None and not pnt_life.map_point_id is None:
+                                map_pnt_true_pos = self.ground_truth_map_pnt_pos(0, pnt_life.map_point_id)
+                                #map_pnt_true_pos /= self.focal_len # measure distance in terms of focal lengths
+                            print("reconstructed track_id:{} map_point_id:{} pos:{} true_pos:{}".format(pnt_life.point_id, pnt_life.map_point_id, pos3D_world,  map_pnt_true_pos))
+                        self.visual_host.xs3d.append(pos3D_world)
+                        pnt_life.is_mapped = True
 
         with self.visual_host.cameras_lock:
             # map to the world frame
             if suc:
-                head_R = self.visual_host.world_to_cam_R[self.last_known_pos_frame_ind]
-                head_T = self.visual_host.world_to_cam_T[self.last_known_pos_frame_ind]
-                world_R = np.dot(head_R, ess_R)
-                world_T = np.dot(head_R, ess_Tvec) + head_T
+                # head_R = self.visual_host.world_to_cam_R[self.last_known_pos_frame_ind]
+                # head_T = self.visual_host.world_to_cam_T[self.last_known_pos_frame_ind]
+                # camera_from_world_R = np.dot(head_R, ess_R)
+                # camera_from_world_T = np.dot(head_R, ess_Tvec) + head_T
 
+                # camera pos in the world = world_from_camera*[0,0,0,1]=inv(camera_from_world)*[0,0,0,1]
                 pos_prev = -head_R.T.dot(head_T)
-                pos = -world_R.T.dot(world_T)
+                pos = -cur_cam_from_world_R.T.dot(cur_cam_from_world_T)
                 dx = LA.norm(pos - pos_prev)
                 if dx > 10:
                     print("too big relative motion")
 
-            self.visual_host.world_to_cam_R.append(world_R)
-            self.visual_host.world_to_cam_T.append(world_T)
+            self.visual_host.world_to_cam_R.append(cur_cam_from_world_R)
+            self.visual_host.world_to_cam_T.append(cur_cam_from_world_T)
             pass
 
         # on failure to find [R,T] the head_ind doesn't change
-        if not world_R is None:
-            suc, frames_R, frames_T, world_pnts = self.EstimateMap(debug=debug)
+        if not cur_cam_from_world_R is None:
+            #suc, frames_R, frames_T, world_pnts = self.EstimateMap(debug=debug)
+            suc = False
             if suc:
                 with self.visual_host.cameras_lock:
                     self.visual_host.world_to_cam_R_alt = frames_R
@@ -3616,7 +3853,7 @@ class PointsWorld:
         return res
 
     def DrawCameraTrackView(self, img2_bgr, max_track_len=20):
-        def DrawFeatTrack(pnt_life):
+        def DrawFeatTrack(pnt_life, color):
             # draw track of a point
             x_pix_pre = None
             start_frame_ind = max(0, self.frame_ind - max_track_len)
@@ -3631,18 +3868,32 @@ class PointsWorld:
                     else:
                         break  # before the first pixel value
                 if not x_pix_pre is None:
-                    cv2.line(img2_bgr, tuple(x_pix_pre), tuple(x_pix), (0, 255, 0))
+                    try:
+                        cv2.line(img2_bgr, IntPnt(x_pix_pre), IntPnt(x_pix), color)
+                    except SystemError:
+                        print("")
                 x_pix_pre = x_pix
-        def DrawHead(pnt_life):
+        def DrawHead(pnt_life, color):
             # draw the last pixel
             head_pixel = None
             if self.frame_ind >= 0 and self.frame_ind < len(pnt_life.points_list_pixel):
                 head_pixel = pnt_life.points_list_pixel[self.frame_ind]
             if not head_pixel is None:
-                cv2.circle(img2_bgr, tuple(head_pixel), 3, (0, 255, 0))
+                cv2.circle(img2_bgr, IntPnt(head_pixel), 3, color)
+
+        track_colors = [
+            (0,255,0),
+            (0,0,255),
+            (255,0,0),
+            (255,255,0),# cyan
+            (255,0,255),# magenta
+            (0,255,255) # yellow
+        ]
         for pnt_life in self.points_life:
-            DrawFeatTrack(pnt_life)
-            DrawHead(pnt_life)
+            color_ind = pnt_life.point_id % len(track_colors)
+            color = track_colors[color_ind]
+            DrawFeatTrack(pnt_life, color)
+            DrawHead(pnt_life, color)
 
         cv2.imshow("camera_trackview", img2_bgr)
 
@@ -4942,7 +5193,7 @@ class ReconstructDemo:
 
     def WorkerRunCornerMatcherAndFindCameraPos(self, continue_lock, cameras_lock, main_args):
         debug = main_args.debug
-        cam_mat = np.array([
+        cam_mat_pixel_from_meter = np.array([
             [5.7231451642124046e+02, 0., 3.2393613004134221e+02],
             [0., 5.7231451642124046e+02, 2.8464798761067397e+02],
             [0., 0., 1.]])
@@ -4956,7 +5207,7 @@ class ReconstructDemo:
 
         track_sys = PointsWorld()
         track_sys.visual_host = self
-        track_sys.SetCamMat(cam_mat)
+        track_sys.SetCamMat(cam_mat_pixel_from_meter)
 
         for img_ind in range(0, len(img_abs_pathes)):
             # check if cancel is requested
@@ -4970,7 +5221,7 @@ class ReconstructDemo:
             img2_bgr = cv2.imread(img2_path)
             assert not img2_bgr is None, "can't read image {}".format(img2_path)
 
-            track_sys.ProcessNextImage(img2_bgr)
+            track_sys.ProcessNextImage(img2_bgr, debug=debug)
         #
         track_sys.PrintStat()
 
@@ -5079,6 +5330,246 @@ class ReconstructDemo:
 
             R2 = R3
             T2 = T3
+            img_ind += 1
+        if debug >= 3: print("exiting worker thread")
+
+    def WorkerWalkThroughVirtualWorldCrystalGrid(self, continue_lock, cameras_lock, main_args):
+        debug = main_args.debug
+        slam_impl = main_args.slam
+        cam_mat_pixel_from_meter = None
+
+        xs3D = []
+        xs3D_virtual_ids = []
+
+        cx,cy,cz = 0.5, 0.5, 0.05 # cell size between atoms of the crystal
+        Wx,Wy = 10.0, 10.0 # world size
+        move_steps_count = 100
+        move_step = min(Wx,Wy)/(move_steps_count) # world is crossed in at least N steps, 0.1 to jit coords if step=cell size
+        dist_to_central_point = 3*max(cx,cy,cz)
+        img_width,img_height = 640, 480 # target image to project 3D points to
+        num_visible_2dpoints = 60
+
+        next_virt_id = 10001
+        inclusive_gap = 1.0e-8 # small value to make iteration inclusive
+        for z in np.arange(0,cz+inclusive_gap,cz):
+            for x in np.arange(0,Wx+inclusive_gap,cx):
+                #xjit = cz/10 # offset x to prevent overlapping of trajectories
+                xjit = 0 # offset x to prevent overlapping of trajectories
+                for y in np.arange(0,-Wy-inclusive_gap,-cy):
+                    xtmp = x + xjit # offset changes for each change of Y
+                    xjit = -xjit
+                    pnt = np.array([xtmp,y,z],np.float32)
+                    xs3D.append(pnt)
+                    xs3D_virtual_ids.append(next_virt_id)
+                    next_virt_id += 1
+                    #with cameras_lock: self.xs3d.append(pnt)
+        xs3D = np.array(xs3D)
+
+        provide_ground_truth = True
+        ground_truth_R_per_frame = []
+        ground_truth_T_per_frame = []
+        img_gray = np.zeros((img_height, img_width), np.uint8)
+        img_bgr = np.zeros((img_height, img_width,3), np.uint8)
+        img_bgr_prev = np.zeros((img_height, img_width,3), np.uint8)
+        xs_objs_clipped_prev = None
+
+        # returns [R,T], such that X2=[R,T]*X1
+        def GroundTruthRelativeMotion(img_ind1, img_ind2):
+            # ri from world
+            r1_fromW = ground_truth_R_per_frame[img_ind1]
+            t1_fromW = ground_truth_T_per_frame[img_ind1]
+            r2_fromW = ground_truth_R_per_frame[img_ind2]
+            t2_fromW = ground_truth_T_per_frame[img_ind2]
+
+            # X1=M_1w*Xw, X2=M_2w*Xw => X2=M_2w*inv(M_1w)*X1
+            r2_from1 = r2_fromW.dot(r1_fromW.T)
+            t2_from1 = -r2_from1.dot(t1_fromW)+t2_fromW
+            return (r2_from1,t2_from1)
+
+        def GroudTruthMapPointPos(img_ind, map_point_id):
+            pos_world = None
+            for virt_id, pos in zip(xs3D_virtual_ids, xs3D):
+                if virt_id == map_point_id:
+                    pos_world = pos
+                    break
+            if not pos_world is None:
+                # Xcam = M_camw*Xw
+                cam_from_world_R = ground_truth_R_per_frame[img_ind]
+                cam_from_world_T = ground_truth_T_per_frame[img_ind]
+                pos_cam = SE3Apply((cam_from_world_R, cam_from_world_T), pos_world)
+                return pos_cam
+
+            return None
+
+        track_sys = PointsWorld()
+        track_sys.visual_host = self
+        if provide_ground_truth:
+            track_sys.ground_truth_relative_motion = GroundTruthRelativeMotion
+            track_sys.ground_truth_map_pnt_pos = GroudTruthMapPointPos
+        min_num_3Dpoints = 9120
+        track_sys.min_num_3Dpoints=min_num_3Dpoints
+        track_sys.slam_impl = slam_impl
+
+        virt_feat_tracker = VirtualImageFeatureTracker(min_num_3Dpoints)
+        track_sys.img_feat_tracker = virt_feat_tracker
+
+        np.random.seed(124)
+        pnt_ids = None
+        R2 = None
+        T2 = None
+        img_ind = 0
+        cell_width = None
+        road = [(0,0), # bot-right=start
+                (0,-Wy), # bot-left
+                (Wx,-Wy), # top-left
+                (Wx,0)] # top-right
+        # add move_step to upper bound to make inclusive
+        centralY_list_left = list(np.arange(road[0][1], road[1][1], -move_step))
+        centralX_list_left = [road[0][0]] * len(centralY_list_left)
+        centralX_list_up = list(np.arange(road[1][0], road[2][0], move_step))
+        centralY_list_up = [road[1][1]] * len(centralX_list_up)
+        centralY_list_right = list(np.arange(road[2][1], road[3][1], move_step))
+        centralX_list_right = [road[2][0]] * len(centralY_list_right)
+        centralX_list_down = list(np.arange(road[3][0], road[0][0], -move_step))
+        centralY_list_down = [road[3][1]] * len(centralX_list_down)
+        centralX_list = centralX_list_left+centralX_list_up+centralX_list_right+centralX_list_down
+        centralY_list = centralY_list_left+centralY_list_up+centralY_list_right+centralY_list_down
+        for centralX, centralY in zip(centralX_list,centralY_list):
+        #for centralX, centralY in [(centralX_list[0],centralY_list[0]),(centralX_list[0],centralY_list[0])]:
+            # check if cancel is requested
+            with continue_lock:
+                cont = self.do_computation_flag
+            if not cont:
+                if debug >= 3: print("got computation cancel request")
+                break
+
+            print("central-XY=({},{})".format(centralX,centralY))
+
+            # cam3
+            cam3_from_world = np.eye(4,4, dtype=np.float32)
+            #centralX,centralY = cx,-cy
+            cam3_from_world = SE3Mat(None, np.array([-centralX, -centralY, 0])).dot(cam3_from_world) # stay on atom which will be in the center of the view
+            # (handX,handY) = the distance to central atom in (X,Y) plane
+            handX = dist_to_central_point/math.sqrt(3)
+            handY = handX
+            cam3_from_world = SE3Mat(None, np.array([handX, -handY, 0])).dot(cam3_from_world) # offset in (X,Y) plane
+            handZ = handX # the altitude above the (X,Y) plane
+            cam3_from_world = SE3Mat(None, np.array([0, 0, handZ])).dot(cam3_from_world) # offset in (X,Y) plane
+            # point OZ in the direction of the central atom
+            cam3_from_world = SE3Mat(rotMat([0,1,0], -math.pi/2), None).dot(cam3_from_world)
+            cam3_from_world = SE3Mat(rotMat([1,0,0], -math.pi/4), None).dot(cam3_from_world)
+            cam3_from_world = SE3Mat(rotMat([0, 1, 0], math.pi/2-math.atan(math.sqrt(2))), None).dot(cam3_from_world) # rotate down OZ towards the central point
+            cam3_from_world = SE3Mat(rotMat([0, 0, 1], -math.pi/2), None).dot(cam3_from_world) # align axis in image (column,row) format, OX=right, OY=down
+            R3 = cam3_from_world[0:3, 0:3]
+            T3 = cam3_from_world[0:3, 3]
+
+            if provide_ground_truth:
+                ground_truth_R_per_frame.append(R3)
+                ground_truth_T_per_frame.append(T3)
+
+            xs3D_cam3 = np.dot(R3, xs3D.T).T + T3
+
+            corrupt_with_noise = False
+            if corrupt_with_noise:
+                cell_width = max(cx, cy, cz)
+                noise_perc = 0.01
+                proj_err_pix = noise_perc * cell_width # 'radius' of an error
+                print("proj_err_pix={0}".format(proj_err_pix))
+                n3 = np.random.rand(len(xs3D), 3) * 2*proj_err_pix - proj_err_pix
+                xs3D_cam3 += n3
+
+            # perform general projection 3D->2D
+            xs_img3 = xs3D_cam3.copy()
+            for i in range(0, len(xs_img3)):
+                xs_img3[i, :] /= xs_img3[i, -1]
+
+            # set pixels formation matrix, so that specified number of projected 3D points is visible
+            if cam_mat_pixel_from_meter is None:
+                # example of pixel_from_meter camera matrix
+                cam_mat_pixel_from_meter = np.array([
+                    [880, 0, img_width / 2],
+                    [0, 660, img_height / 2],
+                    [0., 0., 1.]], np.float32)
+
+                # project all 3D points in the image and look at closest N points
+                # the maximum of (X,Y,Z) will determine the alphaX=focus_dist*sx
+                p1_cam3 = cam3_from_world.dot([centralX,centralY,0,1])
+                p1_cam3 = p1_cam3[0:3]
+                dists = [LA.norm(p-p1_cam3) for p in xs_img3]
+                closest_pnts = sorted(zip(xs3D_cam3,xs_img3, dists), key=lambda item: item[2])
+                far_point_meter = closest_pnts[num_visible_2dpoints][0]
+                max_rad_meter = max(abs(far_point_meter[0]),abs(far_point_meter[1]))
+                max_z = abs(far_point_meter[2])
+
+                # x_image_meter = focus_dist*X/Z, MASKS formula 3.4
+                # x_image_pixel = x_image_meter * sx
+                # => x_image_pixel = focus_dist*sx*X/Z
+                # let alphaX = focus_dist*sx = x_image_pixel/X*Z
+                alphaX = (img_width/2) / max_rad_meter * max_z
+                alphaY = (img_height/2) / max_rad_meter * max_z
+
+                # imageX (columns) is directed in the direction of OY of camera
+                # imageY (rows) is directed in the direction of -OX of camera
+                # xcol = x*alphaX+xcenter
+                # yrow = y*alphaY+ycenter
+                # where (xcenter,ycenter) is the principal point (the center) of the image in pixels
+                cam_mat_pixel_from_meter = np.array([
+                    [alphaX, 0, img_width/2],
+                    [0, alphaY, img_height/2],
+                    [0.0,0,1]], np.float32)
+                print("cam_mat_pixel_from_meter=\n{}".format(cam_mat_pixel_from_meter))
+                track_sys.SetCamMat(cam_mat_pixel_from_meter)
+
+            xs_pixel_all = cam_mat_pixel_from_meter.dot(xs_img3.T).T
+            xs_objs_clipped = [(virt_id,(xpix,ypix)) for (virt_id,(xpix,ypix,w)) in zip(xs3D_virtual_ids,xs_pixel_all) if xpix < img_width and xpix >= 0 and ypix < img_height and ypix >= 0]
+
+            virt_feat_tracker.SetImage2DPoints(img_ind, xs_objs_clipped)
+
+            img_gray.fill(0)
+            for virt_id, (xpix,ypix) in xs_objs_clipped:
+                img_gray[int(ypix),int(xpix)]=255
+            img_bgr[:,:,0] = img_gray
+            img_bgr[:,:,1] = img_gray
+            img_bgr[:,:,2] = img_gray
+
+            cv2.imshow("frontal_camera", img_bgr)
+            cv2.waitKey(1)
+            if False and not xs_objs_clipped_prev is None:
+                pnt_dic = {} # map pntid->(pntid,x1,x2)
+                for virt_id, (xpix, ypix) in xs_objs_clipped_prev:
+                    pnt_dic[virt_id] = [virt_id, (xpix,ypix), None]
+                for virt_id, (xpix, ypix) in xs_objs_clipped:
+                    pnt_match = pnt_dic.get(virt_id, [virt_id, None, None])
+                    pnt_match[2] = (xpix,ypix)
+                    pnt_dic[virt_id] = pnt_match
+                pts1 = []
+                pts2 = []
+                print("pnt_dic=\n{}".format(pnt_dic))
+                for item in pnt_dic.values():
+                    pts1.append(item[1])
+                    pts2.append(item[2])
+                ShowMatches("camera_diff", img_bgr_prev, img_bgr, pts1, pts2, transit=1, print_transit=True)
+
+            # expected transformation
+            if debug >= 3 and not R2 is None:
+                R23 = np.dot(R3, R2.T)
+                T23 = -np.dot(np.dot(R3, R2.T), T2) + T3
+                n23, ang23 = logSO3(R23)
+                print("exact R23: n={0} ang={1}deg T23={2}\n{3}".format(n23, math.degrees(ang23), T23, R23))
+                print("expect unity T:{}".format(T23 / LA.norm(T23)))
+                ess_mat = skewSymmeticMat(T23 / LA.norm(T23)).dot(R23)
+                ess_mat = ess_mat / LA.norm(ess_mat)
+                print("expect E (for img_ind={}):\n{}".format(img_ind, ess_mat))
+                print("detE==0, actually {}".format(LA.det(ess_mat)))
+                c1 = LA.norm(2 * ess_mat.dot(ess_mat.T).dot(ess_mat) - np.trace(ess_mat.dot(ess_mat.T)) * ess_mat)
+                print("2E*Et*E-trace(E*Et)E==0, actually {}".format(c1))
+
+            track_sys.ProcessNextImage(img_ind, img_bgr, debug=debug)
+
+            R2 = R3
+            T2 = T3
+            img_bgr_prev, img_bgr = img_bgr, img_bgr_prev
+            xs_objs_clipped_prev = xs_objs_clipped
             img_ind += 1
         if debug >= 3: print("exiting worker thread")
 
@@ -5369,6 +5860,9 @@ class ReconstructDemo:
                 args=(self.continue_computation_lock, self.cameras_lock, main_args))
         elif job_id == 3:
             compute_thread = threading.Thread(name="comput", target=self.WorkerRunPlanarHomographyReconstruction,\
+                args=(self.continue_computation_lock, self.cameras_lock, main_args))
+        elif job_id == 61:
+            compute_thread = threading.Thread(name="comput", target=self.WorkerWalkThroughVirtualWorldCrystalGrid,\
                 args=(self.continue_computation_lock, self.cameras_lock, main_args))
         compute_thread.start()
 
@@ -6088,6 +6582,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int, default=2)
     parser.add_argument("--job", help="specify worker thread to run", type=int, default=2)
+    parser.add_argument("--slam", help="slam impl", type=int, default=1)
     args = parser.parse_args()
 
     #TestSampsonDistance()
