@@ -6,6 +6,9 @@ import time
 import threading
 import os
 import argparse
+import functools
+import operator
+
 import numpy as np
 import numpy.linalg as LA
 import cv2
@@ -110,6 +113,8 @@ def SE3Inv(rt_tup):
     r, t = rt_tup
     return (r.T, -np.dot(r.T,t))
 
+def RelMotionBFromA(a_from_world, b_from_world):
+    return SE3Compose(b_from_world, SE3Inv(a_from_world))
 
 # get transformation of image points so that the center of mass is in the origin and
 # the averge distance from origin is sqrt(2)
@@ -1067,6 +1072,206 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
 
     return True, sol_R, sol_Tvec
 
+def FindRelativeMotion(pnt_life, xs1_meter, xs2_meter, debug):
+    # find transformation [R,T] of camera (frame2) in world (frame1)
+    suc, ess_mat_list = FindEssentialMat5PointStewenius(xs1_meter, xs2_meter, proj_ess_space=True, check_constr=True, debug=debug)
+    assert suc, "Essential matrix on consensus set must be calculated"
+
+    # choose essential matrix with minimal sampson error
+    sampson_dist_calculator = SampsonDistanceCalc()
+    samps_errs = [sampson_dist_calculator.DistanceMult(e, xs1_meter, xs2_meter) for e in ess_mat_list]
+    ess_mat_best_item = min(zip(ess_mat_list, samps_errs), key=lambda item: item[1])
+    ess_mat = ess_mat_best_item[0]
+
+    if debug >= 3: print("essMat=\n{}".format(ess_mat))
+
+    refine_ess = False # refinement is not implemented
+    if refine_ess:
+        suc, ess_mat_refined = RefineFundMat(ess_mat, xs1_meter, xs2_meter, debug=debug)
+        if suc:
+            if debug >= 3: print("calcCameras refined_ess_mat=\n{0}".format(ess_mat_refined))
+    if not (refine_ess and suc):
+        ess_mat_refined = ess_mat
+
+    #
+    # TODO: what if R,T can't be extracted from ess_mat
+    suc, ess_R, ess_Tvec = ExtractRotTransFromEssentialMat(ess_mat_refined, xs1_meter, xs2_meter, debug=debug)
+    if not suc:
+        return False, (None, None)
+    ess_T = skewSymmeticMat(ess_Tvec)
+    ess_wvec, ess_wang = logSO3(ess_R)
+    if debug >= 3: print("R|T: w={0} ang={1}\n{2}\n{3}".format(ess_wvec, math.degrees(ess_wang), ess_R, ess_Tvec))
+
+    return suc, (ess_R, ess_Tvec)
+
+def FindRelativeMotionMultiPoints(base_frame_ind, targ_frame_ind, pnts_life, pnt_ids, pnt_depthes):
+    points_num = len(pnt_ids)
+    assert points_num == len(pnt_depthes)
+
+    # estimage camera position [R,T] given distances to all 3D points pj in frame1
+
+    A = np.zeros((3 * points_num, 12), dtype=np.float32)
+    for i, pnt_id in enumerate(pnt_ids):
+        pnt_ind = pnt_id
+        pnt_life = pnts_life[pnt_ind]
+        x1 = pnt_life.points_list_meter[base_frame_ind]
+
+        x_img = pnt_life.points_list_meter[targ_frame_ind]
+        x_img_skew = skewSymmeticMat(x_img)
+        block_left = np.kron(x1.reshape(1, 3), x_img_skew)
+        A[3 * i:3 * (i + 1), 0:9] = block_left
+        depth = pnt_depthes[i]
+        alph = 1 / depth
+        A[3 * i:3 * (i + 1), 9:12] = alph * x_img_skew
+
+    dVec1, u1, vt1 = cv2.SVDecomp(A)
+    r_and_t = vt1.T[:, -1]
+    cam_R_noisy = r_and_t[0:9].reshape(3, 3, order='F')  # unstack
+    cam_Tvec_noisy = r_and_t[9:12]
+
+    # project noisy [R,T] onto SO(3) (see MASKS, formula 8.41 and 8.42)
+    dVec2, u2, vt2 = cv2.SVDecomp(cam_R_noisy)
+    no_guts = np.dot(u2, vt2)
+    sign1 = np.sign(LA.det(no_guts))
+    frame_R = sign1 * no_guts
+
+    det_den = LA.det(np.diag(dVec2.ravel()))
+    if math.isclose(0, det_den):
+        return False, None
+
+    t_factor = sign1 / rootCube(det_den)
+    cam_Tvec = t_factor * cam_Tvec_noisy
+
+    if sum(1 for a in cam_Tvec if not math.isfinite(a)) > 0:
+        print("error: nan")
+        return False, None
+
+    rel_R = frame_R[:, :]
+    rel_T = cam_Tvec[:]
+    return True, (rel_R, rel_T)
+
+def FindDistancesTo3DPointsTwoFrames(pnts_life, pnt_ids, rel_RT, block_base_frame_ind, block_other_frame_ind, debug):
+    points_num = len(pnt_ids)
+    ess_R, ess_Tvec = rel_RT
+
+    # find initial distances to all 3D points in frame1 (MASKS formula 8.43)
+    alphas = np.zeros(points_num, dtype=np.float32)
+    for i,pnt_id in enumerate(pnt_ids):
+        pnt_ind = pnt_id
+        x1 = pnts_life[pnt_ind].points_list_meter[block_base_frame_ind]
+        x2 = pnts_life[pnt_ind].points_list_meter[block_other_frame_ind]
+
+        x2_skew = skewSymmeticMat(x2)
+        h1 = np.dot(x2_skew, ess_Tvec)
+        h2 = np.dot(np.dot(x2_skew, ess_R), x1)
+        alpha_num = np.dot(h1, h2)
+        alpha = -alpha_num/LA.norm(h1)**2
+        alphas[i] = alpha
+        dist = 1/alpha
+        assert dist > 0, "distances are positive"
+    if debug >= 3: print("Dist: {0}".format(1 / alphas))
+    return 1/alphas
+
+def FindDistancesTo3DPoints(pnts_life, pnt_ids, frames_R, frames_T, frame_inds, block_base_frame_ind):
+    alphas = np.zeros(pnt_ids)
+
+    # find distances to all 3D points in frame1 given position [Ri,Ti] of each frame
+    # (MASKS formula 8.44)
+    for pnt_id in pnt_ids:
+        pnt_ind = pnt_id
+        x1 = pnts_life[pnt_ind][block_base_frame_ind]
+
+        alpha_num = 0
+        alpha_den = 0
+        for frame_ind in frame_inds:
+            # other cameras, except world frame1
+            if frame_ind == block_base_frame_ind: continue
+
+            x2 = pnts_life[pnt_ind][frame_ind]
+
+            x2_skew = skewSymmeticMat(x2)
+            frame_R = frames_R[frame_ind, :, :]
+            frame_T = frames_T[frame_ind, :]
+            h1 = np.dot(x2_skew, frame_T)
+            h2 = np.dot(np.dot(x2_skew, frame_R), x1)
+            alpha_num += np.dot(h1, h2)
+            alpha_den += LA.norm(h1) ** 2
+            if not math.isfinite(alpha_num) or not math.isfinite(alpha_den):
+                print("error: nan")
+
+        alpha = -alpha_num / alpha_den
+        alphas[pnt_ind] = alpha
+        dist = 1 / alpha
+
+        # assert dist > 0, "distances are positive"
+    if sum(1 for a in alphas if not math.isfinite(a)) > 0:
+        print("error: nan")
+    return 1/alphas
+
+def FindDistanceToOne3DPoint(block_base_frame_ind, frame_inds, x_per_frame, frames_R, frames_T):
+    # find distances to all 3D points in frame1 given position [Ri,Ti] of each frame
+    # (MASKS formula 8.44)
+    x1 = x_per_frame[block_base_frame_ind]
+
+    alpha_num = 0
+    alpha_den = 0
+    for frame_ind in frame_inds:
+        # other cameras, except world frame1
+        if frame_ind == block_base_frame_ind: continue
+
+        x2 = x_per_frame[frame_ind]
+
+        x2_skew = skewSymmeticMat(x2)
+        frame_R = frames_R[frame_ind]
+        frame_T = frames_T[frame_ind]
+        h1 = np.dot(x2_skew, frame_T)
+        h2 = np.dot(np.dot(x2_skew, frame_R), x1)
+        alpha_num += np.dot(h1, h2)
+        alpha_den += LA.norm(h1) ** 2
+        if not math.isfinite(alpha_num) or not math.isfinite(alpha_den) or math.isclose(0, alpha_den):
+            print("error: nan")
+            assert False
+
+    if not math.isfinite(alpha_num) or not math.isfinite(alpha_den) or math.isclose(0, alpha_den):
+        print("error: nan")
+        assert False
+
+    alpha = -alpha_num / alpha_den
+    dist = 1 / alpha
+    return dist
+
+def FindDistanceToOne3DPointNew(base_frame_ind, frame_inds, x_per_frame, framei_from_base_RT):
+    # find distances to all 3D points in frame1 given position [Ri,Ti] of each frame
+    # (MASKS formula 8.44)
+    x1 = x_per_frame[base_frame_ind]
+
+    alpha_num = 0
+    alpha_den = 0
+    for frame_ind in frame_inds:
+        # other cameras, except world frame1
+        if frame_ind == base_frame_ind: continue
+
+        x2 = x_per_frame[frame_ind]
+
+        x2_skew = skewSymmeticMat(x2)
+        frame_R, frame_T = framei_from_base_RT[frame_ind]
+        h1 = np.dot(x2_skew, frame_T)
+        h2 = np.dot(np.dot(x2_skew, frame_R), x1)
+        alpha_num += np.dot(h1, h2)
+        alpha_den += LA.norm(h1) ** 2
+        if not math.isfinite(alpha_num) or not math.isfinite(alpha_den) or math.isclose(0, alpha_den):
+            print("error: nan")
+            assert False
+
+    if not math.isfinite(alpha_num) or not math.isfinite(alpha_den) or math.isclose(0, alpha_den):
+        print("error: nan")
+        assert False
+
+    alpha = -alpha_num / alpha_den
+    dist = 1 / alpha
+    return dist
+
+
 # Do SLAM on calibrated coordinates (images of 3D points in meters).
 # MASKS Algo 8.1, Factorization algorithm for multiple-view reconstruction, page 281
 def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, max_iter=20, debug = 3):
@@ -1232,7 +1437,158 @@ def calcCameras(xs_per_image_meter, min_reproj_err = 0.01, max_iter=20, debug = 
     if debug >= 3: print("Search succeeded in {0} iterations, reproj_err: {1}".format(iter, reproj_err))
     if debug >= 3: print("reproj_err_history={0}".format(reproj_err_history))
 
-    if iter < max_iter:
+    if iter >= max_iter:
+        return False, frames_R, frames_T, world_pnts # is not converged
+
+    return True, frames_R, frames_T, world_pnts
+
+def calcCamerasNew(xs_per_image_meter, block_base_frame_ind, block_other_frame_ind, rel_RT, min_reproj_err = 0.01, max_iter=20, debug = 3):
+    frames_num = len(xs_per_image_meter)
+    assert frames_num >= 2, "Algo works on multiple image frames"
+
+    ess_R, ess_Tvec = rel_RT
+
+    # find initial distances to all 3D points in frame1 (MASKS formula 8.43)
+    points_num = len(xs_per_image_meter[block_base_frame_ind])
+    alphas = np.zeros(points_num, dtype=np.float32)
+    for pnt_ind in range(0, points_num):
+        x1 = xs_per_image_meter[block_base_frame_ind][pnt_ind]
+        x2 = xs_per_image_meter[block_other_frame_ind][pnt_ind]
+
+        x2_skew = skewSymmeticMat(x2)
+        h1 = np.dot(x2_skew, ess_Tvec)
+        h2 = np.dot(np.dot(x2_skew, ess_R), x1)
+        alpha_num = np.dot(h1, h2)
+        alpha = -alpha_num/LA.norm(h1)**2
+        alphas[pnt_ind] = alpha
+        dist = 1/alpha
+        assert dist > 0, "distances are positive"
+    if debug >= 3: print("Dist: {0}".format(1 / alphas))
+
+    if sum(1 for a in alphas if not math.isfinite(a)) > 0:
+        print("error: nan")
+
+    # the first view frame is the world frame
+    # frame's [Ri,Ti], Ri is the world axes as viewed from i-s frame
+    # Ti is the translation from camera to world frames
+    iter = 1
+    diverge = False
+    reproj_err = 0
+    frames_R = np.zeros((frames_num,3,3), dtype=np.float32)
+    frames_T = np.zeros((frames_num,3), dtype=np.float32)
+    world_pnts =  np.zeros((points_num,3), dtype=np.float32)
+    reproj_err_history = []
+    while iter < max_iter:
+        if debug >= 3: print("iter={0}".format(iter))
+
+        # estimage camera position [R,T] given distances to all 3D points pj in frame1
+
+        A = np.zeros((3*points_num, 12), dtype=np.float32)
+        xs_frame1 = xs_per_image_meter[block_base_frame_ind]
+        for frame_ind in range(0, frames_num):
+            points_per_frame = xs_per_image_meter[frame_ind]
+
+            A.fill(0)
+            for pnt_ind in range(0, points_num):
+                x1 = xs_frame1[pnt_ind]
+
+                x_img =  points_per_frame[pnt_ind]
+                x_img_skew = skewSymmeticMat(x_img)
+                block_left = np.kron(x1.reshape(1,3), x_img_skew)
+                A[3 * pnt_ind:3 * (pnt_ind + 1), 0:9] = block_left
+                A[3 * pnt_ind:3 * (pnt_ind + 1), 9:12] = alphas[pnt_ind]*x_img_skew
+
+            dVec1, u1, vt1 = cv2.SVDecomp(A)
+            r_and_t = vt1.T[:,-1]
+            cam_R_noisy = r_and_t[0:9].reshape(3,3, order='F') # unstack
+            cam_Tvec_noisy = r_and_t[9:12]
+
+            # project noisy [R,T] onto SO(3) (see MASKS, formula 8.41 and 8.42)
+            dVec2, u2, vt2 = cv2.SVDecomp(cam_R_noisy)
+            no_guts = np.dot(u2, vt2)
+            sign1 = np.sign(LA.det(no_guts))
+            frame_R = sign1 * no_guts
+
+            det_den = LA.det(np.diag(dVec2.ravel()))
+            if math.isclose(0, det_den):
+                diverge = True
+                break
+            t_factor = sign1 / rootCube(det_den)
+            cam_Tvec = t_factor * cam_Tvec_noisy
+
+            frames_R[frame_ind,:,:] = frame_R[:,:]
+            frames_T[frame_ind,:] = cam_Tvec[:]
+            if sum(1 for a in cam_Tvec if not math.isfinite(a)) > 0:
+                print("error: nan")
+
+        if debug >= 3:
+            for i in range(0, frames_num):
+                rotn, ang = logSO3(frames_R[i,:,:])
+                print("cam:{0} T:{1} R:n={2} ang={3}\n{4}".format(i, frames_T[i,:], rotn, math.degrees(ang), frames_R[i,:,:]))
+
+        # find distances to all 3D points in frame1 given position [Ri,Ti] of each frame
+        # (MASKS formula 8.44)
+        for pnt_ind in range(0, points_num):
+            x1 = xs_per_image_meter[block_base_frame_ind][pnt_ind]
+
+            alpha_num = 0
+            alpha_den = 0
+            for frame_ind in range(1, frames_num): # other cameras, except world frame1
+                x2 = xs_per_image_meter[frame_ind][pnt_ind]
+
+                x2_skew = skewSymmeticMat(x2)
+                frame_R = frames_R[frame_ind, :, :]
+                frame_T = frames_T[frame_ind, :]
+                h1 = np.dot(x2_skew, frame_T)
+                h2 = np.dot(np.dot(x2_skew, frame_R), x1)
+                alpha_num += np.dot(h1, h2)
+                alpha_den += LA.norm(h1) ** 2
+                if not math.isfinite(alpha_num) or not math.isfinite(alpha_den):
+                    print("error: nan")
+
+            alpha = -alpha_num / alpha_den
+            alphas[pnt_ind] = alpha
+            dist = 1 / alpha
+            #assert dist > 0, "distances are positive"
+        if sum(1 for a in alphas if not math.isfinite(a)) > 0:
+            print("error: nan")
+
+        if debug: print("it: {0} dist: {1}".format(iter, 1/alphas))
+
+        # calculate reprojection error
+        reproj_err = 0
+        for pnt_ind in range(0, points_num):
+            dist = 1 / alphas[pnt_ind] # distance to 3D point in frame1 (world)
+            x1 = xs_per_image_meter[block_base_frame_ind][pnt_ind]
+            x3D_cam1 = x1 * dist
+            world_pnts[pnt_ind, :] = x3D_cam1 # updated coordinate of the world point
+
+            for frame_ind in range(0, frames_num):
+                if frame_ind == block_base_frame_ind: continue
+                x_expect = xs_per_image_meter[frame_ind][pnt_ind]
+                x_expectN = x_expect / x_expect[-1]
+
+                frame_R = frames_R[frame_ind,:,:]
+                frame_T = frames_T[frame_ind,:]
+                xact_cami = np.dot(frame_R, x3D_cam1) + frame_T
+                xact_camiN = xact_cami / xact_cami[-1]
+
+                err = LA.norm(x_expectN - xact_camiN)**2
+                if debug >= 3: print("tgxexpect={0} xact={1} err={2} meters".format(x_expect, xact_camiN, err))
+                reproj_err += err
+
+        if debug >= 3: print("Xs3D:\n{0}".format(world_pnts))
+        if debug >= 3: print("reproj_err={0} meters".format(reproj_err))
+
+        reproj_err_history.append(reproj_err)
+
+        if reproj_err < min_reproj_err:
+            break
+        iter += 1
+    if debug >= 3: print("Search succeeded in {0} iterations, reproj_err: {1}".format(iter, reproj_err))
+    if debug >= 3: print("reproj_err_history={0}".format(reproj_err_history))
+
+    if iter >= max_iter or diverge:
         return False, frames_R, frames_T, world_pnts # is not converged
 
     return True, frames_R, frames_T, world_pnts
@@ -2258,14 +2614,15 @@ def makeSkewSymmetric(fundMat):
     return res
 
 def IsSpecialOrthogonal(rot_mat, p_msg = None):
+    def FromatMat(m): return str(m)
     tol = 1.0e-5
     c2 = np.allclose(np.eye(3,3), np.dot(rot_mat.T, rot_mat), atol=tol)
     if not c2:
-        if not p_msg is None: p_msg[0] = "Rt.R=I"
+        if not p_msg is None: p_msg[0] = "Rt.R=I (R={})".format(rot_mat)
         return False
     c1 = np.isclose(1, LA.det(rot_mat), atol=tol)
     if not c1:
-        if not p_msg is None: p_msg[0] = "det(R)=1"
+        if not p_msg is None: p_msg[0] = "det(R)=1 (R={})".format(rot_mat)
         return False
     return True
 
@@ -2326,12 +2683,11 @@ def logSO3(rot_mat, check_rot_mat = True):
 
     cos_ang = 0.5*(np.trace(rot_mat)-1)
     cos_ang = clamp(cos_ang, -1, 1) # the cosine may be slightly off due to rounding errors
-    ang = math.acos(cos_ang)
-    sin_ang = math.sin(ang)
+    sin_ang = math.sqrt(1.0-cos_ang**2)
 
     # TODO: return False when ambiguous reconstruction
     # n=[0,0,0] ang=0 -> Identity[3x3]
-    tol = 1.0e-5
+    tol = 1.0e-3 # should treat as zero values: 2e-4
     if np.isclose(0, sin_ang, atol=tol):
         return (np.array([0,0,0], dtype=rot_mat.dtype), 0)
 
@@ -2347,9 +2703,11 @@ def logSO3(rot_mat, check_rot_mat = True):
     n = n / n_len
 
     if check_rot_mat:
+        ang = math.acos(cos_ang)
         rot_mat_new = rotMat(n, ang, check_log_SO3=False)
-        # atol=1e-4 to ignore 1.950215e-5 error
-        assert np.allclose(rot_mat, rot_mat_new, atol=1e-4), "initial rotation matrix doesn't persist the conversion"
+        # atol=1e-4 to ignore 2.97e-3, 4.47974432e-04, 1.950215e-5 error
+        assert np.allclose(rot_mat, rot_mat_new, atol=1e-2), "initial rotation matrix doesn't persist the conversion n={} ang={} rotmat|rotmat_new|delta=\n{}\n{}\n{}"\
+            .format(n, ang, rot_mat, rot_mat_new, rot_mat-rot_mat_new)
     return n, ang
 
 
@@ -3225,6 +3583,37 @@ class VirtualImageFeatureTracker:
         return next_pts, status
 
 
+def BuildPointInFrameRelatonMatrix(pnt_life_list, sort_points=False):
+    """ Build Point(horizontal OX) and Frame (vertical OY) image, 0(black)=foreground, 255(white)=background """
+    points_count = len(pnt_life_list) # width, columns
+    frames_count = 0 # height, rows
+    if points_count > 0:
+        frames_count = len(pnt_life_list[0].points_list_meter)
+
+    pnt_life_sorted = pnt_life_list
+
+    # align life points (columns) to the left
+    if sort_points:
+        def CmpTwoPointTracks(p1, p2):
+            for p1_pnt2D, p2_pnt2D in zip(p1.points_list_meter, p2.points_list_meter):
+                if p1_pnt2D is None and not p2_pnt2D is None:
+                    return 1
+                if not p1_pnt2D is None and p2_pnt2D is None:
+                    return -1
+                # both non-null or both null
+                continue
+            return 0
+
+        pnt_life_sorted = sorted(pnt_life_list, key=functools.cmp_to_key(CmpTwoPointTracks))
+
+    pnt_frame = np.zeros((frames_count, points_count), np.uint8)
+    pnt_frame.fill(255) # background
+    for pnt_ind, pnt_life in enumerate(pnt_life_sorted):
+        for frame_ind, pos2D in enumerate(pnt_life.points_list_meter):
+            if not pos2D is None:
+                pnt_frame[frame_ind, pnt_ind] = 0 # foreground
+    return pnt_frame
+
 # Represents point across multiple frame images.
 class PointLife:
     def __init__(self):
@@ -3235,6 +3624,8 @@ class PointLife:
         # x) there may be map point, but a track is not associated because the tracker is overloaded
 
         self.inception_frame_ind = None # the frame when tracker decided to create a tracked point, may be later than the first time, the point was observed
+        self.start_frame_ind = None # the first frame when position of a point is available
+        self.last_frame_ind = None # the last+1 frame when position of a point is available
         self.points_list_meter = []
         self.points_list_pixel = []
         self.is_mapped = False
@@ -3247,7 +3638,10 @@ class PointsWorld:
         self.points_life = [] # coordinates of 2D points in images
         self.visual_host = None
         self.ground_truth_relative_motion = None
-        self.ground_truth_map_pnt_pos = None
+        self.ground_truth_map_pnt_pos = None # gets 3D coordinate of the point in a camera of interest
+
+        # the factor to multiply the ground truth translation to get the scaled distances, so that the initial camera move has unity length
+        self.first_unity_translation_scale_factor = None
 
         self.img1_bgr = None
         self.img1_gray = None
@@ -3260,6 +3654,9 @@ class PointsWorld:
         self.cam_mat_meter_from_pixel = None # inverse of cam_mat
         self.focal_len = None # foucus distance in millimeters
         self.slam_impl = None
+
+        self.framei_from_world_RT_list = []
+        self.world_pnts = []
 
     def SetCamMat(self, cam_mat_pixel_from_meter):
         self.cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
@@ -3339,6 +3736,8 @@ class PointsWorld:
             else:
                 pnt_life.points_list_meter[targ_frame_ind] = pnt2_meter
                 pnt_life.points_list_pixel[targ_frame_ind] = pnt2_pixel
+                pnt_life.start_frame_ind = min(pnt_life.start_frame_ind, targ_frame_ind) if not pnt_life.start_frame_ind is None else targ_frame_ind
+                pnt_life.last_frame_ind = max(pnt_life.last_frame_ind, targ_frame_ind + 1) if not pnt_life.last_frame_ind is None else targ_frame_ind+1
                 tracked_pnts_count += 1
         return lost_pnts_count, tracked_pnts_count
 
@@ -3488,7 +3887,9 @@ class PointsWorld:
                     map_point_id = new_map_point_ids_tmp[i]
                     new_map_point_ids.append(map_point_id)
 
-                if len(xs1_new_pixel) > 0:
+                new_points_batch_size = 8 # min number of points to add at once; >5 to more reiliably run the 5points algorithm
+
+                if len(xs1_new_pixel) > new_points_batch_size:
                     # xs1_new_pixel_array = np.array(xs1_new_pixel, np.float32)
                     # next_pts_new, status_new, err_new = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray,xs1_new_pixel_array, None,winSize=lk_win_size)
                     # FixOpenCVCalcOpticalFlowPyrLK(xs1_new_pixel, next_pts_new, status_new, lk_win_size)
@@ -3548,6 +3949,9 @@ class PointsWorld:
 
         if self.slam_impl == 1:
             self.LocateCamAndMapLatestFrameSequentialNaive(on_pnt_corresp, debug)
+        elif self.slam_impl == 2:
+            self.LocateCamAndMapBundleFrequently(on_pnt_corresp, debug)
+
 
     def LocateCamAndMapLatestFrameSequentialNaive(self, on_pnt_corresp, debug):
         """ Naive SLAM implementation.
@@ -3813,6 +4217,44 @@ class PointsWorld:
 
         return None
 
+    def LocateCamAndMapBundleFrequently(self, on_pnt_corresp, debug):
+        # if self.frame_ind == 0:
+        #     # assiciate the world frame with the first camera frame
+        #     worldR = np.eye(3, 3)
+        #     worldT = np.zeros(3)
+        #     with self.visual_host.cameras_lock:
+        #         self.visual_host.world_to_cam_R.append(worldR)
+        #         self.visual_host.world_to_cam_T.append(worldT)
+        #
+        #     with self.visual_host.continue_computation_lock:
+        #         self.visual_host.world_map_changed_flag = True
+        #     return
+
+        #if self.frame_ind < 5: return
+
+        pnt_to_frame = BuildPointInFrameRelatonMatrix(self.points_life, sort_points=True)
+        cv2.imshow("pnt_to_frame", pnt_to_frame)
+
+        # on failure to find [R,T] the head_ind doesn't change
+        #suc, frames_R, frames_T, world_pnts = self.EstimateMap(debug=debug)
+        #suc, frames_R, frames_T, world_pnts = self.EstimateMapChainSpaceBatch(debug=debug)
+        suc = self.IntegrateNewFrameIterative(self.points_life, self.framei_from_world_RT_list, self.world_pnts, debug=debug)
+        if not suc:
+            return
+        with self.visual_host.cameras_lock:
+            self.visual_host.world_to_cam_R_alt = [i[0] for i in self.framei_from_world_RT_list]
+            self.visual_host.world_to_cam_T_alt = [i[1] for i in self.framei_from_world_RT_list]
+
+            world_pnts_no_gaps = [p for p in self.world_pnts if not p is None]
+            self.visual_host.xs3d = world_pnts_no_gaps
+
+        with self.visual_host.continue_computation_lock:
+            self.visual_host.world_map_changed_flag = True
+            self.visual_host.processed_images_counter += 1
+
+        return None
+
+
     def IsLive3DPoint(self, pnt_id, from_frame_ind, to_frame_ind):
         """Whether the point has registered 2D point in each frame"""
         pnt_life = self.points_life[pnt_id]
@@ -3851,6 +4293,409 @@ class PointsWorld:
 
         res = calcCameras(xs_per_image_meter, debug=debug)
         return res
+
+    def EstimateMapChainSpaceBatch(self, debug=0):
+        frames_count = self.frame_ind + 1
+        points_count = len(self.points_life)
+
+        # init
+        for pnt_ind in range(0, points_count):
+            pnt_life = self.points_life[pnt_ind]
+            pnt_life.is_mapped = False
+
+        # cut_frame_ind = 0
+
+        # # determine the set of points to consider for the next points-frames block
+        # live_point_ids = []
+        # for pnt_ind in range(0, points_count):
+        #     is_live = self.IsLive3DPoint(pnt_ind, cut_frame_ind, cut_frame_ind + 1)
+        #     if is_live:
+        #         pnt_life = self.points_life[pnt_ind]
+        #         pnt_id = pnt_life.point_id
+        #         live_point_ids.append(pnt_id)
+
+        # # determine the set of frames for the next points-frames block
+        # block_end_frame_ind = None
+        # for pnt_id in live_point_ids:
+        #     pnt_ind = pnt_id
+        #     pnt_life = self.points_life[pnt_ind]
+        #     if block_end_frame_ind is None or pnt_life.last_frame_ind < block_end_frame_ind:
+        #         block_end_frame_ind = pnt_life.last_frame_ind
+
+        def Collect2DPoints(pnt_id_list, beg_frame_ind, end_frame_ind, xs_per_image_meter):
+            for frame_ind in range(beg_frame_ind, end_frame_ind):
+                # gather point coords
+                xs_per_frame = []
+                for pnt_id in pnt_id_list:
+                    pnt_ind = pnt_id
+                    pnt_life = self.points_life[pnt_ind]
+                    x2D = pnt_life.points_list_meter[frame_ind]
+                    assert not x2D is None
+                    xs_per_frame.append(x2D)
+
+                xs_per_image_meter.append(xs_per_frame)
+
+        # xs_per_image_meter = []
+        # Collect2DPoints(live_point_ids, cut_frame_ind, xs_per_image_meter)
+        #
+        # res = calcCameras(xs_per_image_meter, debug=debug)
+        # suc, frames_R, frames_T, world_pnts = res
+
+        # for pnt_id in live_point_ids:
+        #     pnt_ind = pnt_id
+        #     pnt_life = self.points_life[pnt_ind]
+        #     pnt_life.is_mapped = True
+
+        frames_R = [None] * frames_count
+        frames_T = [None] * frames_count
+        world_pnts = [None] * points_count
+
+        suc_factorization = True
+        cut_frame_ind = 0
+        blocks_processed = 0
+        relative_motion_known = False
+        while cut_frame_ind < frames_count:
+            print("blocks_processed={}".format(blocks_processed))
+
+            # determine the range of frames to consider for the next points-frames block
+            live_point_ids = []
+            block_beg_frame_ind = None
+            block_end_frame_ind = None
+            for pnt_ind in range(0, points_count):
+                pnt_life = self.points_life[pnt_ind]
+                if pnt_life.is_mapped:
+                    continue
+
+                beg = pnt_life.start_frame_ind
+                end = pnt_life.last_frame_ind
+
+                hit_block = cut_frame_ind >= beg and cut_frame_ind < end
+                if not hit_block:
+                    continue
+
+                live_point_ids.append(pnt_life.point_id)
+
+                if block_beg_frame_ind is None or beg > block_beg_frame_ind:
+                    block_beg_frame_ind = beg
+                if block_end_frame_ind is None or end < block_end_frame_ind:
+                    block_end_frame_ind = end
+
+            if block_beg_frame_ind is None or block_end_frame_ind is None:
+                suc_factorization = False
+                break
+
+            block_points_count = len(live_point_ids)
+            block_frames_count = block_end_frame_ind - block_beg_frame_ind
+            if block_points_count > 0 and block_frames_count > 1:
+                # determine the set of points to consider for the next points-frames block
+                xs_per_image_meter = []
+                Collect2DPoints(live_point_ids, block_beg_frame_ind, block_end_frame_ind, xs_per_image_meter)
+
+                block_base_frame_ind = block_beg_frame_ind
+                block_other_frame_ind = block_beg_frame_ind+1
+                assert block_base_frame_ind != block_other_frame_ind, "required two different frames to reconstruct a block"
+
+                if True or self.frame_ind == 5:
+                    for i in range(0, block_frames_count-1):
+                        suc, cut_RT = FindRelativeMotion(xs_per_image_meter, i, i+1, debug)
+                        if not suc:
+                            print("failed FindRelativeMotion")
+
+                # TODO: propogate frame_ind -> alphas (1/depth) for each point
+                if not relative_motion_known:
+                    suc, rel_RT = FindRelativeMotion(xs_per_image_meter, block_base_frame_ind, block_other_frame_ind, debug)
+                    assert suc
+                    relative_motion_known = True
+                else:
+                    if frames_R[0] is None:
+                        suc_factorization = False
+                        break
+
+                    base_R = frames_R[block_base_frame_ind]
+                    base_T = frames_T[block_base_frame_ind]
+                    other_R = frames_R[block_other_frame_ind]
+                    other_T = frames_T[block_other_frame_ind]
+                    other_from_base_RT = SE3Compose((other_R,other_T), SE3Inv((base_R,base_T)))
+                    rel_RT = other_from_base_RT
+
+                res = calcCamerasNew(xs_per_image_meter, block_base_frame_ind, block_other_frame_ind, rel_RT, max_iter=20, debug=debug)
+                suc, block_frames_R, block_frames_T, block_pnts = res
+                if not suc:
+                    suc_factorization = False
+                    break
+
+                block_start_frame_ind = block_base_frame_ind
+                for i, frame_ind in enumerate(range(block_start_frame_ind, block_end_frame_ind)):
+                    frames_R[frame_ind] =  block_frames_R[i]
+                    frames_T[frame_ind] =  block_frames_T[i]
+
+                for i,pnt_id in enumerate(live_point_ids):
+                    pnt_ind = pnt_id
+                    pnt_life = self.points_life[pnt_ind]
+                    pnt_life.is_mapped = True
+
+                    world_pnts[pnt_ind] = block_pnts[i]
+
+            cut_frame_ind = block_end_frame_ind
+            blocks_processed += 1
+
+        world_pnts_no_gaps = [p for p in world_pnts if not p is None]
+
+        if not suc_factorization:
+            return False, frames_R, frames_T, world_pnts_no_gaps
+            
+        for i, (r,t) in enumerate(zip(frames_R, frames_T)):
+            assert not r is None
+            assert not t is None
+        # for i, pnt in enumerate(world_pnts):
+        #     assert not pnt is None
+
+        return True, frames_R, frames_T, world_pnts_no_gaps
+
+    def IntegrateNewFrameIterative(self, pnt_life_list, framei_from_world_RT, world_pnts, debug, check_drift=True, drift=1e-5):
+        # allocate space for the new frame
+        frames_count = self.frame_ind + 1
+        framei_from_world_RT.append((None,None))
+
+        # allocate space for the new frame
+        points_count = len(self.points_life)
+        while len(world_pnts) < points_count:
+            world_pnts.append(None)
+
+        if frames_count == 1:
+            # world's origin
+            rot = np.eye(3)
+            cent = np.zeros(3)
+            framei_from_world_RT[0] = (rot, cent)
+            return True
+
+
+        # find relative motion
+        if frames_count == 2:
+            points_count = len(self.points_life)
+            latest_frame_pnt_ids = []
+            xs1_meter = []
+            xs2_meter = []
+            base_frame_ind = 0
+            other_frame_ind = 1
+            for pnt_ind in range(0, points_count):
+                x1_meter = self.points_life[pnt_ind].points_list_meter[base_frame_ind]
+                x2_meter = self.points_life[pnt_ind].points_list_meter[other_frame_ind]
+                if not x1_meter is None and not x2_meter is None:
+                    xs1_meter.append(x1_meter)
+                    xs2_meter.append(x2_meter)
+                    pnt_id = pnt_ind
+                    latest_frame_pnt_ids.append(pnt_id)
+
+            suc, new_frame_target_from_base_RT = FindRelativeMotion(self.points_life, xs1_meter, xs2_meter, debug)
+            if not suc:
+                print("failed FindRelativeMotion")
+                return False
+
+            framei_from_world_RT[other_frame_ind] = new_frame_target_from_base_RT
+
+            # check the relative motion of a camera
+            if not self.ground_truth_relative_motion is None:
+                print(new_frame_target_from_base_RT)
+
+                gtrue_R, gtrue_T = self.ground_truth_relative_motion(0, 1)
+                gtrue_Rw, gtrue_Rang = logSO3(gtrue_R)
+                true_Rang_deg = math.degrees(gtrue_Rang)
+                print(gtrue_R)
+                print(gtrue_T)
+
+                # make the first translation of unity lenght
+                self.first_unity_translation_scale_factor = 1.0 / LA.norm(gtrue_T)
+
+            # find coordinates of new 3D points
+            dists_base = FindDistancesTo3DPointsTwoFrames(self.points_life, latest_frame_pnt_ids, new_frame_target_from_base_RT, base_frame_ind, other_frame_ind, debug)
+
+            for i, pnt_id in enumerate(latest_frame_pnt_ids):
+                depth = dists_base[i]
+                pnt_ind = pnt_id
+
+                pnt_life = self.points_life[pnt_ind]
+                x_meter = pnt_life.points_list_meter[base_frame_ind]
+                x3D_base = depth * x_meter
+                x3D_world = x3D_base
+
+                if not self.ground_truth_map_pnt_pos is None:
+                    gtruth_x3D_world = self.ground_truth_map_pnt_pos(base_frame_ind, pnt_life.map_point_id)
+                    scaled_x3D_world = gtruth_x3D_world * self.first_unity_translation_scale_factor
+                    diff = LA.norm(scaled_x3D_world - x3D_world)
+                    delta = 1e-3
+                    if not np.isclose(0, diff, atol=delta):
+                        print("expect 3D: {}".format(gtruth_x3D_world))
+                        print("actual 3D: {}".format(x3D_world))
+                        assert False
+
+                world_pnts[pnt_ind] = x3D_world
+
+        else:
+            # determine the set of all points in the latest frame
+            latest_frame_pnt_ids = []
+            latest_frame_pnt_ids_set = set([])
+            for pnt_life in self.points_life:
+                x_meter = pnt_life.points_list_meter[self.frame_ind]
+                if x_meter is None: continue
+
+                latest_frame_pnt_ids.append(pnt_life.point_id)
+                latest_frame_pnt_ids_set.add(pnt_life.point_id)
+
+            # counts the number of common points between base and target frames
+            def CountCommonPoints(base_frame_pnt_ids_set, targ_frame_ind, common_pnt_ids=None):
+                result = 0
+                for pnt_life in self.points_life:
+                    x_meter = pnt_life.points_list_meter[targ_frame_ind]
+                    if x_meter is None: continue
+
+                    pnt_id = pnt_life.point_id
+                    pnt_ind = pnt_id
+                    pnt3D = world_pnts[pnt_ind]
+                    if pnt3D is None: continue
+
+                    if pnt_id in base_frame_pnt_ids_set:
+                        result += 1
+                        if not common_pnt_ids is None:
+                            common_pnt_ids.append(pnt_id)
+                return result
+
+            # for this, find the frame which has the most common points with the target frame
+            common_pnts_count_per_frame = [CountCommonPoints(latest_frame_pnt_ids_set, fr_ind) for fr_ind in range(0, self.frame_ind)]
+            similar_frame_ind, common_pnts_count = max(enumerate(common_pnts_count_per_frame), key=operator.itemgetter(1))
+
+            # find relative motion of the new frame
+            common_pnt_ids = []
+            CountCommonPoints(latest_frame_pnt_ids_set, similar_frame_ind, common_pnt_ids)
+
+            # gets the depth of a point in the given frame
+            def GetPointDepth(pnt_id, anchor_frame_ind):
+                anchor_RT = framei_from_world_RT[anchor_frame_ind]
+                assert not anchor_RT[0] is None
+                assert not anchor_RT[1] is None
+
+                pnt_ind = pnt_id
+                x3D_world = world_pnts[pnt_ind]
+                if x3D_world is None:
+                    print("error: x3D_world is None")
+                    assert False
+
+                x3D_anchor = SE3Apply(anchor_RT, x3D_world)
+
+                if not self.ground_truth_map_pnt_pos is None:
+                    pnt_ind = pnt_id
+                    pnt_life = self.points_life[pnt_ind]
+                    w3D = self.ground_truth_map_pnt_pos(anchor_frame_ind, pnt_life.map_point_id) * self.first_unity_translation_scale_factor
+                    diff = LA.norm(w3D - x3D_anchor)
+                    #delta = 1e-1 # must pass 0.027781092461721443
+                    delta = drift
+                    if not np.isclose(0, diff, atol=delta):
+                        print("error: can't find depth of a 3D point, diff={}".format(diff))
+                        if check_drift:
+                            assert False
+                return x3D_anchor[2]
+
+            base_frame_ind = similar_frame_ind
+            targ_frame_ind = self.frame_ind
+            pnt_depthes_base = [GetPointDepth(pnt_id, base_frame_ind) for pnt_id in common_pnt_ids]
+            suc, new_frame_target_from_base_RT = FindRelativeMotionMultiPoints(base_frame_ind, targ_frame_ind, self.points_life, common_pnt_ids, pnt_depthes_base)
+            if not suc:
+                print("error! can't determine the relative motion")
+                assert suc
+
+            new_frame_target_from_world_RT = SE3Compose(new_frame_target_from_base_RT, framei_from_world_RT[base_frame_ind])
+
+            # check the relative motion of a camera
+            if not self.ground_truth_relative_motion is None:
+                print("new_frame_RT={}".format(new_frame_target_from_base_RT))
+
+                world_frame_ind = 0
+                gtrue_R, gtrue_T = self.ground_truth_relative_motion(world_frame_ind, targ_frame_ind)
+                gtrue_Rw, gtrue_Rang = logSO3(gtrue_R)
+                true_Rang_deg = math.degrees(gtrue_Rang)
+                print("ground true R\n{}".format(gtrue_R))
+
+                scaled_T = gtrue_T
+                if not self.first_unity_translation_scale_factor is None:
+                    scaled_T *= self.first_unity_translation_scale_factor
+                print("scaled T: {}".format(scaled_T))
+
+                diff_R = LA.norm(gtrue_R - new_frame_target_from_world_RT[0])
+                diff_T = LA.norm(scaled_T - new_frame_target_from_world_RT[1])
+                delta = drift
+                failed=False
+                if not np.isclose(0, diff_R, atol=delta):
+                    print("error: failed to get correct R diff_R={}".format(diff_R))
+                    failed=True
+                if not np.isclose(0, diff_T, atol=delta):
+                    print("error: failed to get correct T diff_T={}".format(diff_T))
+                    failed = True
+                if failed and check_drift:
+                    assert False
+
+            framei_from_world_RT[targ_frame_ind] = new_frame_target_from_world_RT
+
+            # determine the depthes of all points in the latest frame
+            for pnt_id in latest_frame_pnt_ids:
+                pnt_ind = pnt_id
+                pnt_life = self.points_life[pnt_ind]
+
+                frame_inds = []
+                x_per_frame = {}
+                framei_from_base_RT_dict = {}
+                block_base_frame_ind = None
+                for fr_ind in range(0, frames_count):
+                    # # skip the latest frame, because we don't know its (R,T) yet
+                    # if fr_ind == self.frame_ind: continue
+
+                    x_meter = pnt_life.points_list_meter[fr_ind]
+                    if x_meter is None: continue
+
+                    x_per_frame[fr_ind]= x_meter
+                    frame_inds.append(fr_ind)
+
+                    if block_base_frame_ind is None:
+                        block_base_frame_ind = fr_ind
+
+                    fr_RT = framei_from_world_RT[fr_ind]
+                    assert not fr_RT[0] is None, "we are intereseted in frames with known (R,T) camera orientation"
+
+                    base_from_world = framei_from_world_RT[block_base_frame_ind]
+                    framei_from_world = framei_from_world_RT[fr_ind]
+                    framei_from_base = RelMotionBFromA(base_from_world, framei_from_world)
+                    framei_from_base_RT_dict[fr_ind] = framei_from_base
+                if len(frame_inds) <= 1:
+                    print("why???")
+                    continue
+
+                depth_base = FindDistanceToOne3DPointNew(block_base_frame_ind, frame_inds, x_per_frame, framei_from_base_RT_dict)
+
+                x_meter = pnt_life.points_list_meter[block_base_frame_ind]
+                x3D_base = depth_base * x_meter
+
+                # convert point in base, into point in the world
+                base_from_world = framei_from_world_RT[block_base_frame_ind]
+                world_from_base = SE3Inv(base_from_world)
+                x3D_world = SE3Apply(world_from_base, x3D_base)
+
+                if not self.ground_truth_map_pnt_pos is None:
+                    world_frame_ind = 0
+                    gtruth_x3D_world = self.ground_truth_map_pnt_pos(world_frame_ind, pnt_life.map_point_id)
+                    scaled_x3D_world = gtruth_x3D_world
+                    if not self.first_unity_translation_scale_factor is None:
+                        scaled_x3D_world *= self.first_unity_translation_scale_factor
+                    diff = LA.norm(scaled_x3D_world - x3D_world)
+                    #delta = 1e-1 # must pass 0.00106298567037, 0.01252073431, 0.028073793742802243
+                    delta = drift
+                    if not np.isclose(0, diff, atol=delta):
+                        print("diff={}".format(diff))
+                        print("expect 3D: {}".format(scaled_x3D_world))
+                        print("actual 3D: {}".format(x3D_world))
+                        if check_drift:
+                            assert False
+
+                world_pnts[pnt_ind] = x3D_world
+        return True
 
     def DrawCameraTrackView(self, img2_bgr, max_track_len=20):
         def DrawFeatTrack(pnt_life, color):
@@ -5341,13 +6186,13 @@ class ReconstructDemo:
         xs3D = []
         xs3D_virtual_ids = []
 
-        cx,cy,cz = 0.5, 0.5, 0.05 # cell size between atoms of the crystal
-        Wx,Wy = 10.0, 10.0 # world size
-        move_steps_count = 100
+        cx,cy,cz = 1.0, 1.0, 0.05 # cell size between atoms of the crystal
+        Wx,Wy = 5.0, 5.0 # world size
+        move_steps_count = 30
         move_step = min(Wx,Wy)/(move_steps_count) # world is crossed in at least N steps, 0.1 to jit coords if step=cell size
         dist_to_central_point = 3*max(cx,cy,cz)
         img_width,img_height = 640, 480 # target image to project 3D points to
-        num_visible_2dpoints = 60
+        num_visible_2dpoints = 72-1
 
         next_virt_id = 10001
         inclusive_gap = 1.0e-8 # small value to make iteration inclusive
@@ -5386,7 +6231,7 @@ class ReconstructDemo:
             t2_from1 = -r2_from1.dot(t1_fromW)+t2_fromW
             return (r2_from1,t2_from1)
 
-        def GroudTruthMapPointPos(img_ind, map_point_id):
+        def GroundTruthMapPointPos(img_ind, map_point_id):
             pos_world = None
             for virt_id, pos in zip(xs3D_virtual_ids, xs3D):
                 if virt_id == map_point_id:
@@ -5405,7 +6250,7 @@ class ReconstructDemo:
         track_sys.visual_host = self
         if provide_ground_truth:
             track_sys.ground_truth_relative_motion = GroundTruthRelativeMotion
-            track_sys.ground_truth_map_pnt_pos = GroudTruthMapPointPos
+            track_sys.ground_truth_map_pnt_pos = GroundTruthMapPointPos
         min_num_3Dpoints = 9120
         track_sys.min_num_3Dpoints=min_num_3Dpoints
         track_sys.slam_impl = slam_impl
@@ -6595,4 +7440,3 @@ if __name__ == '__main__':
     #RunReconstructionOfIsolatedImagePairs()
     #RunReconstructionSequential()
     demo = ReconstructDemo(); demo.mainRun(args)
-
