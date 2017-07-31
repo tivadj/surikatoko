@@ -19,6 +19,7 @@ from OpenGL.raw.GLU.annotations import gluProject
 from OpenGL.raw.GLX._types import struct___GLXcontextRec
 from cv2 import Rodrigues
 from numpy.f2py.rules import options
+import scipy.linalg
 from scipy.spatial import Delaunay
 from scipy import optimize
 import pylab
@@ -396,13 +397,17 @@ class SampsonDistanceCalc:
         result2 = sum(map(lambda x1,x2: self.Distance(fund_mat, x1, x2), xs1, xs2))
         return result
 
-def IsEssentialMat(ess_mat, perr_msg = None):
+def IsEssentialMat(ess_mat, perr_msg = None, la_engine="scipy"):
     nrows, ncols = ess_mat.shape
     if not (nrows == 3 and ncols == 3):
         if not perr_msg is None: perr_msg[0] = "size(ess_mat)=3x3"
         return False
 
-    dVec,u,vt = cv2.SVDecomp(ess_mat)
+    if la_engine == "opencv":
+        dVec,u,vt = cv2.SVDecomp(ess_mat)
+    elif la_engine == "scipy":
+        u,dVec,vt = scipy.linalg.svd(ess_mat)
+
     dVec = dVec.ravel()
     ok = np.isclose(dVec[0],dVec[1]) and np.isclose(0,dVec[2])
     if not ok:
@@ -411,9 +416,17 @@ def IsEssentialMat(ess_mat, perr_msg = None):
     return True
 
 # Projects given noisy essential matrix onto the essential space (such that rank(E)=2)
-def ProjectOntoEssentialSpace(ess_mat_noisy, unity_translation = True):
+def ProjectOntoEssentialSpace(ess_mat_noisy, unity_translation = True, la_engine='scipy', conceal_lost_precision=True):
+    eltype = ess_mat_noisy.dtype
+
     # project onto the space of essential matrices
-    dVec2, u2, vt2 = cv2.SVDecomp(ess_mat_noisy)
+    if la_engine == "opencv":
+        dVec2, u2, vt2 = cv2.SVDecomp(ess_mat_noisy)
+    elif la_engine == "scipy":
+        u2, dVec2, vt2 = scipy.linalg.svd(ess_mat_noisy)
+        if conceal_lost_precision:
+            u2 = u2.astype(eltype)
+            vt2 = vt2.astype(eltype)
 
     # MASKS page 120, we may normalize E to unity: norm(E)=norm(T)=1
     dVec2 = dVec2.ravel()
@@ -582,11 +595,13 @@ def FindEssentialMat7Point(xs1, xs2, unity_translation = True, debug = 0, perr_m
 
     return True, ess_mat_list, real_roots
 
-def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation = True, check_constr = True, debug = 0, expected_ess_mat = None, perr_msg = None, close_tol = 1e-5):
+def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation = True, check_constr = True, debug = 0, expected_ess_mat = None, perr_msg = None, close_tol = 1e-5, la_engine='scipy', conceal_lost_precision=True):
     """
     Computes essential matrix from at least five 2D homogeneous (3 components) point correspondences.
     source: "Recent developments on direct relative orientation", Stewenius 2006
-    'direct' refers to close form algorithm (it won't be trapped in local minimum).
+    param: direct refers to close form algorithm (it won't be trapped in local minimum).
+    param: la_engine underlying lingear algebra routines to use ['scipy','opencv']
+    param: conceal_lost_precision True to hide the fact of loss in float precision
     :return: the list of essential matrix candidates
     """
     ess_mat_list = None
@@ -595,6 +610,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
     if not ok:
         if not perr_msg is None: perr_msg[0] = "Provide the minimal number of point correspondences"
         return False, ess_mat_list
+    assert la_engine in ["scipy", "opencv"]
 
     eltype = type(xs1[0][0])
 
@@ -607,9 +623,11 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
     # NOTE: for some reason cv2.SVDecomp doesn't produce correct last four columns of Vt.T (first five columns are ok)
     #dVec, u, vt = cv2.SVDecomp(A, flags=4) # 4=cv2.FULL_UV
     try:
-        u, dVec, vt = LA.svd(A, full_matrices=True)
+        u, dVec, vt = scipy.linalg.svd(A, full_matrices=True)
     except LA.LinAlgError:
         return False, ess_mat_list # svd didn't converge
+    if conceal_lost_precision:
+        vt = vt.astype(eltype)
 
     assert vt.shape[0] == 9 and vt.shape[1] == 9, "Matrix of right singular vectors Vt must be full (9x9)"
 
@@ -629,8 +647,13 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
         B = np.zeros((10,10), dtype=eltype)
         M1 = M[:,0:10]
         M2 = M[:,10:20]
-        suc,B = cv2.solve(M1, M2, dst=B, flags=cv2.DECOMP_SVD)
-        assert suc, "Should succeed, because SVD is used and the solution in least squares sense"
+        if la_engine == "opencv":
+            suc,B = cv2.solve(M1, M2, dst=B, flags=cv2.DECOMP_SVD) # supports only f32 and f64
+            assert suc, "Should succeed, because SVD is used and the solution in least squares sense"
+        elif la_engine == "scipy":
+            B = scipy.linalg.solve(M1, M2)
+            if conceal_lost_precision:
+                B = B.astype(eltype)
     elif grobner_basis_comput == 1:
         Mold = M.copy()
         suc = py.la_utils.GaussJordanElimination(M) # modify inplace
@@ -654,10 +677,16 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
     At[8,3] = 1 # z
     At[9,6] = 1 # free term
 
-    # NOTE: OpenCV's cv2.eigen works only with symmetric matrices
-    # for C++ impl see the Eigen lib, https://stackoverflow.com/questions/30211091/calculating-the-eigenvector-from-a-complex-eigenvalue-in-opencv
-    # for real matrices
-    w_At, v_At = LA.eig(At)
+    if la_engine == "opencv":
+        # NOTE: OpenCV's cv2.eigen works only with symmetric matrices
+        # for C++ impl see the Eigen lib, https://stackoverflow.com/questions/30211091/calculating-the-eigenvector-from-a-complex-eigenvalue-in-opencv
+        # for real matrices
+        # use numpy.linalg because the processing of non-symmetric matrices is required
+        w_At, v_At = LA.eig(At)
+    elif la_engine == "scipy":
+        w_At, v_At = scipy.linalg.eig(At)
+        if conceal_lost_precision:
+            v_At = v_At.astype(eltype)
 
     ess_mat_list = []
     # process left eigenvectors
@@ -693,13 +722,13 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
 
         # validate essential matrix
         if check_constr or debug >= 3:
-            determ = LA.det(ess_mat3)
+            determ = scipy.linalg.det(ess_mat3)
             if not np.isclose(0, determ, atol=close_tol):
                 if check_constr:
                     # assert False
                     if debug >= 3:
                         print("isol:{} skipping E:\n{}".format(i_sol, ess_mat3))
-                        print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation)))
+                        print("projectedE:\n{}".format(ProjectOntoEssentialSpace(ess_mat3, unity_translation, la_engine=la_engine)))
                 else:
                     if debug >= 3: print("Failed det(E)==0, det={}".format(determ))
 
@@ -720,7 +749,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
         # TODO: no projection should be made, because det(E)==0 and 2E*Et*E-trace(E*Et)E==0 must be satisfied
         #proj_ess_space = True
         if proj_ess_space:
-            ess_mat = ProjectOntoEssentialSpace(ess_mat3, unity_translation)
+            ess_mat = ProjectOntoEssentialSpace(ess_mat3, unity_translation, la_engine=la_engine, conceal_lost_precision=conceal_lost_precision)
         else:
             ess_mat = ess_mat3
 
@@ -742,14 +771,17 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
                 ess_disp=ess_mat_stacked3/LA.norm(ess_mat_stacked3)*math.sqrt(2)
 
             # eigen values of unprojected ess mat
-            eig_vals = cv2.SVDecomp(ess_mat3)[0].ravel()
+            if la_engine == "opencv":
+                eig_vals = cv2.SVDecomp(ess_mat3)[0].ravel()
+            elif la_engine == "scipy":
+                eig_vals = scipy.linalg.svd(ess_mat3)[1]
 
-            print("i={} E={} xyz={} err_epipol={} err_expect={} eig={} IsEss={}".format(i_sol, ess_disp,(x,y,z), err, err_expect, eig_vals, IsEssentialMat(ess_mat)))
+            print("i={} E={} xyz={} err_epipol={} err_expect={} eig={} IsEss={}".format(i_sol, ess_disp,(x,y,z), err, err_expect, eig_vals, IsEssentialMat(ess_mat, la_engine=la_engine)))
 
     suc = len(ess_mat_list) > 0
     return suc, ess_mat_list
 
-def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_mat=True, svd_ess_mat=None, almost_zero = 1e-10, debug=3):
+def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_mat=True, svd_ess_mat=None, almost_zero = 1e-10, la_engine="scipy", debug=3):
     """ E->R,T
     param:xs1_meter is used to select the valid [R,T] camera's position - such that all points viewed in this camera have positive depth.
     param:almost_zero used to check if a value is almost zero
@@ -792,7 +824,10 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
         # NOTE: we need u and vt to be SO(3) (special orthogonal, so that det=+1)
         # TODO: why either +E or -E will always have u and vt in SO3? (see MASKS page 120)
         # only U and Vt components are required
-        dVec1, u1, vt1 = cv2.SVDecomp(ess_mat)
+        if la_engine == "opencv":
+            dVec1, u1, vt1 = cv2.SVDecomp(ess_mat)
+        elif la_engine == "scipy":
+            u1, dVec1, vt1 = scipy.linalg.svd(ess_mat)
         #print("dvec1={0} u1={1} vt1={2}".format(dVec1, u1, vt1))
         #print("dvec2={0} u2={1} vt2={2}".format(dVec2, u2, vt2))
 
@@ -991,27 +1026,35 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
             err1 = -1
             lams2 = np.empty(0)
             col1 = np.dot(candR, x1)
-            A = np.hstack((np.reshape(col1, (3, 1)), -np.reshape(x2, (3, 1))))
-            if LA.matrix_rank(A) < 2:
-                singularA_counter += 1
-            else:
-                suc, lams2 = cv2.solve(A, -candTvec, flags=cv2.DECOMP_SVD)
-                assert suc
+            if la_engine == "opencv":
+                A = np.hstack((np.reshape(col1, (3, 1)), -np.reshape(x2, (3, 1))))
+                if LA.matrix_rank(A) < 2:
+                    singularA_counter += 1
+                else:
+                    suc, lams2 = cv2.solve(A, -candTvec, flags=cv2.DECOMP_SVD)
+                    assert suc
 
-                aaaleft = lams2[1] * x2
-                aaaright = lams2[0] * np.dot(candR, x1) + candTvec
-                err1 = LA.norm(aaaleft-aaaright)
+                    aaaleft = lams2[1] * x2
+                    aaaright = lams2[0] * np.dot(candR, x1) + candTvec
+                    err1 = LA.norm(aaaleft-aaaright)
 
-                positive_lams = lams2[0] > 0 and lams2[1] > 0
-                if positive_lams:
-                    pass_counter_way1 += 1
+                    positive_lams = lams2[0] > 0 and lams2[1] > 0
+                    if positive_lams:
+                        pass_counter_way1 += 1
+            elif la_engine == "scipy":
+                pass_counter_way1 = None
+                cands_per_ind_way1 = None
+                cands_per_ind_way1_singular = None
 
             # way2 put R*lam1*x1-lam2*x2+T=0 into rows of B and find B*[lam1,lam2,lam3]=0, lam3==1
-            B = np.zeros((3,3), dtype=np.float64)
+            B = np.zeros((3,3), dtype=eltype)
             B[:,0] = col1
             B[:,1] = -x2
             B[:,2] = candTvec
-            dVec4, u4, vt4 = cv2.SVDecomp(B)
+            if la_engine == "opencv":
+                dVec4, u4, vt4 = cv2.SVDecomp(B)
+            elif la_engine == "scipy":
+                u4, dVec4, vt4 = scipy.linalg.svd(B)
             lams3 = vt4.T[:,-1]
 
             # det(B) is always =0 hence the nullspace always has one solution
@@ -1027,15 +1070,20 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
 
             if debug >= 3: print("{0}: lams={1} lams3={2} e={3:.4f} x1={4} x2={5}".format(pnt_ind, lams2.ravel(), lams3.ravel(), err1, x1, x2))
 
-        cands_per_ind_way1[cand_ind] = pass_counter_way1
-        cands_per_ind_way1_singular[cand_ind] = singularA_counter
+        if not cands_per_ind_way1 is None: # not implemented for float128
+            cands_per_ind_way1[cand_ind] = pass_counter_way1
+            cands_per_ind_way1_singular[cand_ind] = singularA_counter
         cands_per_ind_way2[cand_ind] = pass_counter_way2
         cands_per_ind_way2_singular[cand_ind] = singularB_counter
 
         if debug >= 3: print("cand_ind={0} pass_counter={1} pass_counter_way2={2}".format(cand_ind, pass_counter_way1, pass_counter_way2))
 
+        pass_counter_way1or2 = pass_counter_way1
+        if pass_counter_way1or2 is None:
+            pass_counter_way1or2 = pass_counter_way2
+
         # assert pass_counter == 1, "Exactly one solution from 4 cases may have both positive lamdas (depths)"
-        validRT_method1 = pass_counter_way1 == len(xs1_meter)
+        validRT_method1 = pass_counter_way1or2 == len(xs1_meter)
         if validRT_method1:
             assert sol_ind is None, "Exactly one solution from 4 cases may have both positive lamdas (depths)"
             sol_ind = cand_ind
@@ -1065,17 +1113,20 @@ def ExtractRotTransFromEssentialMat(ess_mat, xs1_meter, xs2_meter, validate_ess_
     assert IsSpecialOrthogonal(sol_R, p_err), p_err[0]
 
     #
-    match_1 = np.allclose(cands_per_ind_way1, cands_per_ind_way2)
-    match_2 = np.allclose(cands_per_ind_way1, cands_per_ind_bundle)
-    match_3 = np.allclose(cands_per_ind_way1, cands_per_ind_wayNister)
+    specimen = cands_per_ind_way1
+    if specimen is None: # not implemented for float128
+        specimen = cands_per_ind_way2
+    match_1 = np.allclose(specimen, cands_per_ind_way2)
+    match_2 = np.allclose(specimen, cands_per_ind_bundle)
+    match_3 = np.allclose(specimen, cands_per_ind_wayNister)
     if not match_1 or not match_2 or not match_3:
         if debug >= 3: print("can't match way3 cheirality")
 
     return True, sol_R, sol_Tvec
 
-def FindRelativeMotion(pnt_life, xs1_meter, xs2_meter, debug):
+def FindRelativeMotion(pnt_life, xs1_meter, xs2_meter, debug, la_engine='scipy', conceal_lost_precision=True):
     # find transformation [R,T] of camera (frame2) in world (frame1)
-    suc, ess_mat_list = FindEssentialMat5PointStewenius(xs1_meter, xs2_meter, proj_ess_space=True, check_constr=True, debug=debug)
+    suc, ess_mat_list = FindEssentialMat5PointStewenius(xs1_meter, xs2_meter, proj_ess_space=True, check_constr=True, debug=debug, la_engine=la_engine, conceal_lost_precision=conceal_lost_precision)
     assert suc, "Essential matrix on consensus set must be calculated"
 
     # choose essential matrix with minimal sampson error
@@ -1178,11 +1229,14 @@ def FindDistancesTo3DPointsTwoFrames(pnts_life, pnt_ids, rel_RT, block_base_fram
     ess_R, ess_Tvec = rel_RT
 
     # find initial distances to all 3D points in frame1 (MASKS formula 8.43)
-    alphas = np.zeros(points_num, dtype=np.float32)
+    alphas = None
     for i,pnt_id in enumerate(pnt_ids):
         pnt_ind = pnt_id
         x1 = pnts_life[pnt_ind].points_list_meter[block_base_frame_ind]
         x2 = pnts_life[pnt_ind].points_list_meter[block_other_frame_ind]
+        if alphas is None:
+            eltype = type(x1[0])
+            alphas = np.zeros(points_num, dtype=eltype)
 
         x2_skew = skewSymmeticMat(x2)
         h1 = np.dot(x2_skew, ess_Tvec)
@@ -1563,6 +1617,28 @@ def convertPixelToMeterPoints(camMat, xs_per_image, xs_per_image_meter):
 
     suc, Km1 = cv2.invert(camMat)
     assert suc
+
+    # convert image coords to unaclibrated coordinates
+    for img_ind in range(0, len(xs_per_image)):
+        xs = xs_per_image[img_ind]
+
+        xs_meter = []
+        for i in range(0, len(xs)):
+            pnt = xs[i]
+            xmeter = convertPointPixelToMeter(pnt, Km1)
+            # assert len(pnt) == 2
+            # pnt_hom = [pnt[0], pnt[1], 1]
+            # xmeter = np.dot(Km1, pnt_hom)
+            # print("i:{0} x'={1} x={2} xRe'={3}".format(i, pnt, xmeter, np.dot(camMat, xmeter)))
+            # xs_meter.append((xmeter[0], xmeter[1]))
+            xs_meter.append(xmeter)
+        xs_meter = np.array(xs_meter)
+        xs_per_image_meter.append(xs_meter)
+
+def convertPixelToMeterPointsNew(cam_mat_meter_from_pixel, xs_per_image, xs_per_image_meter):
+    assert len(xs_per_image[0][0]) == 2, "Provide 2D coordinates (x,y) of pixels"
+
+    Km1 = cam_mat_meter_from_pixel
 
     # convert image coords to unaclibrated coordinates
     for img_ind in range(0, len(xs_per_image)):
@@ -2577,7 +2653,7 @@ def IsSpecialOrthogonal(rot_mat, p_msg = None):
     if not c2:
         if not p_msg is None: p_msg[0] = "Rt.R=I (R={})".format(rot_mat)
         return False
-    c1 = np.isclose(1, LA.det(rot_mat), atol=tol)
+    c1 = np.isclose(1, scipy.linalg.det(rot_mat), atol=tol)
     if not c1:
         if not p_msg is None: p_msg[0] = "det(R)=1 (R={})".format(rot_mat)
         return False
@@ -3609,7 +3685,7 @@ class PointsWorld:
         self.min_num_3Dpoints = None
         self.img_feat_tracker = None
         self.cam_mat_pixel_from_meter = None
-        self.cam_mat_meter_from_pixel = None # inverse of cam_mat
+        self.cam_mat_meter_from_pixel = None # inverse of cam_mat (aka K matrix)
         self.focal_len = None # foucus distance in millimeters
         self.slam_impl = None
 
@@ -3617,12 +3693,20 @@ class PointsWorld:
         self.world_pnts = []
         self.check_drift = False # whether to check divergence of points' coordinates and camera relative motion from ground truth
         self.drift = 3e-1
-        self.hack_location = True
+        self.hack_camera_location = False
+        self.hack_world_mapping = False
+        self.la_engine = "scipy" # default="scipy", ["opencv", "scipy"]
+        # True to pretend that low precision algorithm is actually works in hight precision
+        # default = False
+        # Generally it is a bad idea to hide the real precision of the algorithm and here is used to test how other
+        # parts of the program work with higher precision.
+        # eg. if True, algorithm sqrt(f64)->f32 is coerced into sqrt(f64)->f64 by upconverting result from f32 into f64
+        self.conceal_lost_precision = False
 
     def SetCamMat(self, cam_mat_pixel_from_meter):
         self.cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
-        suc, Km1 = cv2.invert(cam_mat_pixel_from_meter)
-        assert suc
+        Km1 = scipy.linalg.inv(cam_mat_pixel_from_meter)
+        Km1 = Km1.astype(self.elem_type)
         self.cam_mat_meter_from_pixel = Km1
 
         # sx=number of pixels per one millimeter
@@ -3779,7 +3863,7 @@ class PointsWorld:
 
             # convert pixel to image coordinates (pixel -> meters)
             xs2_meter = []
-            convertPixelToMeterPoints(self.cam_mat_pixel_from_meter, [xs2_pixel], xs2_meter)
+            convertPixelToMeterPointsNew(self.cam_mat_meter_from_pixel, [xs2_pixel], xs2_meter)
             xs2_meter = xs2_meter[0]
 
             self.PutNewPoints2D(self.frame_ind, self.frame_ind, xs2_meter, xs2_pixel, map_point_ids)  # initial points
@@ -4630,12 +4714,13 @@ class PointsWorld:
         return frame_inds, x_per_frame, framei_from_base_RT_dict
 
     def FindRelativeMotionMultiPoints(self, base_frame_ind, targ_frame_ind, pnt_ids, pnt_depthes):
+        eltype = self.elem_type
         points_num = len(pnt_ids)
         assert points_num == len(pnt_depthes)
 
         # estimage camera position [R,T] given distances to all 3D points pj in frame1
 
-        A = np.zeros((3 * points_num, 12), dtype=self.elem_type)
+        A = np.zeros((3 * points_num, 12), dtype=eltype)
         for i, pnt_id in enumerate(pnt_ids):
             pnt_ind = pnt_id
             pnt_life = self.points_life[pnt_ind]
@@ -4649,15 +4734,27 @@ class PointsWorld:
             alph = 1 / depth
             A[3 * i:3 * (i + 1), 9:12] = alph * x_img_skew
 
-        dVec1, u1, vt1 = cv2.SVDecomp(A)
+        if self.la_engine == "opencv":
+            dVec1, u1, vt1 = cv2.SVDecomp(A)
+        elif self.la_engine == "scipy":
+            u1, dVec1, vt1 = scipy.linalg.svd(A)
+            if self.conceal_lost_precision:
+                vt1 = vt1.astype(eltype)
+
         r_and_t = vt1.T[:, -1]
         cam_R_noisy = r_and_t[0:9].reshape(3, 3, order='F')  # unstack
         cam_Tvec_noisy = r_and_t[9:12]
 
         # project noisy [R,T] onto SO(3) (see MASKS, formula 8.41 and 8.42)
-        dVec2, u2, vt2 = cv2.SVDecomp(cam_R_noisy)
+        if self.la_engine == "opencv":
+            dVec2, u2, vt2 = cv2.SVDecomp(cam_R_noisy)
+        elif self.la_engine == "scipy":
+            u2, dVec2, vt2 = scipy.linalg.svd(cam_R_noisy)
+            if self.conceal_lost_precision:
+                vt2 = vt2.astype(eltype)
+
         no_guts = np.dot(u2, vt2)
-        sign1 = np.sign(LA.det(no_guts))
+        sign1 = np.sign(scipy.linalg.det(no_guts))
         frame_R = sign1 * no_guts
 
         det_den = LA.det(np.diag(dVec2.ravel()))
@@ -4851,7 +4948,7 @@ class PointsWorld:
                     pnt_id = pnt_ind
                     latest_frame_pnt_ids.append(pnt_id)
 
-            suc, frame_ind_from_base_RT = FindRelativeMotion(self.points_life, xs1_meter, xs2_meter, debug)
+            suc, frame_ind_from_base_RT = FindRelativeMotion(self.points_life, xs1_meter, xs2_meter, debug, la_engine=self.la_engine, conceal_lost_precision=self.conceal_lost_precision)
             if not suc:
                 print("failed FindRelativeMotion")
                 return False
@@ -4879,7 +4976,7 @@ class PointsWorld:
                         print("actual 3D: {}".format(frame_ind_from_base_RT[1]))
                         #assert False
                 # HACK: assume process works for 2 frames
-                if self.hack_location:
+                if True or self.hack_camera_location:
                     frame_ind_from_base_RT = (gtruth_R, scaled_T)
 
             framei_from_world_RT[other_frame_ind] = frame_ind_from_base_RT
@@ -4909,11 +5006,13 @@ class PointsWorld:
                         if self.check_drift:
                             assert False
                 # HACK: assume process works for 2 frames
-                if self.hack_location:
+                if True or self.hack_world_mapping:
                     x3D_world = scaled_x3D_world
 
+                assert not x3D_world is None
                 world_pnts[pnt_ind] = x3D_world
         else:
+            assert frames_count > 2
             latest_frame_ind = self.frame_ind
 
             # determine the set of all points in the latest frame
@@ -4936,12 +5035,23 @@ class PointsWorld:
             reproj_err_history = []
             while True:
                 frame_ind_from_world_RT = self.GetFrameRT(anchor_frame_ind, latest_frame_ind, common_pnt_ids)
+
+                if self.hack_camera_location and not self.ground_truth_relative_motion is None:
+                    gtruth_R, gtruth_T = self.ground_truth_relative_motion(world_frame_ind, latest_frame_ind)
+                    scaled_T = gtruth_T * self.first_unity_translation_scale_factor
+                    frame_ind_from_world_RT = (gtruth_R, scaled_T)
+
                 framei_from_world_RT[latest_frame_ind] = frame_ind_from_world_RT
 
                 # determine the depthes of all points in the latest frame
                 for pnt_id in latest_frame_pnt_ids:
                     x3D_world = self.Estimate3DPointFromFrames(pnt_id, check_drift=False)
                     if x3D_world is None: continue
+                    if self.hack_world_mapping and not self.ground_truth_map_pnt_pos is None:
+                        pnt_life = self.points_life[pnt_id]
+                        gtruth_x3D_world = self.ground_truth_map_pnt_pos(world_frame_ind, pnt_life.map_point_id)
+                        scaled_x3D_world = gtruth_x3D_world * self.first_unity_translation_scale_factor
+                        x3D_world = scaled_x3D_world
                     world_pnts[pnt_id] = x3D_world
 
                 reproj_err = self.CalcReprojErr(debug)
@@ -6456,6 +6566,13 @@ class ReconstructDemo:
         cam_mat_pixel_from_meter = None
 
         el_type = np.float32
+        if main_args.float == "f32":
+            el_type = np.float32
+        elif main_args.float == "f64":
+            el_type = np.float64
+        elif main_args.float == "f128":
+            el_type = np.longfloat
+        print("config float={}".format(el_type))
 
         xs3D = []
         xs3D_virtual_ids = []
@@ -6709,7 +6826,7 @@ class ReconstructDemo:
                 ess_mat = skewSymmeticMat(T23 / LA.norm(T23)).dot(R23)
                 ess_mat = ess_mat / LA.norm(ess_mat)
                 print("expect E (for img_ind={}):\n{}".format(img_ind, ess_mat))
-                print("detE==0, actually {}".format(LA.det(ess_mat)))
+                print("detE==0, actually {}".format(scipy.linalg.det(ess_mat)))
                 c1 = LA.norm(2 * ess_mat.dot(ess_mat.T).dot(ess_mat) - np.trace(ess_mat.dot(ess_mat.T)) * ess_mat)
                 print("2E*Et*E-trace(E*Et)E==0, actually {}".format(c1))
 
@@ -7736,7 +7853,7 @@ if __name__ == '__main__':
     parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int, default=2)
     parser.add_argument("--job", help="specify worker thread to run", type=int, default=2)
     parser.add_argument("--slam", help="slam impl (0: none, 1,2:...)", type=int, default=1)
-    parser.add_argument("--float", help="f32 or f64", type=str, default="f32")
+    parser.add_argument("--float", help="[f32, f64, f128]", type=str, default="f32")
     args = parser.parse_args()
 
     #TestSampsonDistance()
