@@ -36,6 +36,11 @@ import py.sampson
 import py.ess_5point_stewenius
 import py.la_utils
 
+try:
+    import mpmath # multi-precision math, see http://mpmath.org/
+    mpmath.mp.dps = 100
+except ImportError: pass
+
 # debug = {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}
 
 def FixOpenCVCalcOpticalFlowPyrLK(prev_pts, next_pts, status, win_size):
@@ -2651,11 +2656,12 @@ def IsSpecialOrthogonal(rot_mat, p_msg = None):
     tol = 1.0e-5
     c2 = np.allclose(np.eye(3,3), np.dot(rot_mat.T, rot_mat), atol=tol)
     if not c2:
-        if not p_msg is None: p_msg[0] = "Rt.R=I (R={})".format(rot_mat)
+        if not p_msg is None: p_msg[0] = "failed Rt.R=I (R={})".format(rot_mat)
         return False
-    c1 = np.isclose(1, scipy.linalg.det(rot_mat), atol=tol)
+    det_R = scipy.linalg.det(rot_mat)
+    c1 = np.isclose(1, det_R, atol=tol)
     if not c1:
-        if not p_msg is None: p_msg[0] = "det(R)=1 (R={})".format(rot_mat)
+        if not p_msg is None: p_msg[0] = "failed det(R)=1 (R={}, detR={})".format(rot_mat, det_R)
         return False
     return True
 
@@ -2965,6 +2971,21 @@ def skewSymmeticMat(v):
     assert len(v) == 3, "Provide three components vector v=[x,y,z]"
     mat = np.array(((0, -v[2], v[1]), (v[2], 0, -v[0]), (-v[1], v[0], 0)))
     return mat
+
+def skewSymmeticMatWithAdapter(v, elem_conv_fun, result):
+    assert len(v) == 3, "Provide three components vector v=[x,y,z]"
+    zero = elem_conv_fun(0)
+    result[0, 0] = zero
+    result[0, 1] = elem_conv_fun(-v[2])
+    result[0, 2] = elem_conv_fun(v[1])
+
+    result[1, 0] = elem_conv_fun(v[2])
+    result[1, 1] = zero
+    result[1, 2] = elem_conv_fun(-v[0])
+
+    result[2, 0] = elem_conv_fun(-v[1])
+    result[2, 1] = elem_conv_fun(v[0])
+    result[2, 2] = zero
 
 # Reverses the call to skewSymmeticMat
 # sym_mat=[3x3]
@@ -3666,6 +3687,7 @@ class PointLife:
 class PointsWorld:
     def __init__(self):
         self.elem_type = np.float32
+        self.use_mpmath = 0 # whether to use mpmath package, see http://mpmath.org/
         self.frame_ind = -1
         self.last_known_pos_frame_ind = 0 # the latest frame with determined [R,T]
         self.num_tracked_points_per_frame = []
@@ -3695,6 +3717,7 @@ class PointsWorld:
         self.drift = 3e-1
         self.hack_camera_location = False
         self.hack_world_mapping = False
+        self.hack_camera_location_in_batch_refine = False
         self.la_engine = "scipy" # default="scipy", ["opencv", "scipy"]
         # True to pretend that low precision algorithm is actually works in hight precision
         # default = False
@@ -3702,6 +3725,7 @@ class PointsWorld:
         # parts of the program work with higher precision.
         # eg. if True, algorithm sqrt(f64)->f32 is coerced into sqrt(f64)->f64 by upconverting result from f32 into f64
         self.conceal_lost_precision = False
+        self.reproj_err_history = []
 
     def SetCamMat(self, cam_mat_pixel_from_meter):
         self.cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
@@ -4535,7 +4559,8 @@ class PointsWorld:
 
         max_iter = 9
         it = 1
-        learn_rate = 0.01 # the speed of change from old to new value in range=[0,1], 0=old value, 1=new value
+        learn_rate = 0.3 # the speed of change from old to new value in range=[0,1], 0=old value, 1=new value
+        do_update = True
 
         class IterCursor:
             def __init__(self):
@@ -4601,7 +4626,17 @@ class PointsWorld:
                 common_pnt_ids = []
                 self.CountCommonPoints(next_frame_pnt_ids_set, anchor_frame_ind, common_pnt_ids)
 
-                frame_ind_from_world_RT = self.GetFrameRT(anchor_frame_ind, cursor.next_frame_ind, common_pnt_ids)
+                # TODO: relative RT routine diverges very quickly, what to do?
+                frame_ind_from_anchor_RT = self.GetFrameRelativeRT(anchor_frame_ind, cursor.next_frame_ind, common_pnt_ids)
+
+                # hack: replace relative RT with ground truth
+                if self.hack_camera_location_in_batch_refine and not self.ground_truth_relative_motion is None:
+                    gtruth_R, gtruth_T = self.ground_truth_relative_motion(anchor_frame_ind, cursor.next_frame_ind)
+                    scaled_T = gtruth_T * self.first_unity_translation_scale_factor
+                    frame_ind_from_anchor_RT = (gtruth_R, scaled_T)
+
+                anchor_from_world_RT = self.framei_from_world_RT_list[anchor_frame_ind]
+                frame_ind_from_world_RT = SE3Compose(frame_ind_from_anchor_RT, anchor_from_world_RT)
 
                 old_RT = self.framei_from_world_RT_list[cursor.next_frame_ind]
                 diff1 = LA.norm(frame_ind_from_world_RT[0] - old_RT[0])
@@ -4610,6 +4645,7 @@ class PointsWorld:
                     print("NoConvergence: too big RT, next_frame_ind: {}, diffR: {} diffT: {}".format(cursor.next_frame_ind, diff1, diff2))
                     print("old: {}".format(old_RT))
                     print("new: {}".format(frame_ind_from_world_RT))
+                print("frame_ind: {}-{}, diffR: {} diffT: {}".format(anchor_frame_ind, cursor.next_frame_ind, diff1, diff2))
 
                 # do smooth update of RT
                 upd_T = SmoothUpdate(old_RT[1], frame_ind_from_world_RT[1], learn_rate)
@@ -4623,7 +4659,8 @@ class PointsWorld:
                 upd_R = rotMat(upd_N, upd_Ang, check_log_SO3=True)
                 upd_RT = (upd_R, upd_T)
 
-                self.framei_from_world_RT_list[cursor.next_frame_ind] = upd_RT
+                if do_update:
+                    self.framei_from_world_RT_list[cursor.next_frame_ind] = upd_RT
 
                 cursor.next_frame_ind += 1
                 cursor.localize_or_map = 'map'
@@ -4714,12 +4751,18 @@ class PointsWorld:
         return frame_inds, x_per_frame, framei_from_base_RT_dict
 
     def FindRelativeMotionMultiPoints(self, base_frame_ind, targ_frame_ind, pnt_ids, pnt_depthes):
+        if self.use_mpmath:
+            result = self.FindRelativeMotionMultiPoints_mpmath(base_frame_ind, targ_frame_ind, pnt_ids, pnt_depthes)
+        else:
+            result = self.FindRelativeMotionMultiPoints_float(base_frame_ind, targ_frame_ind, pnt_ids, pnt_depthes)
+        return result
+
+    def FindRelativeMotionMultiPoints_float(self, base_frame_ind, targ_frame_ind, pnt_ids, pnt_depthes):
         eltype = self.elem_type
         points_num = len(pnt_ids)
         assert points_num == len(pnt_depthes)
 
         # estimage camera position [R,T] given distances to all 3D points pj in frame1
-
         A = np.zeros((3 * points_num, 12), dtype=eltype)
         for i, pnt_id in enumerate(pnt_ids):
             pnt_ind = pnt_id
@@ -4742,6 +4785,7 @@ class PointsWorld:
                 vt1 = vt1.astype(eltype)
 
         r_and_t = vt1.T[:, -1]
+
         cam_R_noisy = r_and_t[0:9].reshape(3, 3, order='F')  # unstack
         cam_Tvec_noisy = r_and_t[9:12]
 
@@ -4762,7 +4806,7 @@ class PointsWorld:
             return False, None
 
         t_factor = sign1 / rootCube(det_den)
-        cam_Tvec = t_factor * cam_Tvec_noisy
+        cam_Tvec = cam_Tvec_noisy * t_factor
 
         if sum(1 for a in cam_Tvec if not math.isfinite(a)) > 0:
             print("error: nan")
@@ -4770,6 +4814,79 @@ class PointsWorld:
 
         rel_R = frame_R[:, :]
         rel_T = cam_Tvec[:]
+
+        p_err = [""]
+        assert IsSpecialOrthogonal(rel_R, p_err), p_err[0]
+
+        return True, (rel_R, rel_T)
+
+    # Multi-precision math (mpmath) implementation.
+    def FindRelativeMotionMultiPoints_mpmath(self, base_frame_ind, targ_frame_ind, pnt_ids, pnt_depthes):
+        eltype = self.elem_type
+        points_num = len(pnt_ids)
+        assert points_num == len(pnt_depthes)
+
+        # estimage camera position [R,T] given distances to all 3D points pj in frame1
+        x_img_skew = mpmath.matrix(3,3)
+        A = mpmath.matrix(3 * points_num, 12)
+        for i, pnt_id in enumerate(pnt_ids):
+            pnt_ind = pnt_id
+            pnt_life = self.points_life[pnt_ind]
+            x1 = pnt_life.points_list_meter[base_frame_ind]
+
+            x_img = pnt_life.points_list_meter[targ_frame_ind]
+            skewSymmeticMatWithAdapter(x_img, lambda x: mpmath.mpf(str(x)), x_img_skew)
+
+            A[3 * i:3 * (i + 1), 0:3] = x_img_skew * mpmath.mpf(str(x1[0]))
+            A[3 * i:3 * (i + 1), 3:6] = x_img_skew * mpmath.mpf(str(x1[1]))
+            A[3 * i:3 * (i + 1), 6:9] = x_img_skew * mpmath.mpf(str(x1[2]))
+
+            depth = mpmath.mpf(str(pnt_depthes[i]))
+            alph = 1 / depth
+            A[3 * i:3 * (i + 1), 9:12] = x_img_skew * alph
+
+        #
+        u1, dVec1, vt1 = mpmath.svd_r(A)
+
+        # take the last column of V
+        cam_R_noisy = mpmath.matrix(3,3)
+        for col in range(0, 3):
+            for row in range(0, 3):
+                cam_R_noisy[row,col] = vt1[11,col*3+row]
+        cam_Tvec_noisy = mpmath.matrix(3,1)
+        for row in range(0, 3):
+            cam_Tvec_noisy[row,0] = vt1[11, 9+row]
+
+        # project noisy [R,T] onto SO(3) (see MASKS, formula 8.41 and 8.42)
+        u2, dVec2, vt2 = mpmath.svd(cam_R_noisy)
+
+        no_guts = u2 * vt2
+        no_guts_det = mpmath.det(no_guts)
+        sign1 = mpmath.sign(no_guts_det)
+        frame_R = no_guts * sign1
+
+        det_den = dVec2[0] * dVec2[1] * dVec2[2]
+        if math.isclose(0, det_den):
+            return False, None
+
+        t_factor = sign1 / rootCube(det_den)
+        cam_Tvec = cam_Tvec_noisy * t_factor
+
+        if sum(1 for a in cam_Tvec if not math.isfinite(a)) > 0:
+            print("error: nan")
+            return False, None
+
+        # convert results into default precision type
+        rel_R = np.zeros((3,3), dtype=eltype)
+        rel_T = np.zeros(3, dtype=eltype)
+        for row in range(0, 3):
+            for col in range(0, 3):
+                rel_R[row, col] = float(frame_R[row, col])
+            rel_T[row] = cam_Tvec[row, 0]
+
+        p_err = [""]
+        assert IsSpecialOrthogonal(rel_R, p_err), p_err[0]
+
         return True, (rel_R, rel_T)
 
     def Estimate3DPointFromFrames(self, pnt_id, check_drift):
@@ -4843,7 +4960,7 @@ class PointsWorld:
             result /= one_err_count
         return result
 
-    def GetFrameRT(self, base_frame_ind, targ_frame_ind, common_pnt_ids):
+    def GetFrameRelativeRT(self, base_frame_ind, targ_frame_ind, common_pnt_ids):
         pnt_depthes_base = [self.Get3DPointDepth(pnt_id, base_frame_ind) for pnt_id in common_pnt_ids]
         suc, frame_ind_from_base_RT = self.FindRelativeMotionMultiPoints(base_frame_ind, targ_frame_ind, common_pnt_ids, pnt_depthes_base)
         if not suc:
@@ -4878,9 +4995,7 @@ class PointsWorld:
             if failed and self.check_drift:
                 assert False
 
-        base_from_world_RT = self.framei_from_world_RT_list[base_frame_ind]
-        frame_ind_from_world_RT = SE3Compose(frame_ind_from_base_RT, base_from_world_RT)
-        return frame_ind_from_world_RT
+        return frame_ind_from_base_RT
 
     # counts the number of common points between base and target frames
     def CountCommonPoints(self, base_frame_pnt_ids_set, targ_frame_ind, common_pnt_ids=None):
@@ -4911,7 +5026,7 @@ class PointsWorld:
 
         return anchor_frame_ind, common_pnts_count
 
-    def IntegrateNewFrameIterative(self, framei_from_world_RT, world_pnts, debug, min_reproj_err = 0.01):
+    def IntegrateNewFrameIterative(self, framei_from_world_RT, world_pnts, debug, min_reproj_err = 1e-4):
         # allocate space for the new frame
         frames_count = self.frame_ind + 1
         framei_from_world_RT.append((None,None))
@@ -5032,14 +5147,21 @@ class PointsWorld:
 
             max_iter = 9
             it = 1
-            reproj_err_history = []
             while True:
-                frame_ind_from_world_RT = self.GetFrameRT(anchor_frame_ind, latest_frame_ind, common_pnt_ids)
+                frame_ind_from_anchor_RT = self.GetFrameRelativeRT(anchor_frame_ind, latest_frame_ind, common_pnt_ids)
 
                 if self.hack_camera_location and not self.ground_truth_relative_motion is None:
-                    gtruth_R, gtruth_T = self.ground_truth_relative_motion(world_frame_ind, latest_frame_ind)
+                    gtruth_R, gtruth_T = self.ground_truth_relative_motion(anchor_frame_ind, latest_frame_ind)
                     scaled_T = gtruth_T * self.first_unity_translation_scale_factor
-                    frame_ind_from_world_RT = (gtruth_R, scaled_T)
+                    frame_ind_from_anchor_RT = (gtruth_R, scaled_T)
+
+                anchor_from_world_RT = self.framei_from_world_RT_list[anchor_frame_ind]
+                frame_ind_from_world_RT = SE3Compose(frame_ind_from_anchor_RT, anchor_from_world_RT)
+
+                # if self.hack_camera_location and not self.ground_truth_relative_motion is None:
+                #     gtruth_R, gtruth_T = self.ground_truth_relative_motion(world_frame_ind, latest_frame_ind)
+                #     scaled_T = gtruth_T * self.first_unity_translation_scale_factor
+                #     frame_ind_from_world_RT = (gtruth_R, scaled_T)
 
                 framei_from_world_RT[latest_frame_ind] = frame_ind_from_world_RT
 
@@ -5057,14 +5179,14 @@ class PointsWorld:
                 reproj_err = self.CalcReprojErr(debug)
                 if debug >= 3: print("anchor-targ: {} reproj_err={} meters".format((anchor_frame_ind, latest_frame_ind), reproj_err))
 
-                reproj_err_history.append(reproj_err)
+                self.reproj_err_history.append(reproj_err)
 
                 if reproj_err < min_reproj_err:
                     break
 
                 it += 1
                 if it > max_iter:
-                    print("reproj_err_history={}".format(reproj_err_history))
+                    print("reproj_err_history={}".format(self.reproj_err_history))
                     assert False, "Failed to converge the reconstruction"
                     break
 
@@ -6644,6 +6766,7 @@ class ReconstructDemo:
 
         track_sys = PointsWorld()
         track_sys.elem_type = el_type
+        track_sys.use_mpmath = main_args.mpmath
         track_sys.visual_host = self
         if provide_ground_truth:
             track_sys.ground_truth_relative_motion = GroundTruthRelativeMotion
@@ -7854,6 +7977,7 @@ if __name__ == '__main__':
     parser.add_argument("--job", help="specify worker thread to run", type=int, default=2)
     parser.add_argument("--slam", help="slam impl (0: none, 1,2:...)", type=int, default=1)
     parser.add_argument("--float", help="[f32, f64, f128]", type=str, default="f32")
+    parser.add_argument("--mpmath", help="[0 or 1]", type=int, default=0)
     args = parser.parse_args()
 
     #TestSampsonDistance()
