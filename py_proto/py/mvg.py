@@ -4017,14 +4017,12 @@ class PointsWorld:
             print("img={} change of points, matched:{} lost:{} new:{}".format(self.frame_ind, matched_pnts_count, lost_pnts_count, new_pnts_count))
 
         if self.slam_impl == 1:
-            self.LocateCamAndMapLatestFrameSequentialNaive(on_pnt_corresp, debug)
-        elif self.slam_impl == 2:
-            self.LocateCamAndMapBundleFrequently(on_pnt_corresp, debug)
+            self.LocateCamAndMap_LatestFrameSequentialNaive(on_pnt_corresp, debug)
         elif self.slam_impl == 3:
-            self.LocateCamAndMapIntegrateNewFrameIterative(on_pnt_corresp, debug)
+            self.LocateCamAndMap_MultiViewFactorization(on_pnt_corresp, debug)
 
 
-    def LocateCamAndMapLatestFrameSequentialNaive(self, on_pnt_corresp, debug):
+    def LocateCamAndMap_LatestFrameSequentialNaive(self, on_pnt_corresp, debug):
         """ Naive SLAM implementation.
         Localization: tries to find the relative motion between the last frame with determined 3D camera position and the latest (current) frame.
         Mapping: if relative motion to the latest frame is found, then it triangulates all new points and adds them to the map (forever). 
@@ -4288,52 +4286,14 @@ class PointsWorld:
 
         return None
 
-    def LocateCamAndMapBundleFrequently(self, on_pnt_corresp, debug):
-        # if self.frame_ind == 0:
-        #     # assiciate the world frame with the first camera frame
-        #     worldR = np.eye(3, 3)
-        #     worldT = np.zeros(3)
-        #     with self.visual_host.cameras_lock:
-        #         self.visual_host.world_to_cam_R.append(worldR)
-        #         self.visual_host.world_to_cam_T.append(worldT)
-        #
-        #     with self.visual_host.continue_computation_lock:
-        #         self.visual_host.world_map_changed_flag = True
-        #     return
-
-        if self.frame_ind < 2: return
-
+    def LocateCamAndMap_MultiViewFactorization(self, on_pnt_corresp, debug):
         show_pnt_frame_participation = True
         if show_pnt_frame_participation:
             pnt_to_frame = BuildPointInFrameRelatonMatrix(self.points_life, sort_points=True)
             cv2.imshow("pnt_to_frame", pnt_to_frame)
 
         # on failure to find [R,T] the head_ind doesn't change
-        #suc, frames_R, frames_T, world_pnts = self.EstimateMapCalcCameras(debug=debug)
-        suc, frames_R, frames_T, world_pnts = self.EstimateMapChainSpaceBatch(debug=debug)
-        if not suc:
-            return
-        with self.visual_host.cameras_lock:
-            self.visual_host.world_to_cam_R_alt = [i[0] for i in self.framei_from_world_RT_list]
-            self.visual_host.world_to_cam_T_alt = [i[1] for i in self.framei_from_world_RT_list]
-
-            world_pnts_no_gaps = [p for p in self.world_pnts if not p is None]
-            self.visual_host.xs3d = world_pnts_no_gaps
-
-        with self.visual_host.continue_computation_lock:
-            self.visual_host.world_map_changed_flag = True
-            self.visual_host.processed_images_counter += 1
-
-        return None
-
-    def LocateCamAndMapIntegrateNewFrameIterative(self, on_pnt_corresp, debug):
-        show_pnt_frame_participation = True
-        if show_pnt_frame_participation:
-            pnt_to_frame = BuildPointInFrameRelatonMatrix(self.points_life, sort_points=True)
-            cv2.imshow("pnt_to_frame", pnt_to_frame)
-
-        # on failure to find [R,T] the head_ind doesn't change
-        suc = self.IntegrateNewFrameIterative(self.framei_from_world_RT_list, self.world_pnts, debug=debug)
+        suc = self.MultiViewFactorizationIntegrateNewFrame(self.framei_from_world_RT_list, self.world_pnts, debug=debug)
         if not suc:
             return
         with self.visual_host.cameras_lock:
@@ -4357,195 +4317,6 @@ class PointsWorld:
             x = pnt_life.points_list_meter[fid]
             if x is None: return False
         return True
-
-    # Tries to compute world's 3D structure.
-    #def EstimateMap(self, cam_mat, points_life : typing.List[PointLife], cameras_lock, debug):
-    def EstimateMapCalcCameras(self, debug=0):
-        frames_count = self.frame_ind + 1
-
-        live_points = 0
-        points_count = len(self.points_life)
-        is_live_list = [False] * points_count
-        for pnt_ind in range(0, points_count):
-            is_live = self.IsLive3DPoint(pnt_ind, 0, frames_count)
-            is_live_list[pnt_ind] = is_live
-            if is_live: live_points += 1
-
-        # points_life has list of 2D point for each 3D point
-        # construct list of 2D point for each image
-        xs_per_image_meter = []
-        for frame_ind in range(0, frames_count):
-            # gather point coords
-            xs_per_frame = []
-            for pnt_ind, pnt_life in enumerate(self.points_life):
-                if is_live_list[pnt_ind]:
-                    x2D = pnt_life.points_list_meter[frame_ind]
-                    assert not x2D is None
-                    xs_per_frame.append(x2D)
-            assert live_points == len(xs_per_frame), "Point ind:{0} has not a full life".format(pnt_ind)
-
-            xs_per_image_meter.append(xs_per_frame)
-
-        res = calcCameras(xs_per_image_meter, debug=debug)
-        return res
-
-    def EstimateMapChainSpaceBatch(self, debug=0):
-        frames_count = self.frame_ind + 1
-        points_count = len(self.points_life)
-
-        # init
-        for pnt_ind in range(0, points_count):
-            pnt_life = self.points_life[pnt_ind]
-            pnt_life.is_mapped = False
-
-        # cut_frame_ind = 0
-
-        # # determine the set of points to consider for the next points-frames block
-        # live_point_ids = []
-        # for pnt_ind in range(0, points_count):
-        #     is_live = self.IsLive3DPoint(pnt_ind, cut_frame_ind, cut_frame_ind + 1)
-        #     if is_live:
-        #         pnt_life = self.points_life[pnt_ind]
-        #         pnt_id = pnt_life.point_id
-        #         live_point_ids.append(pnt_id)
-
-        # # determine the set of frames for the next points-frames block
-        # block_end_frame_ind = None
-        # for pnt_id in live_point_ids:
-        #     pnt_ind = pnt_id
-        #     pnt_life = self.points_life[pnt_ind]
-        #     if block_end_frame_ind is None or pnt_life.last_frame_ind < block_end_frame_ind:
-        #         block_end_frame_ind = pnt_life.last_frame_ind
-
-        def Collect2DPoints(pnt_id_list, beg_frame_ind, end_frame_ind, xs_per_image_meter):
-            for frame_ind in range(beg_frame_ind, end_frame_ind):
-                # gather point coords
-                xs_per_frame = []
-                for pnt_id in pnt_id_list:
-                    pnt_ind = pnt_id
-                    pnt_life = self.points_life[pnt_ind]
-                    x2D = pnt_life.points_list_meter[frame_ind]
-                    assert not x2D is None
-                    xs_per_frame.append(x2D)
-
-                xs_per_image_meter.append(xs_per_frame)
-
-        # xs_per_image_meter = []
-        # Collect2DPoints(live_point_ids, cut_frame_ind, xs_per_image_meter)
-        #
-        # res = calcCameras(xs_per_image_meter, debug=debug)
-        # suc, frames_R, frames_T, world_pnts = res
-
-        # for pnt_id in live_point_ids:
-        #     pnt_ind = pnt_id
-        #     pnt_life = self.points_life[pnt_ind]
-        #     pnt_life.is_mapped = True
-
-        frames_R = [None] * frames_count
-        frames_T = [None] * frames_count
-        world_pnts = [None] * points_count
-
-        suc_factorization = True
-        cut_frame_ind = 0
-        blocks_processed = 0
-        relative_motion_known = False
-        while cut_frame_ind < frames_count:
-            print("blocks_processed={}".format(blocks_processed))
-
-            # determine the range of frames to consider for the next points-frames block
-            live_point_ids = []
-            block_beg_frame_ind = None
-            block_end_frame_ind = None
-            for pnt_ind in range(0, points_count):
-                pnt_life = self.points_life[pnt_ind]
-                if pnt_life.is_mapped:
-                    continue
-
-                beg = pnt_life.start_frame_ind
-                end = pnt_life.last_frame_ind
-
-                hit_block = cut_frame_ind >= beg and cut_frame_ind < end
-                if not hit_block:
-                    continue
-
-                live_point_ids.append(pnt_life.point_id)
-
-                if block_beg_frame_ind is None or beg > block_beg_frame_ind:
-                    block_beg_frame_ind = beg
-                if block_end_frame_ind is None or end < block_end_frame_ind:
-                    block_end_frame_ind = end
-
-            if block_beg_frame_ind is None or block_end_frame_ind is None:
-                suc_factorization = False
-                break
-
-            block_points_count = len(live_point_ids)
-            block_frames_count = block_end_frame_ind - block_beg_frame_ind
-            if block_points_count > 0 and block_frames_count > 1:
-                # determine the set of points to consider for the next points-frames block
-                xs_per_image_meter = []
-                Collect2DPoints(live_point_ids, block_beg_frame_ind, block_end_frame_ind, xs_per_image_meter)
-
-                block_base_frame_ind = block_beg_frame_ind
-                block_other_frame_ind = block_beg_frame_ind+1
-                assert block_base_frame_ind != block_other_frame_ind, "required two different frames to reconstruct a block"
-
-                if False or self.frame_ind == 5:
-                    for i in range(0, block_frames_count-1):
-                        suc, cut_RT = FindRelativeMotion(xs_per_image_meter, i, i+1, debug)
-                        if not suc:
-                            print("failed FindRelativeMotion")
-
-                # TODO: propogate frame_ind -> alphas (1/depth) for each point
-                if not relative_motion_known:
-                    suc, rel_RT = FindRelativeMotion(xs_per_image_meter, block_base_frame_ind, block_other_frame_ind, debug)
-                    assert suc
-                    relative_motion_known = True
-                else:
-                    if frames_R[0] is None:
-                        suc_factorization = False
-                        break
-
-                    base_R = frames_R[block_base_frame_ind]
-                    base_T = frames_T[block_base_frame_ind]
-                    other_R = frames_R[block_other_frame_ind]
-                    other_T = frames_T[block_other_frame_ind]
-                    other_from_base_RT = SE3Compose((other_R,other_T), SE3Inv((base_R,base_T)))
-                    rel_RT = other_from_base_RT
-
-                res = calcCamerasNew(xs_per_image_meter, block_base_frame_ind, block_other_frame_ind, rel_RT, max_iter=20, debug=debug)
-                suc, block_frames_R, block_frames_T, block_pnts = res
-                if not suc:
-                    suc_factorization = False
-                    break
-
-                block_start_frame_ind = block_base_frame_ind
-                for i, frame_ind in enumerate(range(block_start_frame_ind, block_end_frame_ind)):
-                    frames_R[frame_ind] =  block_frames_R[i]
-                    frames_T[frame_ind] =  block_frames_T[i]
-
-                for i,pnt_id in enumerate(live_point_ids):
-                    pnt_ind = pnt_id
-                    pnt_life = self.points_life[pnt_ind]
-                    pnt_life.is_mapped = True
-
-                    world_pnts[pnt_ind] = block_pnts[i]
-
-            cut_frame_ind = block_end_frame_ind
-            blocks_processed += 1
-
-        world_pnts_no_gaps = [p for p in world_pnts if not p is None]
-
-        if not suc_factorization:
-            return False, frames_R, frames_T, world_pnts_no_gaps
-            
-        for i, (r,t) in enumerate(zip(frames_R, frames_T)):
-            assert not r is None
-            assert not t is None
-        # for i, pnt in enumerate(world_pnts):
-        #     assert not pnt is None
-
-        return True, frames_R, frames_T, world_pnts_no_gaps
 
     def LocateCamAndMapBatchRefine(self, debug, min_proj_err):
         reproj_err_history = []
@@ -5026,7 +4797,7 @@ class PointsWorld:
 
         return anchor_frame_ind, common_pnts_count
 
-    def IntegrateNewFrameIterative(self, framei_from_world_RT, world_pnts, debug, min_reproj_err = 1e-4):
+    def MultiViewFactorizationIntegrateNewFrame(self, framei_from_world_RT, world_pnts, debug, min_reproj_err = 1e-4):
         # allocate space for the new frame
         frames_count = self.frame_ind + 1
         framei_from_world_RT.append((None,None))
@@ -7975,7 +7746,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int, default=2)
     parser.add_argument("--job", help="specify worker thread to run", type=int, default=2)
-    parser.add_argument("--slam", help="slam impl (0: none, 1,2:...)", type=int, default=1)
+    parser.add_argument("--slam", help="[1,3] slam impl", type=int, default=3)
     parser.add_argument("--float", help="[f32, f64, f128]", type=str, default="f32")
     parser.add_argument("--mpmath", help="[0 or 1]", type=int, default=0)
     args = parser.parse_args()
