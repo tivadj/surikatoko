@@ -84,6 +84,17 @@ def unzip(iterable):
 def NormSqr(v):
     return sum(np.square(v))
 
+# Finds the distance between two matrices as the ratio between their difference and max of absolute values.
+# It is similar to relative tolerance ('rtol') in numpy.isclose.
+def RelativeMatDistance(a, b):
+    abs_a = np.abs(a)
+    abs_b = np.abs(b)
+    max_ab = np.maximum(abs_a, abs_b)
+    diff_ab = np.abs(a-b)
+    rel_ratio = np.divide(diff_ab, max_ab)
+    result = np.min(rel_ratio)
+    return result
+
 # puts R[3x3] and T[3x1] into result[4x4]
 def FillRT4x4(R, T, result = None):
     h,w = R.shape[0:2]
@@ -2667,9 +2678,9 @@ def IsSpecialOrthogonal(rot_mat, p_msg = None):
 
 # Creates the rotation matrix around the vector @n by angle @ang in radians.
 # Using the Rodrigues formula.
-def rotMat(n, ang, check_log_SO3 = True):
+def RotMatNew(n, ang, check_log_SO3 = True):
     if np.isclose(0, ang):
-        return np.eye(3,3)
+        return False, None
     assert np.isclose(1, LA.norm(n), atol=1e-3), "direction must be a unity vector"
     s = math.sin(ang)
     c = math.cos(ang)
@@ -2689,8 +2700,21 @@ def rotMat(n, ang, check_log_SO3 = True):
 
         n_new, ang_new = logSO3(R, check_rot_mat=False)
         assert cond, "initial angle of rotation doesn't persist the conversion"
+    return True,R
 
+def rotMat(n, ang, check_log_SO3 = True):
+    suc, R = RotMatNew(n, ang, check_log_SO3)
+    if not suc:
+        return None
     return R
+
+def RotMatFromAxisAngle(axis_angle, check_log_SO3 = True):
+    ang = LA.norm(axis_angle)
+    dir = axis_angle / ang
+    suc, R = RotMatNew(dir, ang, check_log_SO3)
+    if not suc:
+        return False,None
+    return True, R
 
 # Fills 4x4 transformation matrix with R,T components.
 # rot_mat[3x3]
@@ -2716,7 +2740,7 @@ def SE3Mat(r = None, t = None, result = None, dtype=np.float32):
     return result
 
 # Logarithm of SO(3): R[3x3]->(n,ang) where n=rotation vector, ang=angle in radians.
-def logSO3(rot_mat, check_rot_mat = True):
+def LogSO3New(rot_mat, check_rot_mat = True):
     p_err = [""]
     assert IsSpecialOrthogonal(rot_mat, p_err), p_err[0]
 
@@ -2724,11 +2748,10 @@ def logSO3(rot_mat, check_rot_mat = True):
     cos_ang = clamp(cos_ang, -1, 1) # the cosine may be slightly off due to rounding errors
     sin_ang = math.sqrt(1.0-cos_ang**2)
 
-    # TODO: return False when ambiguous reconstruction
     # n=[0,0,0] ang=0 -> Identity[3x3]
     tol = 1.0e-3 # should treat as zero values: 2e-4
     if np.isclose(0, sin_ang, atol=tol):
-        return (np.array([0,0,0], dtype=rot_mat.dtype), 0)
+        return False, None, None
 
     n = np.zeros(3)
     n[0] = rot_mat[2,1]-rot_mat[1,2]
@@ -2747,7 +2770,129 @@ def logSO3(rot_mat, check_rot_mat = True):
         # atol=1e-4 to ignore 2.97e-3, 4.47974432e-04, 1.950215e-5 error
         assert np.allclose(rot_mat, rot_mat_new, atol=1e-2), "initial rotation matrix doesn't persist the conversion n={} ang={} rotmat|rotmat_new|delta=\n{}\n{}\n{}"\
             .format(n, ang, rot_mat, rot_mat_new, rot_mat-rot_mat_new)
+    return True, n, ang
+
+def logSO3(rot_mat, check_rot_mat = True):
+    suc, n, ang = LogSO3New(rot_mat, check_rot_mat)
+    if not suc:
+        return (np.array([0, 0, 0], dtype=rot_mat.dtype), 0)
     return n, ang
+
+def AxisAngleFromRotMat(R):
+    axis_angle = None
+    suc, n, ang = LogSO3New(R)
+    if not suc:
+        return False, axis_angle
+    axis_angle = n * ang
+    return True, axis_angle
+
+def QuatFromRotationMat(R, check_back_QtoR=True):
+    """ Converts from rotation matrix (SO3) to quaternion.
+    :param R: [3x3] rotation matrix
+    :return: quaternion corresponding to a given rotation matrix
+    """
+    p_err = [""]
+    assert IsSpecialOrthogonal(R, p_err), p_err[0]
+
+    # source: "A Recipe on the Parameterization of Rotation Matrices", Terzakis, 2012
+    # formula 24
+    quat = np.zeros(4, dtype=type(R[0,0]))
+    if R[1, 1] > -R[2, 2] and R[0, 0] > -R[1, 1] and R[0, 0] > -R[2, 2]:
+        sum = 1 + R[0, 0] + R[1, 1] + R[2, 2]
+        assert sum >= 0
+        root = math.sqrt(sum)
+        quat[0] = 0.5 * root
+        quat[1] = 0.5 * (R[2, 1] - R[1, 2]) / root
+        quat[2] = 0.5 * (R[0, 2] - R[2, 0]) / root
+        quat[3] = 0.5 * (R[1, 0] - R[0, 1]) / root
+    elif R[1, 1] < -R[2, 2] and R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        sum = 1 + R[0, 0] - R[1, 1] - R[2, 2]
+        assert sum >= 0
+        root = math.sqrt(sum)
+        quat[0] = 0.5 * (R[2, 1] - R[1, 2]) / root
+        quat[1] = 0.5 * root
+        quat[2] = 0.5 * (R[1, 0] + R[0, 1]) / root
+        quat[3] = 0.5 * (R[2, 0] + R[0, 2]) / root
+    elif R[1, 1] > R[2, 2] and R[0, 0] < R[1, 1] and R[0, 0] < -R[2, 2]:
+        sum = 1 - R[0, 0] + R[1, 1] - R[2, 2]
+        assert sum >= 0
+        root = math.sqrt(sum)
+        quat[0] = 0.5 * (R[0, 2] - R[2, 0]) / root
+        quat[1] = 0.5 * (R[1, 0] + R[0, 1]) / root
+        quat[2] = 0.5 * root
+        quat[3] = 0.5 * (R[2, 1] + R[1, 2]) / root
+    elif R[1, 1] < R[2, 2] and R[0, 0] < -R[1, 1] and R[0, 0] < -R[2, 2]:
+        sum = 1 - R[0, 0] - R[1, 1] + R[2, 2]
+        assert sum >= 0
+        root = math.sqrt(sum)
+        quat[0] = 0.5 * (R[1, 0] - R[0, 1]) / root
+        quat[1] = 0.5 * (R[2, 0] + R[0, 2]) / root
+        quat[2] = 0.5 * (R[2, 1] + R[1, 2]) / root
+        quat[3] = 0.5 * root
+    else: assert False
+    if check_back_QtoR:
+        R_back = RotMatFromQuat(quat, check_back_RtoQ=False)
+        assert np.allclose(R, R_back, atol=1e-2), "failed R-q-R q={} R|R_new|delta=\n{}\n{}\n{}"\
+            .format(quat, R, R_back, R_back-R)
+    len = NormSqr(quat)
+    assert np.isclose(1.0, len, atol=1e-2), "expected unity quaternion from rotation matrix but got len={}".format(len)
+    return quat
+
+def QuatFromAxisAngle(axis_ang):
+    """ Converts from axis-angle representation of a rotation (SO3) to quaternion.
+    :param axis_ang: 3-element vector of angle*rot_axis
+    :return: quaternion corresponding to a given axis-angle
+    """
+    ang = LA.norm(axis_ang)
+    quat = np.zeros(4, dtype=type(axis_ang[0]))
+    quat[0] = math.cos(ang/2)
+    sin_ang2 = math.sin(ang/2)
+    quat[1] = sin_ang2 * axis_ang[0] / ang
+    quat[2] = sin_ang2 * axis_ang[1] / ang
+    quat[3] = sin_ang2 * axis_ang[2] / ang
+    return quat
+
+def AxisPlusAngleFromQuat(q):
+    """ Converts from quaternion to (axis,angle)"""
+    zero_ang = math.isclose(1.0, q[0])
+    dir = np.zeros(3, dtype=type(q[0]))
+    if zero_ang:
+        ang = 0
+    else:
+        ang = 2*math.acos(q[0])
+        sin_ang2 = math.sin(ang / 2)
+        dir[0] = q[1] / sin_ang2
+        dir[1] = q[2] / sin_ang2
+        dir[2] = q[3] / sin_ang2
+    return dir, ang
+
+def RotMatFromQuat(q, check_back_RtoQ=True):
+    """ Constructs rotation matrix (SO3) corresponding to given quaternion.
+    :param q: quaternion, 4-element vector
+    :return: rotation matrix, [3x3]
+    """
+    R = np.zeros((3,3), dtype=type(q[0]))
+
+    # source: "A Recipe on the Parameterization of Rotation Matrices", Terzakis, 2012
+    # formula 9
+    R[0, 0] = q[0] * q[0] + q[1] * q[1] - q[2] * q[2] - q[3] * q[3]
+    R[0, 1] = 2*(q[1] * q[2] - q[0] * q[3])
+    R[0, 2] = 2*(q[1] * q[3] + q[0] * q[2])
+
+    R[1, 0] = 2*(q[1] * q[2] + q[0] * q[3])
+    R[1, 1] = q[0] * q[0] - q[1] * q[1] + q[2] * q[2] - q[3] * q[3]
+    R[1, 2] = 2 * (q[2] * q[3] - q[0] * q[1])
+
+    R[2, 0] = 2 * (q[1] * q[3] - q[0] * q[2])
+    R[2, 1] = 2 * (q[2] * q[3] + q[0] * q[1])
+    R[2, 2] = q[0] * q[0] - q[1] * q[1] - q[2] * q[2] + q[3] * q[3]
+
+    if check_back_RtoQ:
+        q_back = QuatFromRotationMat(R, check_back_QtoR=False)
+        assert np.allclose(q, q_back, atol=1e-2), "failed q-r-q conversion R=\n{}\nq={} q_back={} qdelta={}"\
+            .format(R, q, q_back, q-q_back)
+
+    return R
 
 
 # MVGCV Linear Triangulation Method, Ch12, page 312
@@ -3671,8 +3816,8 @@ def BuildPointInFrameRelatonMatrix(pnt_life_list, sort_points=False):
 # Represents point across multiple frame images.
 class PointLife:
     def __init__(self):
-        self.map_point_id = None # the identifier created for map point in a virtual world TODO: rename into map_point_virtual_id
-        self.point_id = None # the identifier associated with a track  TODO: rename into map_point_track_id
+        self.virtual_feat_id = None # the identifier created for map point in a virtual world TODO: rename into map_point_virtual_id
+        self.track_id = None # the identifier associated with a track  TODO: rename into map_point_track_id
         # ids vary in such a way:
         # x) if a track is lost, another track_id may be assiciated with the same map point later
         # x) there may be map point, but a track is not associated because the tracker is overloaded
@@ -3704,6 +3849,8 @@ class PointsWorld:
         self.img1_ind = None
         self.img_trackview_bgr = None
 
+        # try to add new track points if the number of current tracked points is below this threshold
+        # some big number means to always try to add new points
         self.min_num_3Dpoints = None
         self.img_feat_tracker = None
         self.cam_mat_pixel_from_meter = None
@@ -3711,7 +3858,10 @@ class PointsWorld:
         self.focal_len = None # foucus distance in millimeters
         self.slam_impl = None
 
-        self.framei_from_world_RT_list = []
+        # direct RT converts camera frame into world
+        # inverse RT converts world into camera
+        # source http://slam-plus-plus.sourceforge.net/documentation20/phunzip.php/documentation_21.zip/d1/dbd/rot3d.html
+        self.framei_from_world_RT_list = [] # inverse RT
         self.world_pnts = []
         self.check_drift = False # whether to check divergence of points' coordinates and camera relative motion from ground truth
         self.drift = 3e-1
@@ -3726,6 +3876,10 @@ class PointsWorld:
         # eg. if True, algorithm sqrt(f64)->f32 is coerced into sqrt(f64)->f64 by upconverting result from f32 into f64
         self.conceal_lost_precision = False
         self.reproj_err_history = []
+
+    def PointById(self, pnt_id):
+        pnt_ind = pnt_id # NOTE: assumes point id == index of the point in the array
+        return self.points_life[pnt_ind]
 
     def SetCamMat(self, cam_mat_pixel_from_meter):
         self.cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
@@ -3758,10 +3912,10 @@ class PointsWorld:
             if len < radius_pixel: return True
         return False
 
-    def __AllocateNewPoints(self, inception_frame_ind, new_pnts_count, map_point_ids):
+    def __AllocateNewPoints(self, inception_frame_ind, new_pnts_count, virtual_point_ids):
         """map_point_ids virtual ids associated with new points or None"""
-        if not map_point_ids is None:
-            assert new_pnts_count == len(map_point_ids)
+        if not virtual_point_ids is None:
+            assert new_pnts_count == len(virtual_point_ids)
         track_pnt_ids = []
 
         frames_count = self.frame_ind + 1
@@ -3769,14 +3923,14 @@ class PointsWorld:
             id = len(self.points_life)
 
             map_point_id = None
-            if not map_point_ids is None:
-                map_point_id = map_point_ids[i]
+            if not virtual_point_ids is None:
+                map_point_id = virtual_point_ids[i]
                 assert not map_point_id is None
 
             pnt_life = PointLife()
             pnt_life.inception_frame_ind = inception_frame_ind
-            pnt_life.map_point_id = map_point_id
-            pnt_life.point_id = id
+            pnt_life.virtual_feat_id = map_point_id
+            pnt_life.track_id = id
             pnt_life.points_list_meter = [None] * frames_count
             pnt_life.points_list_pixel = [None] * frames_count
 
@@ -3818,12 +3972,12 @@ class PointsWorld:
             pnt_life.points_list_meter.append(None)
             pnt_life.points_list_pixel.append(None)
 
-    def PutNewPoints2D(self, first_coord_frame_ind, inception_frame_ind, points2D_meter, points2D_pixel, map_point_ids):
+    def PutNewPoints2D(self, first_coord_frame_ind, inception_frame_ind, points2D_meter, points2D_pixel, virtual_point_ids):
         """
         :param first_coord_frame_ind: the first frame where the point was detected  
         :param inception_frame_ind: the frame when tracker decided to create a tracked point, may be later then it was observed at first 
         """
-        track_pnt_ids = self.__AllocateNewPoints(inception_frame_ind, len(points2D_meter), map_point_ids)
+        track_pnt_ids = self.__AllocateNewPoints(inception_frame_ind, len(points2D_meter), virtual_point_ids)
 
         # if targ_frame_ind is None: # default to the current frame
         #     targ_frame_ind = self.frame_ind
@@ -3902,9 +4056,9 @@ class PointsWorld:
                 x1_pixel = pnt_life.points_list_pixel[self.frame_ind-1]
                 if not x1_pixel is None:
                     xs1_pixel.append(x1_pixel)
-                    old_track_pnt_ids.append(pnt_life.point_id)
+                    old_track_pnt_ids.append(pnt_life.track_id)
 
-                    map_pnt_id = pnt_life.map_point_id
+                    map_pnt_id = pnt_life.virtual_feat_id
                     old_map_pnt_ids.append(map_pnt_id)
 
 
@@ -3942,7 +4096,7 @@ class PointsWorld:
             xs2_new_meter_no_gaps = []
             if persist_feat_count_old < self.min_num_3Dpoints:
                 # try to find more features in the previous frame, which persist in current frame
-                new_map_point_ids_tmp, xs1_pixel_tmp = self.img_feat_tracker.DetectFeats(self.img1_ind, self.img1_gray)
+                new_point_virtual_ids_tmp, xs1_pixel_tmp = self.img_feat_tracker.DetectFeats(self.img1_ind, self.img1_gray)
 
                 # we are interested only in those features, which do not overlap with existing ones
                 new_map_point_ids = []
@@ -3953,12 +4107,12 @@ class PointsWorld:
                     if self.IsCloseToExistingFeatures(x1, dist_to_existing_feat, self.frame_ind-1):
                         continue
                     xs1_new_pixel.append(x1)
-                    map_point_id = new_map_point_ids_tmp[i]
+                    map_point_id = new_point_virtual_ids_tmp[i]
                     new_map_point_ids.append(map_point_id)
 
                 new_points_batch_size = 8 # min number of points to add at once; >5 to more reiliably run the 5points algorithm
 
-                if len(xs1_new_pixel) > new_points_batch_size:
+                if len(xs1_new_pixel) >= new_points_batch_size:
                     # xs1_new_pixel_array = np.array(xs1_new_pixel, np.float32)
                     # next_pts_new, status_new, err_new = cv2.calcOpticalFlowPyrLK(self.img1_gray, img2_gray,xs1_new_pixel_array, None,winSize=lk_win_size)
                     # FixOpenCVCalcOpticalFlowPyrLK(xs1_new_pixel, next_pts_new, status_new, lk_win_size)
@@ -3990,8 +4144,10 @@ class PointsWorld:
                             new_map_point_ids_no_gaps.append(new_map_point_ids[i])
 
                     # append new points into the previous frame
-                    new_pnt_ids = self.PutNewPoints2D(self.frame_ind-1, self.frame_ind, xs1_new_meter_no_gaps, xs1_new_pixel_no_gaps, new_map_point_ids_no_gaps)  # initial points
-                    self.PutMatchedPoints2D(new_pnt_ids, xs2_new_meter_no_gaps, xs2_new_pixel_no_gaps)
+                    # initial points
+                    new_track_ids = self.PutNewPoints2D(self.frame_ind-1, self.frame_ind, xs1_new_meter_no_gaps, xs1_new_pixel_no_gaps, new_map_point_ids_no_gaps)
+                    # set coordinates
+                    self.PutMatchedPoints2D(new_track_ids, xs2_new_meter_no_gaps, xs2_new_pixel_no_gaps)
         draw_camera_trackview = False
         if draw_camera_trackview:
             if self.img_trackview_bgr is None:
@@ -4388,8 +4544,8 @@ class PointsWorld:
                     x_meter = pnt_life.points_list_meter[cursor.next_frame_ind]
                     if x_meter is None: continue
 
-                    next_frame_pnt_ids.append(pnt_life.point_id)
-                    next_frame_pnt_ids_set.add(pnt_life.point_id)
+                    next_frame_pnt_ids.append(pnt_life.track_id)
+                    next_frame_pnt_ids_set.add(pnt_life.track_id)
 
                 anchor_frame_ind, common_pnts_count = self.FindAnchorFrame(cursor.next_frame_ind, next_frame_pnt_ids_set)
 
@@ -4463,6 +4619,736 @@ class PointsWorld:
 
         print("exiting LocateCamAndMapBatchRefine")
 
+    def BundleAdjustmentReprojError(self, overwrite_track_id = None, overwrite_x3D=None, overwrite_frame_ind=None, overwrite_rt=None):
+        if not overwrite_track_id is None:
+            assert not overwrite_x3D is None, "Provide 3D world point to overwrite"
+        if not overwrite_frame_ind is None:
+            assert not overwrite_rt is None, "Provide frame R,T to overwrite"
+
+        start_frame = 0
+        end_frame = self.frame_ind+1
+        cam_mat_pixel_from_meter = self.cam_mat_pixel_from_meter
+
+        el_type = self.elem_type
+        visib_pnts_count = 0
+        err_sum = 0.0
+
+        for frame_ind in range(start_frame, end_frame):
+            if not overwrite_frame_ind is None and overwrite_frame_ind == frame_ind:
+                R,T = overwrite_rt
+            else:
+                R,T = self.framei_from_world_RT_list[frame_ind]
+
+            for pnt_life in self.points_life:
+                if not overwrite_track_id is None and overwrite_track_id == pnt_life.track_id:
+                    pnt3D_world = overwrite_x3D
+                else:
+                    #continue
+                    pnt3D_world = self.world_pnts[pnt_life.track_id]
+
+                #assert not pnt3D_world is None, "Mapped points must have 3D position"
+                if pnt3D_world is None: continue
+
+                #x_meter = pnt_life.points_list_meter[frame_ind]
+                corner_pix = pnt_life.points_list_pixel[frame_ind]
+                #assert not expect_pix is None, "Mapped points must be detected in image and hence, the position is known"
+                if corner_pix is None: continue
+
+                x3D_cam = SE3Apply((R,T), pnt3D_world)
+                x3D_pix = np.dot(cam_mat_pixel_from_meter, x3D_cam)
+                x = x3D_pix[0]/x3D_pix[2]
+                y = x3D_pix[1]/x3D_pix[2]
+                one_err = (x - corner_pix[0])**2 + (y - corner_pix[1])**2
+                # if one_err > 0.01:
+                #     print("expect={} actual={}".format(corner_pix, (x,y)))
+                # if overwrite_track_id == pnt_life.track_id:
+                #     print("track_id={} frame_ind={} corner={} x3D={} T={} R=\n{}".format(pnt_life.track_id, frame_ind, corner_pix, pnt3D_world, T, R))
+
+                err_sum += one_err
+                visib_pnts_count += 1
+        err_per_point = err_sum / visib_pnts_count if visib_pnts_count > 0 else None
+
+        return err_sum, err_per_point
+
+    def BundleAdjustmentCompute(self, check_derivatives=False, debug=False):
+        world_pnts_copy = self.world_pnts.copy()
+        framei_from_world_RT_list_copy = self.framei_from_world_RT_list.copy()
+
+        # select tracks (salient 3D points) to use for bundle adjustment
+        # NOTE: furter the pnt_ind refers to pnt_id in the array of bundle points
+        bundle_pnt_ids = []
+        for pnt_life in self.points_life:
+            pnt3D_world = self.world_pnts[pnt_life.track_id]
+            if pnt3D_world is None: continue
+            bundle_pnt_ids.append(pnt_life.track_id)
+
+
+        # TODO: do step-by-step debug of Tk'<->Tk with index=
+
+        unity_comp_ind = 1
+        #R0, T0, world_scale = self.BundleAdjustmentNormalizeWorld(bundle_pnt_ids, unity_comp_ind)
+
+        suc = True
+        suc = self.DoBundleAdjustmentOnNormalizedData(bundle_pnt_ids, unity_comp_ind, check_derivatives, debug)
+
+        #self.BundleAdjustmentRevertNormalization(bundle_pnt_ids, R0, T0, world_scale)
+
+        check_normalization_is_reversed = True
+        if check_normalization_is_reversed:
+            x1expect = world_pnts_copy[1]
+            x1actual = self.world_pnts[1]
+            assert np.isclose(x1expect[0], x1actual[0], atol=1e-5), "Normalization side-effects must be reversed"
+            t1expect = framei_from_world_RT_list_copy[1][1]
+            t1actual = self.framei_from_world_RT_list[1][1]
+            assert np.isclose(t1expect[0], t1actual[0], atol=1e-5), "Normalization side-effects must be reversed"
+
+        return suc
+
+    # unity_comp_ind component of T1 to make unity [0,1,2] for [T1X,T1Y,T1Z]
+    def BundleAdjustmentNormalizeWorld(self, bundle_pnt_ids, unity_comp_ind):
+        pnt_id0 = bundle_pnt_ids[0]
+        pnt_id1 = bundle_pnt_ids[1]
+
+        R0,T0 = self.framei_from_world_RT_list[pnt_id0]
+        R1,T1 = self.framei_from_world_RT_list[pnt_id1]
+        initial_camera_shift = T0 - R0.dot(R1.T).dot(T1)
+
+        # make the first shift of the camera a unity (formula 27)
+        world_scale = 1 / initial_camera_shift[unity_comp_ind]
+
+        for pnt_id in bundle_pnt_ids:
+            pnt_ind = pnt_id
+            X3D = self.world_pnts[pnt_ind]
+            newX = R0.dot(X3D) + T0
+            newX *= world_scale
+
+            self.world_pnts[pnt_ind] = newX
+
+        for frame_ind in range(0, len(self.framei_from_world_RT_list)):
+            Rk, Tk = self.framei_from_world_RT_list[frame_ind]
+            newRk = R0.dot(Rk.T)
+            newTk = T0 - R0.dot(Rk.T).dot(Tk)
+            newTk *= world_scale
+
+            self.framei_from_world_RT_list[frame_ind] = (newRk, newTk)
+
+        return R0, T0, world_scale
+
+    def BundleAdjustmentRevertNormalization(self, bundle_pnt_ids, R0, T0, world_scale):
+        # revert unity transformation
+        for pnt_id in bundle_pnt_ids:
+            pnt_ind = pnt_id
+            X3D = self.world_pnts[pnt_ind]
+            X3Dtmp = X3D / world_scale
+            revertX = R0.T.dot(X3Dtmp - T0)
+
+            self.world_pnts[pnt_ind] = revertX
+
+        for frame_ind in range(0, len(self.framei_from_world_RT_list)):
+            Rk, Tk = self.framei_from_world_RT_list[frame_ind]
+            revertRk = R0.T.dot(Rk).T
+
+            Tktmp = Tk / world_scale
+            revertTk = Rk.T.dot(T0 - Tktmp)
+
+            self.framei_from_world_RT_list[frame_ind] = (revertRk, revertTk)
+
+    def DoBundleAdjustmentOnNormalizedData(self, bundle_pnt_ids, unity_comp_ind, check_derivatives, debug):
+        el_type = self.elem_type
+
+        start_frame = 0
+        end_frame = self.frame_ind+1
+        frames_count = end_frame - start_frame
+        points_count = len(bundle_pnt_ids)
+
+        # +3 for R0=Identity[3x3]
+        # +3 for T0=[0 0 0]
+        # +1 for T1y=1
+        KNOWN_FRAME_VARS_COUNT = 7
+
+        check_data_is_normalized = False
+        if check_data_is_normalized:
+            R0,T0 = self.framei_from_world_RT_list[0]
+            assert np.isclose(R0[0,0], 1)
+            assert np.isclose(T0[0], 0)
+            R1, T1 = self.framei_from_world_RT_list[1]
+            assert np.isclose(T1[unity_comp_ind], 1)
+
+        # derivatives data
+        gradE  = np.zeros(3*points_count + 6*frames_count, dtype=el_type) # derivative of vars
+        gradE2_onlyW = np.zeros(3*points_count + 6*frames_count, dtype=el_type)
+        deriv_second_point = np.zeros((3*points_count, 3), dtype=el_type) # rows=[X1 Y1 Z1 X2 Y2 Z2...] cols=[X Y Z]
+        deriv_second_frame = np.zeros((6*frames_count, 6), dtype=el_type) # rows=[T1 T2 T3 W1 W2 W3...for each frame] cols=[T1 T2 T3 W1 W2 W3]
+        # rows=[X1 Y1 Z1 X2 Y2 Z2...for each point] cols=[T1 T2 T3 W1 W2 W3...for each frame]
+        deriv_second_pointframe = np.zeros((3*points_count, 6*frames_count), dtype=el_type)
+        corrections = np.zeros(3 * points_count + 6 * frames_count, dtype=el_type) # corrections of vars
+
+        # data to solve linear equations
+        left_side1 = np.zeros((6 * frames_count - KNOWN_FRAME_VARS_COUNT, 6 * frames_count - KNOWN_FRAME_VARS_COUNT), dtype=el_type)
+        right_side = np.zeros(6 * frames_count - KNOWN_FRAME_VARS_COUNT, dtype=el_type)
+        matG = np.zeros((6 * frames_count - KNOWN_FRAME_VARS_COUNT, 6 * frames_count - KNOWN_FRAME_VARS_COUNT), dtype=el_type)
+
+        MAX_ABS_DIST = 0.1
+        MAX_REL_DIST = 0.1 # 14327.78415796-14328.10677215=0.32261419 => rtol=2.2e-5
+        def IsClose(a, b):
+            return np.allclose(a, b, atol=MAX_ABS_DIST, rtol=MAX_REL_DIST)
+
+        opt_fun_value,_ = self.BundleAdjustmentReprojError(None, None, None, None)
+
+        hessian_scalar = 0.0001  # hessian's diagonal multiplier
+        while True:
+            self.BundleAdjustmentComputeDerivatives(points_count, frames_count, bundle_pnt_ids, check_derivatives, gradE, gradE2_onlyW, deriv_second_point, deriv_second_frame, deriv_second_pointframe, debug)
+
+            # loop to find a hessian scalar which decreases the target optimization function
+            while True:
+                self.BundleAdjustmentEstimateCorrections(points_count, frames_count, hessian_scalar, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, matG, left_side1, right_side, unity_comp_ind, KNOWN_FRAME_VARS_COUNT, corrections, debug)
+
+                self.BundleAdjustmentApplyCorrections(points_count, frames_count, bundle_pnt_ids, corrections, reverse_update=False)
+
+                opt_fun_value_new,_ = self.BundleAdjustmentReprojError(None, None, None, None)
+
+                target_fun_change = opt_fun_value_new - opt_fun_value
+
+                target_fun_decreased = target_fun_change < 0
+                if target_fun_decreased:
+                    break
+
+                # now, the value of target minimization function increases, try again with different params
+
+                self.BundleAdjustmentApplyCorrections(points_count, frames_count, bundle_pnt_ids, corrections, reverse_update=True)
+
+                opt_fun_value_tmp,_ = self.BundleAdjustmentReprojError(None, None, None, None)
+
+                hessian_scalar *= 10  # prefer more the Steepest descent
+
+            assert opt_fun_value_new < opt_fun_value, "The value of minimization function must decrease"
+
+            opt_fun_change = opt_fun_value - opt_fun_value_new
+            if opt_fun_change < 0.001:
+                return True  # success
+
+            opt_fun_value = opt_fun_value_new
+            hessian_scalar /= 10  # prefer more the Gauss-Newton
+
+        return False
+
+    def BundleAdjustmentComputeDerivatives(self, points_count, frames_count, bundle_pnt_ids, check_derivatives, gradE, gradE_onlyW, deriv_second_point, deriv_second_frame, deriv_second_pointframe, debug):
+        MAX_ABS_DIST = 0.1
+        MAX_REL_DIST = 0.1 # 14327.78415796-14328.10677215=0.32261419 => rtol=2.2e-5
+        POINT_COMPS = 3 # [X Y Z]
+        FRAME_COMPS = 6 # [T1 T2 T3 W1 W2 W3], w=rotation axis in 'direct' SO3 frame
+        cam_mat_pixel_from_meter = self.cam_mat_pixel_from_meter
+
+        f1 = cam_mat_pixel_from_meter[0,0]
+        f2 = cam_mat_pixel_from_meter[1,1]
+        u0,v0,f0 = cam_mat_pixel_from_meter[0:3,2]
+
+        el_type = self.elem_type
+
+        eps = 1e-5 # finite difference step to approximate derivative
+
+        def IsClose(a, b):
+            return np.allclose(a, b, atol=MAX_ABS_DIST, rtol=MAX_REL_DIST)
+
+        # Estimate the first derivative of a world point [X Y Z] around the given component index (0=X,1=Y,2=Z)
+        def EstimateFirstPartialDerivPoint(pnt_id, pnt0, xyz_ind):
+            pnt3D_left = pnt0.copy()
+            pnt3D_left[xyz_ind] -= eps
+            x1_err_sum, x1_err_per_point = self.BundleAdjustmentReprojError(pnt_id, pnt3D_left, None, None)
+
+            pnt3D_right = pnt0.copy()
+            pnt3D_right[xyz_ind] += eps
+            x2_err_sum, x2_err_per_point = self.BundleAdjustmentReprojError(pnt_id, pnt3D_right, None, None)
+            return (x2_err_sum - x1_err_sum) / (2 * eps)
+
+        def EstimateFirstPartialDerivTranslation(frame_ind, T_direct, R_direct, w_direct, t_ind):
+            R_direct_tmp = R_direct
+            if R_direct_tmp is None:
+                assert not w_direct is None
+                suc, R_direct_tmp = RotMatFromAxisAngle(w_direct)
+                assert suc
+
+            t1dir = T_direct.copy()
+            t1dir[t_ind] -= eps
+            r1inv, t1inv = SE3Inv((R_direct_tmp, t1dir))
+            t1_err_sum, t1_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (r1inv, t1inv))
+
+            t2dir = T_direct.copy()
+            t2dir[t_ind] += eps
+            r2inv, t2inv = SE3Inv((R_direct_tmp, t2dir))
+            t2_err_sum, t2_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (r2inv, t2inv))
+            return (t2_err_sum - t1_err_sum) / (2 * eps)
+
+        def EstimateFirstPartialDerivRotation(frame_ind, t_direct, w_direct, w_ind):
+            w1 = w_direct.copy()
+            w1[w_ind] -= eps
+            suc, R1_direct = RotMatFromAxisAngle(w1)
+            assert suc
+            R1inv, T1inv = SE3Inv((R1_direct, t_direct))
+            R1_err_sum, t1_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (R1inv, T1inv))
+
+            w2 = w_direct.copy()
+            w2[w_ind] += eps
+            suc, R2 = RotMatFromAxisAngle(w2)
+            assert suc
+            R2inv, T2inv = SE3Inv((R2, t_direct))
+            R2_err_sum, R2_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (R2inv, T2inv))
+            return (R2_err_sum - R1_err_sum) / (2 * eps)
+
+        def ErrAtXVec(xvec, pnt_id, frame_ind):
+            assert len(xvec) == 9, "len(x)==9, [X Y Z T1 T2 T3 W1 W2 W3]"
+            point3D = xvec[0:3]
+            t_direct = xvec[3:6]
+            w_direct = xvec[6:9]
+
+            suc, r_direct = RotMatFromAxisAngle(w_direct)
+            assert suc
+            r_inv, t_inv = SE3Inv((r_direct, t_direct))
+
+            result, _ = self.BundleAdjustmentReprojError(pnt_id, point3D, frame_ind, (r_inv, t_inv))
+            return result
+
+        xvec = np.zeros(9, dtype=el_type)
+        xvec_tmp = np.zeros_like(xvec)
+
+        def EstimateSecondPartialDeriv(pnt_id, x3D, var1, frame_ind, t_direct, w_direct, var2):
+            xvec[0:3] = x3D
+            xvec[3:6] = t_direct
+            xvec[6:9] = w_direct
+
+            np.copyto(xvec_tmp, src=xvec)
+            xvec_tmp[var1] += eps
+            xvec_tmp[var2] += eps
+            f1 = ErrAtXVec(xvec_tmp, pnt_id, frame_ind)
+
+            np.copyto(xvec_tmp, src=xvec)
+            xvec_tmp[var1] += eps
+            xvec_tmp[var2] -= eps
+            f2 = ErrAtXVec(xvec_tmp, pnt_id, frame_ind)
+
+            np.copyto(xvec_tmp, src=xvec)
+            xvec_tmp[var1] -= eps
+            xvec_tmp[var2] += eps
+            f3 = ErrAtXVec(xvec_tmp, pnt_id, frame_ind)
+
+            np.copyto(xvec_tmp, src=xvec)
+            xvec_tmp[var1] -= eps
+            xvec_tmp[var2] -= eps
+            f4 = ErrAtXVec(xvec_tmp, pnt_id, frame_ind)
+
+            # second order central finite difference formula
+            # https://en.wikipedia.org/wiki/Finite_difference
+            deriv2_value = (f1 - f2 - f3 + f4) / (4 * eps * eps)
+            return deriv2_value
+
+        for pnt_ind, pnt_id in enumerate(bundle_pnt_ids):
+            pnt_life = self.PointById(pnt_id)
+            pnt3D_world = self.world_pnts[pnt_life.track_id]
+            assert not pnt3D_world is None
+
+            for frame_ind in range(0, frames_count):
+                corner_pix = pnt_life.points_list_pixel[frame_ind]
+                if corner_pix is None: continue
+
+                R_inverse,T_inverse = self.framei_from_world_RT_list[frame_ind]
+                P = np.zeros((3,4), dtype=el_type)
+                P[0:3, 0:3] = np.dot(cam_mat_pixel_from_meter,R_inverse)
+                P[0:3, 3] = np.dot(cam_mat_pixel_from_meter,T_inverse)
+
+                x3D_cam = SE3Apply((R_inverse,T_inverse), pnt3D_world)
+                x3D_pix = np.dot(cam_mat_pixel_from_meter, x3D_cam)
+                pqr = x3D_pix
+
+                # dX,dY,dZ
+                for xyz_ind in range(0,3):
+                    ax = (pqr[0] / pqr[2] - corner_pix[0] / f0) * (pqr[2] * P[0, xyz_ind] - pqr[0] * P[2, xyz_ind]) + \
+                         (pqr[1] / pqr[2] - corner_pix[1] / f0) * (pqr[2] * P[1, xyz_ind] - pqr[1] * P[2, xyz_ind])
+                    ax *= 2 / pqr[2]**2
+                    gradE[pnt_ind*3+xyz_ind] += ax
+
+                # second derivative Point-Point
+                # derivative(p) = [P[0,0] P[0,1] P[0,2]]
+                # derivative(q) = [P[1,0] P[1,1] P[1,2]]
+                # derivative(r) = [P[2,0] P[2,1] P[2,2]]
+                for deriv1 in range(0,3): # [X Y Z]
+                    for deriv2 in range(0,3): # [X Y Z]
+                        ax = (pqr[2] * P[0, deriv1] - pqr[0] * P[2, deriv1]) * (pqr[2] * P[0, deriv2] - pqr[0] * P[2, deriv2]) + \
+                             (pqr[2] * P[1, deriv1] - pqr[1] * P[2, deriv1]) * (pqr[2] * P[1, deriv2] - pqr[1] * P[2, deriv2])
+                        ax *= 2 / pqr[2]**4
+                        deriv_second_point[pnt_ind*3+deriv1, deriv2] += ax
+
+            if check_derivatives:
+                # estimate dX,dY,dZ
+                gradPoint_estim = np.zeros(3, dtype=el_type)
+                for xyz_ind in range(0, 3):
+                    gradPoint_estim[xyz_ind] = EstimateFirstPartialDerivPoint(pnt_life.track_id, pnt3D_world, xyz_ind)
+
+                print("gradXYZ_estim={} gradXYZ_exact={}".format(gradPoint_estim, gradE[pnt_ind*3:(pnt_ind+1)*3]))
+
+                close = IsClose(gradPoint_estim, gradE[pnt_ind*3:(pnt_ind+1)*3])
+                if not close:
+                    assert False, "ERROR"
+
+                # 2nd derivative Point-Point
+                deriv_second_point_estim = np.zeros((3,3), dtype=el_type)
+                R_direct, T_direct = SE3Inv((R_inverse, T_inverse))
+                suc, w_norm, w_ang = LogSO3New(R_direct)
+                assert suc
+                w_direct = w_norm * w_ang
+                for var1 in range(0,3):
+                    for var2 in range(0,3):
+                        deriv_second_point_estim[var1,var2] = EstimateSecondPartialDeriv(pnt_life.track_id, pnt3D_world, var1, frame_ind, T_direct, w_direct, var2)
+                print("deriv2nd_estim deriv2nd_exact\n{}\n{}".format(deriv_second_point_estim, deriv_second_point[pnt_ind*3:(pnt_ind+1)*3,0:3]))
+
+                close = IsClose(deriv_second_point_estim, deriv_second_point[pnt_ind*3:(pnt_ind+1)*3,0:3])
+                if not close:
+                    assert False, "ERROR"
+
+            check_point_hessian_is_invertible = True
+            if check_point_hessian_is_invertible:
+                point_hessian = deriv_second_point[pnt_ind * 3 : (pnt_ind+1)*3, 0:3]
+                is_inverted = True
+                try:
+                    point_hessian_inv = LA.inv(point_hessian)
+                except LA.LinAlgError:
+                    print("ERROR: inverting 3x3 E, pnt_ind={}".format(pnt_ind))
+                    is_inverted = False
+                assert is_inverted, "Can't invert point hessian for pnt_id={}".format(pnt_id)
+
+        # dT
+        grad_frames_section = points_count * 3 # frames goes after points
+        pvec = np.zeros(3, dtype=el_type)
+        qvec = np.zeros(3, dtype=el_type)
+        rvec = np.zeros(3, dtype=el_type)
+        for frame_ind in range(0, frames_count):
+            R_inverse, T_inverse = self.framei_from_world_RT_list[frame_ind]
+            R_direct, T_direct = SE3Inv((R_inverse,T_inverse))
+
+            pvec[:] = -(f1*R_direct[:,0] + u0*R_direct[:,2])
+            qvec[:] = -(f2*R_direct[:,1] + v0*R_direct[:,2])
+            rvec[:] = -(               f0*R_direct[:,2])
+
+            grad_frame_offset = grad_frames_section + frame_ind * 6
+
+            for pnt_ind, pnt_id in enumerate(bundle_pnt_ids):
+                pnt_life =  self.PointById(pnt_id)
+                pnt3D_world = self.world_pnts[pnt_life.track_id]
+                assert not pnt3D_world is None
+
+                corner_pix = pnt_life.points_list_pixel[frame_ind]
+                if corner_pix is None: continue
+
+                x3D_cam = SE3Apply((R_inverse, T_inverse), pnt3D_world)
+                x3D_pix = np.dot(cam_mat_pixel_from_meter, x3D_cam)
+                pqr = x3D_pix
+                P = np.dot(cam_mat_pixel_from_meter, np.hstack((R_inverse, T_inverse.reshape(3,1))))
+
+                # translation gradient
+                gradT_vec = (pqr[0] / pqr[2] - corner_pix[0] / f0) * (pqr[2] * pvec - pqr[0] * rvec) + \
+                            (pqr[1] / pqr[2] - corner_pix[1] / f0) * (pqr[2] * qvec - pqr[1] * rvec)
+                gradT_vec *= 2 / pqr[2] ** 2
+                gradE[grad_frame_offset:grad_frame_offset+3] += gradT_vec
+
+                # rotation gradient
+                gradp_byw = np.cross(-pvec, pnt3D_world-T_direct)
+                gradq_byw = np.cross(-qvec, pnt3D_world-T_direct)
+                gradr_byw = np.cross(-rvec, pnt3D_world-T_direct)
+                gradW_vec = (pqr[0] / pqr[2] - corner_pix[0] / f0) * (pqr[2] * gradp_byw - pqr[0] * gradr_byw) + \
+                            (pqr[1] / pqr[2] - corner_pix[1] / f0) * (pqr[2] * gradq_byw - pqr[1] * gradr_byw)
+                gradW_vec *= 2 / pqr[2] ** 2
+                gradE[grad_frame_offset+3:grad_frame_offset+6] += gradW_vec
+
+                rotation_gradient_via_quaternions = False
+                if rotation_gradient_via_quaternions:
+                    suc, w_direct_norm, w_ang = LogSO3New(R_direct)
+                    if not suc:
+                        # TODO: when this case happens?
+                        continue
+
+                    q = QuatFromRotationMat(R_direct)
+                    #w_norm, w_ang = AxisPlusAngleFromQuat(q)
+                    w_direct = w_direct_norm * w_ang
+
+                    # source: "A Recipe on the Parameterization of Rotation Matrices", Terzakis, 2012
+                    # partial derivatives of [3x3] rotation matrix with respect to quaternion components, formulas (33-36)
+                    F = np.zeros((4, 3,3), dtype=el_type) # 4 matrices [3x3]
+                    F[0,0,0:3] = [q[0], -q[3], q[2]]
+                    F[0,1,0:3] = [q[3], q[0], -q[1]]
+                    F[0,2,0:3] = [-q[2], q[1], q[0]]
+
+                    F[1,0,0:3] = [q[1], q[2], q[3]]
+                    F[1,1,0:3] = [q[2], -q[1], -q[0]]
+                    F[1,2,0:3] = [q[3], q[0], -q[1]]
+
+                    F[2,0,0:3] = [-q[2], q[1], q[0]]
+                    F[2,1,0:3] = [q[1], q[2], q[3]]
+                    F[2,2,0:3] = [-q[0], q[3], -q[2]]
+
+                    F[3,0,0:3] = [-q[3], -q[0], q[1]]
+                    F[3,1,0:3] = [q[0], -q[3], q[2]]
+                    F[3,2,0:3] = [q[1], q[2], q[3]]
+                    F *= 2
+
+                    # partial derivatives of [4x1] quaternion components with respect to [3x1] axis-angle components, formulas (38-40)
+                    G = np.zeros((4,3), dtype=el_type) # 3 vectors [4x1]
+                    ang = w_ang
+                    sin_ang2 = math.sin(ang/2)
+                    cos_ang2 = math.cos(ang/2)
+                    cos_diff = (0.5 * cos_ang2 - sin_ang2 / ang) / ang ** 2
+                    G[0, 0] = -0.5 * w_direct[0] * sin_ang2 / ang # dq0/du1
+                    G[1, 0] = sin_ang2 / ang + w_direct[0] * w_direct[0] * cos_diff  # dq1/du1
+                    G[2, 0] = w_direct[0] * w_direct[1] * cos_diff # dq2/du1
+                    G[3, 0] = w_direct[0] * w_direct[2] * cos_diff # dq2/du1
+
+                    G[0, 1] = -0.5 * w_direct[1] * sin_ang2 / ang
+                    G[1, 1] = w_direct[0] * w_direct[1] * cos_diff
+                    G[2, 1] = sin_ang2 / ang + w_direct[1] * w_direct[1] * cos_diff
+                    G[3, 1] = w_direct[1] * w_direct[2] * cos_diff
+
+                    G[0, 2] = -0.5 * w_direct[2] * sin_ang2 / ang
+                    G[1, 2] = w_direct[0] * w_direct[2] * cos_diff
+                    G[2, 2] = w_direct[1] * w_direct[2] * cos_diff
+                    G[3, 2] = sin_ang2 / ang + w_direct[2] * w_direct[2] * cos_diff
+
+                    # formula 41
+                    dR = np.zeros((3, 3,3), dtype=el_type) # 3 matrices [3x3]
+                    for deriv1 in range(0,3): # each component of axis-angle representation
+                        for deriv2 in range(0, 4):
+                            mat33 = F[deriv2,:,:]
+                            scalar = G[deriv2,deriv1]
+                            dR[deriv1,:,:] += mat33 * scalar
+
+                    #print("gradp_byw={}".format(gradp_byw))
+                    #print("gradq_byw={}".format(gradq_byw))
+                    #print("gradr_byw={}".format(gradr_byw))
+                    pqr_bywi = np.zeros((3,3),dtype=el_type)
+                    for wi in range(0,3):
+                        pqr_bywi[0:3,wi] = cam_mat_pixel_from_meter.dot(dR[wi,:,:].T).dot(np.hstack((np.eye(3,3),-T_direct.reshape((3,1))))).dot(np.hstack((pnt3D_world,1)))
+                    gradp_byw = pqr_bywi[0,0:3]
+                    gradq_byw = pqr_bywi[1,0:3]
+                    gradr_byw = pqr_bywi[2,0:3]
+                    #print("gradp_byw={}".format(gradp_byw))
+                    #print("gradq_byw={}".format(gradq_byw))
+                    #print("gradr_byw={}".format(gradr_byw))
+                    #print()
+                    gradW_vec2 = (pqr[0] / pqr[2] - corner_pix[0] / f0) * (pqr[2] * gradp_byw - pqr[0] * gradr_byw) + \
+                                (pqr[1] / pqr[2] - corner_pix[1] / f0) * (pqr[2] * gradq_byw - pqr[1] * gradr_byw)
+                    gradW_vec2 *= 2 / pqr[2] ** 2
+                    gradE2_onlyW[grad_frame_offset+3:grad_frame_offset+6] += gradW_vec2
+
+                # partial second derivative of the Frame components [T1 T2 T3 W1 W2 W3]
+                deriv = np.zeros((6,3), dtype=el_type) # rows=[T1 T2 T3 W1 W2 W3] cols=[dp/di dq/di dr/di]
+                deriv[0:3,0] = pvec[0:3]
+                deriv[0:3,1] = qvec[0:3]
+                deriv[0:3,2] = rvec[0:3]
+                deriv[3:6,0] = gradp_byw[0:3]
+                deriv[3:6,1] = gradq_byw[0:3]
+                deriv[3:6,2] = gradr_byw[0:3]
+                for deriv1 in range(0,6):
+                    for deriv2 in range(0,6):
+                        ax = (pqr[2] * deriv[deriv1, 0] - pqr[0] * deriv[deriv1 ,2]) * (pqr[2] * deriv[deriv2, 0] - pqr[0] * deriv[deriv2, 2]) + \
+                             (pqr[2] * deriv[deriv1, 1] - pqr[1] * deriv[deriv1, 2]) * (pqr[2] * deriv[deriv2, 1] - pqr[1] * deriv[deriv2, 2])
+                        ax *= 2 / pqr[2]**4
+                        deriv_second_frame[frame_ind*6+deriv1, deriv2] += ax
+
+                # partial second derivative of the Point-Frame components [T1 T2 T3 W1 W2 W3]
+                deriv = np.zeros((9,3), dtype=el_type) # rows=[X Y Z T1 T2 T3 W1 W2 W3] cols=[dp/di dq/di dr/di]
+                deriv[0:3,0] = P[0, 0:3] # dp/d(X,Y,Z)
+                deriv[0:3,1] = P[1, 0:3] # dq/d(X,Y,Z)
+                deriv[0:3,2] = P[2, 0:3] # dr/d(X,Y,Z)
+                deriv[3:6,0] = pvec[0:3] # dp/d(T1,T2,T3)
+                deriv[3:6,1] = qvec[0:3] # dq/d(T1,T2,T3)
+                deriv[3:6,2] = rvec[0:3] # dr/d(T1,T2,T3)
+                deriv[6:9,0] = gradp_byw[0:3] # dp/d(W1,W2,W3)
+                deriv[6:9,1] = gradq_byw[0:3] # dq/d(W1,W2,W3)
+                deriv[6:9,2] = gradr_byw[0:3] # dr/d(W1,W2,W3)
+                for deriv1 in range(0,3): # X Y Z
+                    for deriv2 in range(0,6): # T1 T2 T3 W1 W2 W3
+                        # deriv[+3,] to offset XYZ derivative components
+                        ax = (pqr[2] * deriv[deriv1, 0] - pqr[0] * deriv[deriv1 ,2]) * (pqr[2] * deriv[3+deriv2, 0] - pqr[0] * deriv[3+deriv2, 2]) + \
+                             (pqr[2] * deriv[deriv1, 1] - pqr[1] * deriv[deriv1, 2]) * (pqr[2] * deriv[3+deriv2, 1] - pqr[1] * deriv[3+deriv2, 2])
+                        ax *= 2 / pqr[2]**4
+                        deriv_second_pointframe[pnt_ind*3+deriv1, frame_ind*6+deriv2] += ax
+
+            if check_derivatives:
+                # approximation of translation gradient
+                gradT_estim = np.zeros(3, dtype=el_type)
+                for t_ind in range(0, 3):
+                    gradT_estim[t_ind] = EstimateFirstPartialDerivTranslation(frame_ind, T_direct, R_direct, None, t_ind)
+
+                print("gradT_estim={} gradT_exact={}".format(gradT_estim, gradE[grad_frame_offset:grad_frame_offset+3]))
+
+                close = IsClose(gradT_estim, gradE[grad_frame_offset:grad_frame_offset+3])
+                if not close:
+                    assert False, "ERROR"
+
+                # approximation of rotation gradient
+                suc, w_direct_norm, w_ang = LogSO3New(R_direct)
+                if suc:
+                    w_direct = w_direct_norm * w_ang
+                    gradW_estim = np.zeros(3, dtype=el_type)
+                    for w_ind in range(0, 3):
+                        gradW_estim[w_ind] = EstimateFirstPartialDerivRotation(frame_ind, T_direct, w_direct, w_ind)
+
+                    print("gradW_estim={} gradW_exact={} gradW2_exact={}".format(gradW_estim, gradE[grad_frame_offset+3:grad_frame_offset+6], gradE2_onlyW[grad_frame_offset+3:grad_frame_offset+6]))
+
+                    close = IsClose(gradW_estim, gradE[grad_frame_offset+3:grad_frame_offset+6])
+                    if not close:
+                        assert False, "ERROR" # TODO: crashes on gradW_estim=[ 13.47551411  18.0067005    0.66238898] gradW_exact=[ 12.37611123  18.81862305   0.44619587] gradW2_exact=[ 13.49019804  18.01214564   0.66229125]
+                    close = IsClose(gradW_estim, gradE2_onlyW[grad_frame_offset+3:grad_frame_offset+6])
+                    if not close:
+                        assert False, "ERROR"
+
+                    # 2nd derivative Frame-Frame
+                    deriv_second_frame_estim = np.zeros((6, 6), dtype=el_type)
+                    for var1 in range(3,9):
+                        for var2 in range(3,9):
+                            deriv_second_frame_estim[var1-3,var2-3] = EstimateSecondPartialDeriv(pnt_life.track_id, pnt3D_world, var1, frame_ind, T_direct, w_direct, var2)
+
+                    print("deriv2nd_RT_estim deriv2nd_RT_exact\n{}\n{}".format(deriv_second_frame_estim, deriv_second_frame[frame_ind*6:(frame_ind+1)*6, 0:6]))
+
+                    close = IsClose(deriv_second_frame_estim, deriv_second_frame[frame_ind*6:(frame_ind+1)*6, 0:6])
+                    if not close:
+                        assert False, "ERROR"
+
+                    # 2nd derivative Point-Frame
+                    deriv_second_pointframe_estim = np.zeros((3, 6), dtype=el_type)
+                    for var1 in range(0,3):
+                        for var2 in range(3,9):
+                            deriv_second_pointframe_estim[var1,var2-POINT_COMPS] = EstimateSecondPartialDeriv(pnt_life.track_id, pnt3D_world, var1, frame_ind, T_direct, w_direct, var2)
+
+                    print("deriv2nd_PointFrame_estim deriv2nd_PointFrame_exact\n{}\n{}".format(deriv_second_pointframe_estim, deriv_second_pointframe[pnt_ind*3:(pnt_ind+1)*3, frame_ind*6:(frame_ind+1)*6]))
+
+                    close = IsClose(deriv_second_pointframe_estim, deriv_second_pointframe[pnt_ind*3:(pnt_ind+1)*3, frame_ind*6:(frame_ind+1)*6])
+                    if not close:
+                        assert False, "ERROR"
+
+            pass # loop through points
+        pass # frames section
+
+        c1 = np.any(~np.isfinite(gradE))
+        c2 = np.any(~np.isfinite(deriv_second_point))
+        c3 = np.any(~np.isfinite(deriv_second_frame))
+        c4 = np.any(~np.isfinite(deriv_second_pointframe))
+        if c1 or c2 or c3 or c4:
+            assert False, "Derivatives must be real numbers"
+        return None
+
+    def BundleAdjustmentEstimateCorrections(self, points_count, frames_count, c, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, matG,
+                                            left_side1, right_side, unity_comp_ind, KNOWN_FRAME_VARS_COUNT, corrections, debug):
+        """ Computes updates for optimization variables"""
+
+        # convert Frame-Frame matrix into the square shape
+        frame_offset = 0
+        for frame_ind in range(0, frames_count):
+            if frame_ind == 0: continue # skip initial frame (R0,T0)
+
+            ax = deriv_second_frame[frame_ind * 6:(frame_ind + 1) * 6, 0:6]
+
+            if frame_ind == 1: # skip T1x or T1y
+                ax = np.delete(ax, [unity_comp_ind], axis=1) # delete column
+                ax = np.delete(ax, [unity_comp_ind], axis=0) # delete row
+
+            size = ax.shape[0]
+
+            matG[frame_offset:frame_offset+size, frame_offset:frame_offset+size] = ax
+            frame_offset += size
+
+        left_side1.fill(0)
+        right_side.fill(0)
+
+        # calculate deltas for frame unknowns
+        for pnt_ind in range(0, points_count):
+            point_frame = deriv_second_pointframe[pnt_ind*3:(pnt_ind+1)*3,:] # 3 x 6*frames_count
+            point_frame = np.delete(point_frame, [0,1,2,3,4,5,6+unity_comp_ind], axis=1) # delete normalized columns
+
+            point_hessian = deriv_second_point[pnt_ind*3:(pnt_ind+1)*3,0:3] # 3x3
+            point_hessian_scaled = (1+c)*point_hessian
+            assert np.all(np.isfinite(point_hessian_scaled)), "Possibly to big hessian scalar c={}".format(c)
+
+            try:
+                point_hessian_inv = LA.inv(point_hessian_scaled)
+            except LA.LinAlgError:
+                assert False, "ERROR: inverting 3x3 E"
+
+            gradeE_point = gradE[pnt_ind*3:(pnt_ind+1)*3] # 3x1
+
+            # left side
+            ax = point_frame.T.dot(point_hessian_inv).dot(point_frame) # 6*frames_count x 6*frames_count
+            left_side1 += ax
+
+            # right side
+            ax = point_frame.T.dot(point_hessian_inv).dot(gradeE_point)
+            right_side += ax
+
+
+        left_side1 = matG - left_side1  # G-sum(F.E.F)
+        frame_derivs_packed =  gradE[3*points_count:]
+        frame_derivs_packed = np.delete(frame_derivs_packed, [0, 1, 2, 3, 4, 5, 6 + unity_comp_ind],axis=None)
+        right_side -= frame_derivs_packed # sum(F.E.gradE)-Df
+        deltas_frame = LA.solve(left_side1, right_side)
+
+        # copy corrections with gaps to plain corrections
+        corrections.fill(float('nan'))
+        corrections[points_count * 3:points_count * 3 + 6] = 0 # [T0x T0y T0z R0wx R0wy R0wz]
+        corrections[points_count * 3 + 6 +    unity_comp_ind ] = 0 # T1x or T1y
+        corrections[points_count * 3 + 6 + (1-unity_comp_ind)] = deltas_frame[0] # T1x or T1y
+        corrections[points_count * 3 + 6 + 2]                  = deltas_frame[1] # T1z
+        corrections[points_count * 3 + 6 + 3:] = deltas_frame[2:]
+        assert np.all(np.isfinite(corrections[points_count * 3:])), "Failed to copy normalized corrections"
+
+        # calculate deltas for point unknowns
+        for pnt_ind in range(0, points_count):
+            point_frame = deriv_second_pointframe[pnt_ind*3:(pnt_ind+1)*3,:] # 3 x 6*frames_count
+            point_frame = np.delete(point_frame, [0, 1, 2, 3, 4, 5, 6 + unity_comp_ind],axis=1)  # delete normalized columns
+
+            gradeE_point = gradE[pnt_ind*3:(pnt_ind+1)*3] # 3x1
+
+            partB = point_frame.dot(deltas_frame) + gradeE_point
+
+            point_hessian = deriv_second_point[pnt_ind * 3:(pnt_ind + 1) * 3, 0:3]  # 3x3
+            point_hessian_inv = LA.inv((1+c)*point_hessian)
+
+            deltas_one_point = -point_hessian_inv.dot(partB)
+            corrections[pnt_ind * 3:(pnt_ind + 1) * 3] = deltas_one_point[0:3]
+
+        assert np.all(np.isfinite(corrections)), "Change of a variable must be a real number"
+
+        return None
+
+    def BundleAdjustmentApplyCorrections(self, points_count, frames_count, bundle_pnt_ids, corrections, reverse_update):
+        for pnt_ind in range(0, points_count):
+            deltaX = corrections[pnt_ind * 3:(pnt_ind + 1) * 3]
+            if reverse_update:
+                deltaX = -deltaX
+
+            pnt_id = bundle_pnt_ids[pnt_ind]
+            self.world_pnts[pnt_id] += deltaX
+
+        for frame_ind in range(0, frames_count):
+            rt_inversed = self.framei_from_world_RT_list[frame_ind]
+            rt_direct = SE3Inv(rt_inversed)
+
+            suc, w_direct = AxisAngleFromRotMat(rt_direct[0])
+            if suc:
+                deltaF = corrections[points_count*3 + frame_ind*6:points_count*3 + (frame_ind+1)*6]
+
+                deltaW = deltaF[3:6]
+                if reverse_update:
+                    deltaW = -deltaW
+                w_direct_new = w_direct + deltaW
+
+                suc, R_direct = RotMatFromAxisAngle(w_direct_new)
+                assert suc
+
+                deltaT = deltaF[0:3]
+                if reverse_update:
+                    deltaT = -deltaT
+                T_direct = rt_direct[1] + deltaT
+
+                rt_inversed_new = SE3Inv((R_direct, T_direct))
+                self.framei_from_world_RT_list[frame_ind] = rt_inversed_new
+
     # gets the depth of a point in the given frame
     def Get3DPointDepth(self, pnt_id, anchor_frame_ind):
         anchor_RT = self.framei_from_world_RT_list[anchor_frame_ind]
@@ -4480,7 +5366,7 @@ class PointsWorld:
         if not self.ground_truth_map_pnt_pos is None:
             pnt_ind = pnt_id
             pnt_life = self.points_life[pnt_ind]
-            w3D = self.ground_truth_map_pnt_pos(anchor_frame_ind, pnt_life.map_point_id) * self.first_unity_translation_scale_factor
+            w3D = self.ground_truth_map_pnt_pos(anchor_frame_ind, pnt_life.virtual_feat_id) * self.first_unity_translation_scale_factor
             diff = LA.norm(w3D - x3D_anchor)
             # delta = 1e-1 # must pass 0.027781092461721443
             delta = self.drift
@@ -4676,7 +5562,7 @@ class PointsWorld:
         x3D_anchor = depth_anchor * x_meter
 
         if not self.ground_truth_map_pnt_pos is None:
-            gtruth_x3D_world = self.ground_truth_map_pnt_pos(anchor_frame_ind, pnt_life.map_point_id)
+            gtruth_x3D_world = self.ground_truth_map_pnt_pos(anchor_frame_ind, pnt_life.virtual_feat_id)
             scaled_x3D_world = gtruth_x3D_world
             if not self.first_unity_translation_scale_factor is None:
                 scaled_x3D_world *= self.first_unity_translation_scale_factor
@@ -4775,7 +5661,7 @@ class PointsWorld:
             x_meter = pnt_life.points_list_meter[targ_frame_ind]
             if x_meter is None: continue
 
-            pnt_id = pnt_life.point_id
+            pnt_id = pnt_life.track_id
             pnt_ind = pnt_id
             pnt3D = self.world_pnts[pnt_ind]
             if pnt3D is None: continue
@@ -4880,7 +5766,7 @@ class PointsWorld:
                 x3D_world = x3D_base
 
                 if not self.ground_truth_map_pnt_pos is None:
-                    gtruth_x3D_world = self.ground_truth_map_pnt_pos(base_frame_ind, pnt_life.map_point_id)
+                    gtruth_x3D_world = self.ground_truth_map_pnt_pos(base_frame_ind, pnt_life.virtual_feat_id)
                     scaled_x3D_world = gtruth_x3D_world * self.first_unity_translation_scale_factor
                     diff = LA.norm(scaled_x3D_world - x3D_world)
                     #delta = 1e-3
@@ -4908,8 +5794,8 @@ class PointsWorld:
                 x_meter = pnt_life.points_list_meter[latest_frame_ind]
                 if x_meter is None: continue
 
-                latest_frame_pnt_ids.append(pnt_life.point_id)
-                latest_frame_pnt_ids_set.add(pnt_life.point_id)
+                latest_frame_pnt_ids.append(pnt_life.track_id)
+                latest_frame_pnt_ids_set.add(pnt_life.track_id)
 
             anchor_frame_ind, common_pnts_count = self.FindAnchorFrame(latest_frame_ind, latest_frame_pnt_ids_set)
 
@@ -4942,7 +5828,7 @@ class PointsWorld:
                     if x3D_world is None: continue
                     if self.hack_world_mapping and not self.ground_truth_map_pnt_pos is None:
                         pnt_life = self.points_life[pnt_id]
-                        gtruth_x3D_world = self.ground_truth_map_pnt_pos(world_frame_ind, pnt_life.map_point_id)
+                        gtruth_x3D_world = self.ground_truth_map_pnt_pos(world_frame_ind, pnt_life.virtual_feat_id)
                         scaled_x3D_world = gtruth_x3D_world * self.first_unity_translation_scale_factor
                         x3D_world = scaled_x3D_world
                     world_pnts[pnt_id] = x3D_world
@@ -4950,7 +5836,13 @@ class PointsWorld:
                 reproj_err = self.CalcReprojErr(debug)
                 if debug >= 3: print("anchor-targ: {} reproj_err={} meters".format((anchor_frame_ind, latest_frame_ind), reproj_err))
 
+                eeer = self.BundleAdjustmentReprojError(None, None, None, None)
+
                 self.reproj_err_history.append(reproj_err)
+
+                do_bundle_adj = self.frame_ind == 25
+                if do_bundle_adj:
+                    suc = self.BundleAdjustmentCompute(debug=debug)
 
                 if reproj_err < min_reproj_err:
                     break
@@ -4963,7 +5855,10 @@ class PointsWorld:
 
                 # the iterative reconstruction diverged enough
                 # try to calesce it and minimize a reprojective error
-                self.LocateCamAndMapBatchRefine(debug, min_reproj_err)
+                #self.LocateCamAndMapBatchRefine(debug, min_reproj_err)
+
+                suc = self.BundleAdjustmentCompute(debug=debug)
+                print("DoBundleAdjustment={}".format(suc))
         return True
 
     def DrawCameraTrackView(self, img2_bgr, max_track_len=20):
@@ -6470,10 +7365,10 @@ class ReconstructDemo:
         xs3D = []
         xs3D_virtual_ids = []
 
-        cx,cy,cz = 1.0, 1.0, 0.05 # cell size between atoms of the crystal
-        Wx,Wy = 5.0, 5.0 # world size
-        move_steps_count = 100
-        move_step = min(Wx,Wy)/(move_steps_count) # world is crossed in at least N steps, 0.1 to jit coords if step=cell size
+        cx,cy,cz = 0.3, 0.3, 0.05 # cell size between atoms of the crystal
+        Wx0,Wx,Wy0,Wy = 0.0,5.0, -5.0,0.0 # world size
+        move_steps_count = 20
+        move_step = min(Wx-Wx0,Wy-Wy0)/(move_steps_count) # world is crossed in at least N steps, 0.1 to jit coords if step=cell size
         dist_to_central_point = 3*max(cx,cy,cz)
         img_width,img_height = 640, 480 # target image to project 3D points to
         num_visible_2dpoints = 6*6*2
@@ -6486,10 +7381,10 @@ class ReconstructDemo:
         next_virt_id = 10001
         inclusive_gap = 1.0e-8 # small value to make iteration inclusive
         for z in np.arange(0,cz+inclusive_gap,cz):
-            for x in np.arange(0,Wx+inclusive_gap,cx):
+            for x in np.arange(Wx0,Wx+inclusive_gap,cx):
                 #xjit = cz/10 # offset x to prevent overlapping of trajectories
                 xjit = 0 # offset x to prevent overlapping of trajectories
-                for y in np.arange(0,-Wy-inclusive_gap,-cy):
+                for y in np.arange(Wy0,Wy+inclusive_gap,cy):
                     xtmp = x + xjit # offset changes for each change of Y
                     xjit = -xjit
                     pnt = np.array([xtmp,y,z], el_type)
@@ -6557,10 +7452,11 @@ class ReconstructDemo:
         cell_width = None
         period_right = True
         period_val = -1
-        road = [(0,0), # bot-right=start
-                (0,-Wy), # bot-left
-                (Wx,-Wy), # top-left
-                (Wx,0)] # top-right
+        pad=0 # eg: 0..2
+        road = [(Wx0+pad,Wy-pad), # bot-right=start
+                (Wx0+pad,Wy0+pad), # bot-left
+                (Wx-pad,Wy0+pad), # top-left
+                (Wx-pad,Wy-pad)] # top-right
         # add move_step to upper bound to make inclusive
         centralY_list_left = list(np.arange(road[0][1], road[1][1], -move_step))
         centralX_list_left = [road[0][0]] * len(centralY_list_left)
