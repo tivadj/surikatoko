@@ -1,20 +1,25 @@
 import numpy as np
 import unittest
-import py.la_utils
 from py.bundle_adjustment_kanatani_impl import BundleAdjustmentKanatani
 from py.mvg import PointLife
 from py.obs_geom import *
-from py.test_data_builder import CircusGridDataSet
+from py.test_data_builder import CircusGridDataSet, ParseTestArgs
 import cv2
 
 class BundleAdjustmentKanataniTests(unittest.TestCase):
     def test1(self):
+        #args = ParseTestArgs()
+        debug = 3
+        elem_type = np.float32
         img_width, img_height = 640, 480
 
         pnt_track_list = []
         camera_frames = []
 
-        ds = CircusGridDataSet(np.float32, img_width, img_height)
+        cell_size = (0.5, 0.5, 0.5)
+        world_range = (-2, 2, -0.5, 0.5, 0, 0.5)
+        rot_radius = 15*cell_size[0]
+        ds = CircusGridDataSet(elem_type, img_width, img_height, world_range, cell_size, rot_radius)
 
         point_track_next_id = 0
 
@@ -58,31 +63,45 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         salient_points = ds.GetWorldSalientPoints()
         cam_mat_pixel_from_meter = ds.GetCamMat()
 
-        add_noise = True
+        add_noiseX = False
+        add_noiseR = True
+        add_noiseT = False
         salient_points_noisy = salient_points.copy()
         camera_frames_noisy = camera_frames.copy()
-        if add_noise:
+        if add_noiseX or add_noiseR or add_noiseT:
             np.random.seed(221)
-            noise_sig = 0.01
-            salient_points_noisy += np.random.normal(0, noise_sig, salient_points.shape)
+            err_rad_perc = 0.01
+            noise_sig = cell_size[0]*err_rad_perc/3 # 3 due to 3-sigma, 3sig=err_radius
+            if add_noiseX:
+                salient_points_noisy += np.random.normal(0, noise_sig, salient_points.shape)
 
             frames_count = len(camera_frames)
             for frame_ind in range(0, frames_count):
                 R,T = camera_frames[frame_ind]
 
-                T_noisy = T + np.random.normal(0, noise_sig, 3)
+                T_noisy = T
+                if add_noiseT:
+                    T_noisy = T + np.random.normal(0, noise_sig, 3)
                 w = np.random.normal(0, noise_sig, 3)
                 suc, Rw = RotMatFromAxisAngle(w)
                 assert suc
-                R_noisy = Rw.dot(R)
+                R_noisy = R
+                if add_noiseR:
+                    R_noisy = Rw.dot(R)
+
                 camera_frames_noisy[frame_ind] = (R_noisy, T_noisy)
 
         salient_points_adj = salient_points_noisy.copy()
         camera_frames_adj = camera_frames_noisy.copy()
 
-        ba = BundleAdjustmentKanatani()
-        improved, err_change_ratio = ba.BundleAdjustmentComputeInplace(pnt_track_list, cam_mat_pixel_from_meter, salient_points_adj, camera_frames_adj)
-        print("err_change_ratio={}".format(err_change_ratio))
+        ba = BundleAdjustmentKanatani(debug=debug)
+        ba.max_hessian_factor = None
+        ba.processX = add_noiseX
+        ba.processR = add_noiseR
+        ba.processT = add_noiseT
+        ba.naive_estimate_corrections = False
+        suc, err_msg = ba.ComputeInplace(pnt_track_list, cam_mat_pixel_from_meter, salient_points_adj, camera_frames_adj)
+        print("suc={} err_msg={} err_change_ratio={}".format(suc, err_msg, ba.ErrChangeRatio()))
 
         dist_points_bef = LA.norm(salient_points_noisy - salient_points)
         dist_points_aft = LA.norm(salient_points_adj - salient_points)
@@ -100,6 +119,8 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         dist_t_aft = LA.norm(ts_adj - ts)
         dist_bef = dist_points_bef + dist_r_bef + dist_t_bef
         dist_aft = dist_points_aft + dist_r_aft + dist_t_aft
-        print("dist_bef={}".format(dist_bef))
-        print("dist_aft={}".format(dist_aft))
-        print()
+        print("dist_noisy={}".format(dist_bef))
+        print("dist_xnois={}".format(dist_aft))
+        print("err_noisy={}".format(ba.err_value_initial))
+        print("err_xnois={}".format(ba.err_value))
+        assert suc

@@ -1,8 +1,27 @@
 import math
 import numpy as np
 import numpy.linalg as LA
+import argparse
 
 from py.obs_geom import *
+
+def ParseTestArgs():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int, default=2)
+    parser.add_argument("--float", help="[f32, f64, f128]", type=str, default="f32")
+    args = parser.parse_args()
+
+    el_type = np.float32
+    if args.float == 'f32':
+        el_type = np.float32
+    elif args.float == 'f64':
+        el_type = np.float64
+    elif args.float == 'f128':
+        el_type = np.float128
+    else:
+        raise ValueError("Unknown float type {}".format(args.float))
+    args.el_type = el_type
+    return args
 
 class CrystallGridDataSet:
     def __init__(self, el_type, img_width, img_height, provide_ground_truth = True):
@@ -219,10 +238,16 @@ class CrystallGridDataSet:
         self.cam_mat_changed = on_computed_cam_mat_fun
 
 class CircusGridDataSet:
-    def __init__(self, el_type, img_width, img_height, provide_ground_truth=True):
+    def __init__(self, el_type, img_width, img_height, world_range, cell_size, rot_radius = None, provide_ground_truth=True):
+        """:param cell_size cell size between atoms of the crystal"""
         self.el_type = el_type
         self.img_width = img_width
         self.img_height = img_height
+        self.world_range = world_range
+        self.cell_size = cell_size
+        if rot_radius is None:
+            rot_radius = 5 * cell_size[0]
+        self.rot_radius = rot_radius
         self.provide_ground_truth = provide_ground_truth
         self.xs3D = []
         self.xs3D_virtual_ids = []
@@ -234,13 +259,13 @@ class CircusGridDataSet:
         self.salient_points_created = None # event that fires when the world's salient 3D points are created
 
     def Generate(self):
-        cx, cy, cz = 1, 0.5, 0.05  # cell size between atoms of the crystal
-        Wx0, Wx, Wy0, Wy = -2, 2, -0.5, 0.5  # world size
+        cx, cy, cz = self.cell_size
+        Wx0, Wx, Wy0, Wy, Wz0, Wz = self.world_range
 
         # create world's salient points
         next_virt_id = 10001
         inclusive_gap = 1.0e-8  # small value to make iteration inclusive
-        for z in np.arange(0, cz + inclusive_gap, cz):
+        for z in np.arange(Wz0, Wz + inclusive_gap, cz):
             for x in np.arange(Wx0, Wx + inclusive_gap, cx):
                 for y in np.arange(Wy0, Wy + inclusive_gap, cy):
                     # x plus small offset to avoid centering on stable point
@@ -263,9 +288,11 @@ class CircusGridDataSet:
             # -ang to move clockwise
             #abs_ang = 3*math.pi/2 + math.pi/6 - ang
             abs_ang = math.pi/2 + math.pi/6 - ang
-            shiftX = 5*cx*math.cos(abs_ang)
-            shiftY = 5*cx*math.sin(abs_ang)
-            shiftZ = 5*cx
+            shiftX = cx*math.cos(abs_ang)
+            shiftY = cx*math.sin(abs_ang)
+            shiftZ = cx
+            shift_scale = self.rot_radius / LA.norm([shiftX, shiftY, shiftZ]) # scale offset upto given radius of rotation
+            shiftX, shiftY, shiftZ = shiftX * shift_scale, shiftY * shift_scale, shiftZ * shift_scale
             cam3_from_world = SE3Mat(None, np.array([-shiftX, -shiftY, -shiftZ]), dtype=self.el_type).dot(cam3_from_world)
 
             # move OY towards direction 'towards center'

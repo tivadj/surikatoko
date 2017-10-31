@@ -8,19 +8,42 @@ class BundleAdjustmentKanatani:
     Performs Bundle adjustment (BA) inplace.
     source: "Bundle adjustment for 3-d reconstruction" Kanatani Sugaya 2010
     """
-    def __init__(self, err_fun_min_relative_change = 1e-3):
+    def __init__(self, min_err_change = 1e-5, max_iter = None, debug = 0):
+        """
+        :param min_err_change: stops if error change between two consecutive iterations is less than this value
+        :param max_iter: stops when iterating over this number of iterations
+        """
         self.points_life = None
         self.bundle_pnt_ids = None # ids of points for BA processing
         self.cam_mat_pixel_from_meter = None
         self.world_pnts = None
         self.framei_from_world_RT_list = None
         self.elem_type = None
-        self.err_fun_min_relative_change = err_fun_min_relative_change
+        self.min_err_change = min_err_change
+        self.max_iter = max_iter
+        self.max_hessian_factor = 1e6 # set None to skip the check of the hessian's factor
+        self.debug = debug
+        # switches
+        self.processX = True
+        self.processR = True
+        self.processT = True
+        self.naive_estimate_corrections = False
+        # computation result
+        self.err_value_initial = None
+        self.err_value = None
         # const
-        self.T1y = 1 # const, y-component of the first camera shift, usually T1y==1
+        self.T1y = 1.0 # const, y-component of the first camera shift, usually T1y==1
         self.unity_comp_ind = 1 # 0 for X, 1 for Y; index of T1 to be set to unity
+        self.normalize_pattern = np.array([0, 1, 2, 3, 4, 5, 6 + self.unity_comp_ind]) # R0=Identity, T0=[0,0,0], T1y=1
 
-    def BundleAdjustmentComputeInplace(self, pnt_track_list, cam_mat_pixel_from_meter, salient_points, camera_frames, check_derivatives=False, debug=False):
+    def ComputeInplace(self, pnt_track_list, cam_mat_pixel_from_meter, salient_points, camera_frames, check_derivatives=False):
+        """
+        :return: True if optimization converges successfully.
+        Stop conditions:
+        1) If a change of error function slows down and becomes less than self.min_err_change
+        NOTE: There is no sense to provide absolute threshold on error function because when noise exist, the error will
+        not get close to zero.
+        """
         self.points_life = pnt_track_list
         self.cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
         self.world_pnts = salient_points
@@ -42,11 +65,11 @@ class BundleAdjustmentKanatani:
         world_pnts_prenorm = self.world_pnts.copy()
         framei_from_world_RT_list_prenorm = self.framei_from_world_RT_list.copy()
 
-        norm_params = self.BundleAdjustmentNormalizeWorld()
+        norm_params = self.NormalizeWorld()
 
-        result = self.BundleAdjustmentComputeOnNormalizedWorld(check_derivatives, debug)
+        result = self.ComputeOnNormalizedWorld(check_derivatives)
 
-        self.BundleAdjustmentRevertNormalization(bundle_pnt_ids, norm_params)
+        self.RevertNormalization(bundle_pnt_ids, norm_params)
 
         check_normalization_is_reversed = True
         if False and check_normalization_is_reversed: # !!! this doesn't make sense if world is changed inplace
@@ -91,8 +114,10 @@ class BundleAdjustmentKanatani:
             assert np.allclose(X3D, back_x, atol=1e-3), "Error in normalization or reverting"
         return result_x
 
-    # unity_comp_ind component of T1 to make unity [0,1,2] for [T1X,T1Y,T1Z]
-    def BundleAdjustmentNormalizeWorld(self):
+    def NormalizeWorld(self):
+        """ An optimization problem is indeterminant as is, so the boundary condition is introduced:
+        R0=Identity, T0=zeros(3), t2y=1. So the input world's structure is transformed (normalized) into conformed one.
+        """
         check_post_cond = True
         if check_post_cond:
             framei_from_world_RT_list_prenorm = self.framei_from_world_RT_list.copy()
@@ -130,27 +155,27 @@ class BundleAdjustmentKanatani:
         norm_params = (R0, T0, world_scale)
         return norm_params
 
-    def CheckWorldIsNormalized(self, msg):
+    def CheckWorldIsNormalized(self, msg, eps=1e-1):
         pnt_id0 = self.bundle_pnt_ids[0]
         pnt_id1 = self.bundle_pnt_ids[1]
 
         # the first frame is the identity
         rt0 = self.framei_from_world_RT_list[pnt_id0]
-        if not np.allclose(np.identity(3), rt0[0], atol=1e-3):
-            msg[0] = "R0=Identity"
+        if not np.allclose(np.identity(3), rt0[0], atol=eps):
+            msg[0] = "R0=Identity but was\n{}".format(rt0[0])
             return False
-        if not np.allclose(np.zeros(3), rt0[1], atol=1e-3):
-            msg[0] = "T0=zeros(3)"
+        if not np.allclose(np.zeros(3), rt0[1], atol=eps):
+            msg[0] = "T0=zeros(3) but was {}".format(rt0[1])
             return False
 
         # the second frame has translation of unity length
         t2 = SE3Inv(self.framei_from_world_RT_list[pnt_id1])[1]
-        if not np.allclose(self.T1y, t2[1], atol=1e-3):
+        if not np.allclose(self.T1y, t2[1], atol=eps):
             msg[0] = "expected T1y=1 but T1 was {}".format(t2)
             return False
         return True
 
-    def BundleAdjustmentRevertNormalization(self, bundle_pnt_ids, norm_params):
+    def RevertNormalization(self, bundle_pnt_ids, norm_params):
         R0, T0, world_scale = norm_params
         # revert unity transformation
         for pnt_id in bundle_pnt_ids:
@@ -164,14 +189,14 @@ class BundleAdjustmentKanatani:
             revert_rt = self.NormalizeOrRevertRT(rt, R0, T0, world_scale, normalize_or_revert=False)
             self.framei_from_world_RT_list[frame_ind] = revert_rt
 
-    def BundleAdjustmentComputeOnNormalizedWorld(self, check_derivatives, debug):
-        result = self.BundleAdjustmentComputeOnNormalizedWorldCore(check_derivatives, debug)
+    def ComputeOnNormalizedWorld(self, check_derivatives):
+        result = self.ComputeOnNormalizedWorldCore(check_derivatives)
         # check world is still normalized after optimization
         pmsg = ['']
         assert self.CheckWorldIsNormalized(pmsg), pmsg[0]
         return result
 
-    def BundleAdjustmentComputeOnNormalizedWorldCore(self, check_derivatives, debug):
+    def ComputeOnNormalizedWorldCore(self, check_derivatives):
         el_type = self.elem_type
         frames_count = len(self.framei_from_world_RT_list)
         points_count = len(self.bundle_pnt_ids)
@@ -211,29 +236,42 @@ class BundleAdjustmentKanatani:
         world_pnts_revert_copy = self.world_pnts.copy()
         framei_from_world_RT_list_revert_copy = self.framei_from_world_RT_list.copy()
 
-        err_value_initial,_ = self.BundleAdjustmentReprojError(None, None, None, None)
-        err_value = err_value_initial
+        self.err_value_initial,_ = self.ReprojError(None, None, None, None)
+        self.err_value = self.err_value_initial
 
         # TODO: if abs(opt_fun_value)<eps then success
 
-        hessian_scalar = 0.0001  # hessian's diagonal multiplier
+        it = 1
+        hessian_factor = 0.0001  # hessian's diagonal multiplier
+
+        if self.debug >= 3:
+            print("initial: err_value={} hessian_factor={}".format(self.err_value, hessian_factor))
+
         while True:
-            self.BundleAdjustmentComputeDerivatives(points_count, frames_count, check_derivatives, gradE, gradE2_onlyW, deriv_second_point, deriv_second_frame, deriv_second_pointframe, debug)
+            self.ComputeDerivatives(points_count, frames_count, check_derivatives, gradE, gradE2_onlyW, deriv_second_point, deriv_second_frame, deriv_second_pointframe)
 
             # backup current state (world points and camera orientations)
             world_pnts_revert_copy[:] = self.world_pnts[:]
             framei_from_world_RT_list_revert_copy[:] = self.framei_from_world_RT_list[:]
 
-            # loop to find a hessian scalar which decreases the target optimization function
+            # loop to find a hessian factor which decreases the target optimization function
             err_value_change = None
             while True:
-                self.BundleAdjustmentEstimateCorrections(points_count, frames_count, hessian_scalar, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, matG, left_side1, right_side, corrections, debug)
+                debug_estimate_corrections = True
+                if debug_estimate_corrections:
+                    self.EstimateCorrectionsNaive(points_count, frames_count, hessian_factor, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, corrections)
+                    self.EstimateCorrectionsDecomposedInTwoPhases(points_count, frames_count, hessian_factor, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, matG, left_side1, right_side, corrections, corrections.copy())
+                else:
+                    if self.naive_estimate_corrections:
+                        self.EstimateCorrectionsNaive(points_count, frames_count, hessian_factor, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, corrections)
+                    else:
+                        self.EstimateCorrectionsDecomposedInTwoPhases(points_count, frames_count, hessian_factor, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, matG, left_side1, right_side, corrections)
 
-                self.BundleAdjustmentApplyCorrections(points_count, frames_count, corrections)
+                self.ApplyCorrections(points_count, frames_count, corrections)
 
-                err_value_new,_ = self.BundleAdjustmentReprojError(None, None, None, None)
+                err_value_new,_ = self.ReprojError(None, None, None, None)
 
-                err_value_change = err_value_new - err_value
+                err_value_change = err_value_new - self.err_value
 
                 target_fun_decreased = err_value_change < 0
                 if target_fun_decreased:
@@ -247,31 +285,42 @@ class BundleAdjustmentKanatani:
 
                 debug_successfull_revertion = True
                 if debug_successfull_revertion:
-                    opt_fun_value_reverted,_ = self.BundleAdjustmentReprojError(None, None, None, None)
-                    assert np.isclose(err_value, opt_fun_value_reverted)
+                    opt_fun_value_reverted,_ = self.ReprojError(None, None, None, None)
+                    assert np.isclose(self.err_value, opt_fun_value_reverted)
 
-                if hessian_scalar > 1e6:
+                if not self.max_hessian_factor is None and hessian_factor > self.max_hessian_factor:
                     # prevent overflow for too big factors
                     break
 
-                hessian_scalar *= 10  # prefer more the Steepest descent
+                hessian_factor *= 10  # prefer more the Steepest descent
 
+            # check error really decreases; it fails on overflow of hessian's factor
+            err_msg = None
             target_fun_decreased = err_value_change < 0
             if not target_fun_decreased:
-                # imporovement ceased
-                err_change_ratio = err_value / err_value_initial
-                return False, err_change_ratio # failed
+                err_msg = "hessian_factor_overflow"
+                return False, err_msg # failed
 
-            if math.fabs(err_value_change) < self.err_fun_min_relative_change:
-                err_change_ratio = err_value / err_value_initial
-                return True, err_change_ratio  # success
+            self.err_value = err_value_new
 
-            err_value = err_value_new
-            hessian_scalar /= 10  # prefer more the Gauss-Newton
+            if self.debug >= 3:
+                print("it={} err_value={} hessian_factor={}".format(it, self.err_value, hessian_factor))
 
-        assert False
+            if math.fabs(err_value_change) < self.min_err_change:
+                if self.debug >= 3:
+                    print("err_value_change={} err_fun_min_relative_change={}".format(err_value_change, self.min_err_change))
+                return True, err_msg  # success
 
-    def BundleAdjustmentComputeDerivatives(self, points_count, frames_count, check_derivatives, gradE, gradE2_onlyW, deriv_second_point, deriv_second_frame, deriv_second_pointframe, debug):
+            hessian_factor /= 10  # prefer more the Gauss-Newton
+            it += 1
+
+            if not self.max_iter is None and it > self.max_iter:
+                err_msg = "max_iter"
+                return False, err_msg # failed
+
+        assert False # we won't get here
+
+    def ComputeDerivatives(self, points_count, frames_count, check_derivatives, gradE, gradE2_onlyW, deriv_second_point, deriv_second_frame, deriv_second_pointframe):
         MAX_ABS_DIST = 0.1
         MAX_REL_DIST = 0.1 # 14327.78415796-14328.10677215=0.32261419 => rtol=2.2e-5
         POINT_COMPS = 3 # [X Y Z]
@@ -293,11 +342,11 @@ class BundleAdjustmentKanatani:
         def EstimateFirstPartialDerivPoint(pnt_id, pnt0, xyz_ind):
             pnt3D_left = pnt0.copy()
             pnt3D_left[xyz_ind] -= eps
-            x1_err_sum, x1_err_per_point = self.BundleAdjustmentReprojError(pnt_id, pnt3D_left, None, None)
+            x1_err_sum, x1_err_per_point = self.ReprojError(pnt_id, pnt3D_left, None, None)
 
             pnt3D_right = pnt0.copy()
             pnt3D_right[xyz_ind] += eps
-            x2_err_sum, x2_err_per_point = self.BundleAdjustmentReprojError(pnt_id, pnt3D_right, None, None)
+            x2_err_sum, x2_err_per_point = self.ReprojError(pnt_id, pnt3D_right, None, None)
             return (x2_err_sum - x1_err_sum) / (2 * eps)
 
         def EstimateFirstPartialDerivTranslation(frame_ind, T_direct, R_direct, w_direct, t_ind):
@@ -310,12 +359,12 @@ class BundleAdjustmentKanatani:
             t1dir = T_direct.copy()
             t1dir[t_ind] -= eps
             r1inv, t1inv = SE3Inv((R_direct_tmp, t1dir))
-            t1_err_sum, t1_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (r1inv, t1inv))
+            t1_err_sum, t1_err_per_point = self.ReprojError(None, None, frame_ind, (r1inv, t1inv))
 
             t2dir = T_direct.copy()
             t2dir[t_ind] += eps
             r2inv, t2inv = SE3Inv((R_direct_tmp, t2dir))
-            t2_err_sum, t2_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (r2inv, t2inv))
+            t2_err_sum, t2_err_per_point = self.ReprojError(None, None, frame_ind, (r2inv, t2inv))
             return (t2_err_sum - t1_err_sum) / (2 * eps)
 
         def EstimateFirstPartialDerivRotation(frame_ind, t_direct, w_direct, w_ind):
@@ -324,14 +373,14 @@ class BundleAdjustmentKanatani:
             suc, R1_direct = RotMatFromAxisAngle(w1)
             assert suc
             R1inv, T1inv = SE3Inv((R1_direct, t_direct))
-            R1_err_sum, t1_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (R1inv, T1inv))
+            R1_err_sum, t1_err_per_point = self.ReprojError(None, None, frame_ind, (R1inv, T1inv))
 
             w2 = w_direct.copy()
             w2[w_ind] += eps
             suc, R2 = RotMatFromAxisAngle(w2)
             assert suc
             R2inv, T2inv = SE3Inv((R2, t_direct))
-            R2_err_sum, R2_err_per_point = self.BundleAdjustmentReprojError(None, None, frame_ind, (R2inv, T2inv))
+            R2_err_sum, R2_err_per_point = self.ReprojError(None, None, frame_ind, (R2inv, T2inv))
             return (R2_err_sum - R1_err_sum) / (2 * eps)
 
         def ErrAtXVec(xvec, pnt_id, frame_ind):
@@ -344,7 +393,7 @@ class BundleAdjustmentKanatani:
             assert suc
             r_inv, t_inv = SE3Inv((r_direct, t_direct))
 
-            result, _ = self.BundleAdjustmentReprojError(pnt_id, point3D, frame_ind, (r_inv, t_inv))
+            result, _ = self.ReprojError(pnt_id, point3D, frame_ind, (r_inv, t_inv))
             return result
 
         xvec = np.zeros(9, dtype=el_type)
@@ -673,22 +722,72 @@ class BundleAdjustmentKanatani:
             assert False, "Derivatives must be real numbers"
         return None
 
-    def BundleAdjustmentEstimateCorrections(self, points_count, frames_count, c, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, matG,
-                                            left_side1, right_side, corrections, debug):
-        """ Computes updates for optimization variables"""
+    def FillHessian(self, points_count, frames_count, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, hessian_factor, A):
+        assert A.shape[0] == points_count*3 + frames_count*6
+        assert A.shape[0] == A.shape[1]
+        for pnt_ind in range(0, points_count):
+            A[pnt_ind * 3:(pnt_ind + 1) * 3, pnt_ind * 3:(pnt_ind + 1) * 3] = deriv_second_point[pnt_ind * 3:(pnt_ind + 1) * 3, 0:3]
 
-        # convert Frame-Frame matrix into the square shape
+            fp = deriv_second_pointframe[pnt_ind * 3:(pnt_ind + 1) * 3, 0:frames_count * 6]
+            A[pnt_ind * 3:(pnt_ind + 1) * 3, points_count * 3:points_count * 3 + frames_count * 6] = fp
+            A[points_count * 3:points_count * 3 + frames_count * 6, pnt_ind * 3:(pnt_ind + 1) * 3] = fp.T
+
+        for frame_ind in range(0, frames_count):
+            A[points_count * 3 + frame_ind * 6:points_count * 3 + (frame_ind + 1) * 6,
+            points_count * 3 + frame_ind * 6:points_count * 3 + (frame_ind + 1) * 6] = deriv_second_frame[frame_ind * 6:(frame_ind + 1) * 6]
+
+        # scale diagonal elements
+        for i in range(0, A.shape[0]):
+            A[i, i] *= (1 + hessian_factor)
+
+    def EstimateCorrectionsNaive(self, points_count, frames_count, hessian_factor, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, corrections):
+        n = len(corrections)
+        A = np.zeros((n, n), dtype=self.elem_type)
+        self.FillHessian(points_count, frames_count, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, hessian_factor, A)
+
+        # remove rows/columns corresponding to normalized variables
+        A_gaps = A.copy()
+        A_gaps = np.delete(A_gaps, points_count*3+self.normalize_pattern, axis=1)  # delete normalized columns
+        A_gaps = np.delete(A_gaps, points_count*3+self.normalize_pattern, axis=0)  # delete normalized rows
+        b_gaps = -gradE.copy()
+        b_gaps = np.delete(b_gaps, points_count*3+self.normalize_pattern, axis=None)  # delete normalized columns
+
+        corrects_naive_gaps = LA.solve(A_gaps, b_gaps)
+
+        check = True
+        if check:
+            grads_gaps = A_gaps.dot(corrects_naive_gaps)
+            diff = grads_gaps - b_gaps
+            small_value = LA.norm(diff) # this value should be small and shows that corrections are right
+            if self.debug >= 3:
+                print("naive: corrs_back_err={} hessian_factor={}".format(small_value, hessian_factor))
+
+        self.FillCorrectionsPlainFromGaps(points_count, corrects_naive_gaps, corrections)
+
+
+    def EstimateCorrectionsDecomposedInTwoPhases(self, points_count, frames_count, hessian_factor, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, matG,
+                                                 left_side1, right_side, corrections, corrections_refer=None):
+        """ Computes updates for optimization variables"""
+        if not corrections_refer is None:
+            corrections_refer_gaps = np.delete(corrections_refer, points_count * 3 + self.normalize_pattern, axis=None)
+
+        # convert 2nd derivatives Frame-Frame matrix into the square shape
+        matG.fill(0)
         frame_offset = 0
         for frame_ind in range(0, frames_count):
             if frame_ind == 0: continue # skip initial frame (R0,T0)
 
-            ax = deriv_second_frame[frame_ind * 6:(frame_ind + 1) * 6, 0:6]
+            ax = deriv_second_frame[frame_ind * 6:(frame_ind + 1) * 6, 0:6].copy()
 
             if frame_ind == 1: # skip T1x or T1y
                 ax = np.delete(ax, [self.unity_comp_ind], axis=1) # delete column
                 ax = np.delete(ax, [self.unity_comp_ind], axis=0) # delete row
 
             size = ax.shape[0]
+
+            # scale diagonal elements
+            for i in range(0, size):
+                ax[i,i] *= (1 + hessian_factor)
 
             matG[frame_offset:frame_offset+size, frame_offset:frame_offset+size] = ax
             frame_offset += size
@@ -699,11 +798,16 @@ class BundleAdjustmentKanatani:
         # calculate deltas for frame unknowns
         for pnt_ind in range(0, points_count):
             point_frame = deriv_second_pointframe[pnt_ind*3:(pnt_ind+1)*3,:] # 3 x 6*frames_count
-            point_frame = np.delete(point_frame, [0,1,2,3,4,5,6+self.unity_comp_ind], axis=1) # delete normalized columns
+            point_frame = np.delete(point_frame, self.normalize_pattern, axis=1) # delete normalized columns
 
             point_hessian = deriv_second_point[pnt_ind*3:(pnt_ind+1)*3,0:3] # 3x3
-            point_hessian_scaled = (1+c)*point_hessian
-            assert np.all(np.isfinite(point_hessian_scaled)), "Possibly to big hessian scalar c={}".format(c)
+
+            # scale diagonal elements
+            point_hessian_scaled = point_hessian.copy() # 3x3
+            for i in range(0, point_hessian.shape[0]):
+                point_hessian_scaled[i,i] *= (1 + hessian_factor)
+
+            assert np.all(np.isfinite(point_hessian_scaled)), "Possibly to big hessian factor c={}".format(hessian_factor)
 
             try:
                 point_hessian_inv = LA.inv(point_hessian_scaled)
@@ -723,37 +827,91 @@ class BundleAdjustmentKanatani:
 
         left_side1 = matG - left_side1  # G-sum(F.E.F)
         frame_derivs_packed =  gradE[3*points_count:]
-        frame_derivs_packed = np.delete(frame_derivs_packed, [0, 1, 2, 3, 4, 5, 6 + self.unity_comp_ind],axis=None)
+        frame_derivs_packed = np.delete(frame_derivs_packed, self.normalize_pattern, axis=None)
         right_side -= frame_derivs_packed # sum(F.E.gradE)-Df
-        deltas_frame = LA.solve(left_side1, right_side)
+        corects_frame = LA.solve(left_side1, right_side)
 
-        # copy corrections with gaps to plain corrections
-        corrections.fill(float('nan'))
-        corrections[points_count * 3:points_count * 3 + 6] = 0 # [T0x T0y T0z R0wx R0wy R0wz]
-        corrections[points_count * 3 + 6 +    self.unity_comp_ind ] = 0 # T1x or T1y
-        corrections[points_count * 3 + 6 + (1-self.unity_comp_ind)] = deltas_frame[0] # T1x or T1y
-        corrections[points_count * 3 + 6 + 2]                  = deltas_frame[1] # T1z
-        corrections[points_count * 3 + 6 + 3:] = deltas_frame[2:]
-        assert np.all(np.isfinite(corrections[points_count * 3:])), "Failed to copy normalized corrections"
+        if not corrections_refer is None:
+            diff_corrections_frames = LA.norm(corects_frame - corrections_refer_gaps[points_count*3:])
 
         # calculate deltas for point unknowns
+        corrects_points = np.zeros(points_count*3, dtype=self.elem_type)
         for pnt_ind in range(0, points_count):
             point_frame = deriv_second_pointframe[pnt_ind*3:(pnt_ind+1)*3,:] # 3 x 6*frames_count
-            point_frame = np.delete(point_frame, [0, 1, 2, 3, 4, 5, 6 + self.unity_comp_ind],axis=1)  # delete normalized columns
+            point_frame = np.delete(point_frame, self.normalize_pattern, axis=1)  # delete normalized columns
 
             gradeE_point = gradE[pnt_ind*3:(pnt_ind+1)*3] # 3x1
 
-            partB = point_frame.dot(deltas_frame) + gradeE_point
+            partB = point_frame.dot(corects_frame) + gradeE_point
 
             point_hessian = deriv_second_point[pnt_ind * 3:(pnt_ind + 1) * 3, 0:3]  # 3x3
-            point_hessian_inv = LA.inv((1+c)*point_hessian)
+
+            # scale diagonal elements
+            point_hessian_scaled = point_hessian.copy() # 3x3
+            for i in range(0, point_hessian.shape[0]):
+                point_hessian_scaled[i,i] *= (1 + hessian_factor)
+
+            point_hessian_inv = LA.inv(point_hessian_scaled)
 
             deltas_one_point = -point_hessian_inv.dot(partB)
-            corrections[pnt_ind * 3:(pnt_ind + 1) * 3] = deltas_one_point[0:3]
+            corrects_points[pnt_ind * 3:(pnt_ind + 1) * 3] = deltas_one_point[0:3]
+
+        if not corrections_refer is None:
+            diff_corrections_points = LA.norm(corrects_points - corrections_refer_gaps[0:points_count * 3])
+
+        corrections_gaps = np.hstack((corrects_points, corects_frame))
+        self.FillCorrectionsPlainFromGaps(points_count, corrections_gaps, corrections)
+
+        diff_corrections_all = None
+        if not corrections_refer is None:
+            diff_corrections_all = LA.norm(corrections - corrections_refer)
 
         assert np.all(np.isfinite(corrections)), "Change of a variable must be a real number"
 
-        return None
+        check = True
+        if check:
+            n = len(corrections)
+            A = np.zeros((n, n), dtype=self.elem_type)
+            self.FillHessian(points_count, frames_count, gradE, deriv_second_point, deriv_second_frame, deriv_second_pointframe, hessian_factor, A)
+
+            # remove rows/columns corresponding to normalized variables
+            A_gaps = A.copy()
+            A_gaps = np.delete(A_gaps, points_count*3 + self.normalize_pattern, axis=1)  # delete normalized columns
+            A_gaps = np.delete(A_gaps, points_count*3 + self.normalize_pattern, axis=0)  # delete normalized rows
+            b_gaps = -gradE.copy()
+            b_gaps = np.delete(b_gaps, points_count*3 + self.normalize_pattern, axis=None)  # delete normalized columns
+
+            grads = A_gaps.dot(corrections_gaps)
+            diff = grads - b_gaps
+            small_value = LA.norm(diff)
+            if self.debug >= 3:
+                print("two-phase corrs_back_err={} hessian_factor={} corrs_refer={}".format(small_value, hessian_factor, diff_corrections_all))
+
+    def FillCorrectionsPlainFromGaps(self, points_count, corrections_gaps, corrections_plain):
+        """ copy corrections with gaps to plain corrections """
+        corrections_plain.fill(float('nan'))
+
+        out_off = 0
+
+        # copy corrections for points
+        corrections_plain[out_off:out_off+3 * points_count] = corrections_gaps[out_off:out_off+3 * points_count]
+        out_off += 3 * points_count
+
+        # set zero corrections for frame0 (T0=[0,0,0] R0=Identity)
+        corrections_plain[out_off:out_off + 6] = 0  # [T0x T0y T0z R0wx R0wy R0wz]
+        out_off += 6
+
+        # set zero correction for frame1 T1y=0
+        corrections_plain[out_off + self.unity_comp_ind] = 0  # T1x or T1y
+
+        # copy other corrections of T1 intact
+        corrections_plain[out_off + (1 - self.unity_comp_ind)] = corrections_gaps[3 * points_count + 0]  # T1x or T1y
+        corrections_plain[out_off + 2] = corrections_gaps[3 * points_count + 1]  # T1z
+        out_off += 3
+
+        # copy corrections for other frames intact
+        corrections_plain[out_off:] = corrections_gaps[3 * points_count + 2:]
+        assert np.all(np.isfinite(corrections_plain)), "Failed to copy normalized corrections"
 
     def BundleAdjustmentApplyCorrectionsOld(self, points_count, frames_count, bundle_pnt_ids, corrections, reverse_update):
         # for pnt_ind in range(0, points_count):
@@ -812,11 +970,12 @@ class BundleAdjustmentKanatani:
                 #
                 self.framei_from_world_RT_list[frame_ind] = rt_inversed_new
 
-    def BundleAdjustmentApplyCorrections(self, points_count, frames_count, corrections):
+    def ApplyCorrections(self, points_count, frames_count, corrections):
         for pnt_ind in range(0, points_count):
             deltaX = corrections[pnt_ind * 3:(pnt_ind + 1) * 3]
             pnt_id = self.bundle_pnt_ids[pnt_ind]
-            self.world_pnts[pnt_id] += deltaX
+            if self.processX:
+                self.world_pnts[pnt_id] += deltaX
 
         for frame_ind in range(0, frames_count):
             rt_inversed = self.framei_from_world_RT_list[frame_ind]
@@ -825,20 +984,24 @@ class BundleAdjustmentKanatani:
             deltaF = corrections[points_count*3 + frame_ind*6:points_count*3 + (frame_ind+1)*6]
 
             deltaT = deltaF[0:3]
-            T_direct = rt_direct[1] + deltaT
+            if self.processT:
+                T_direct_new = rt_direct[1] + deltaT
+            else:
+                T_direct_new = rt_direct[1]
 
             deltaW = deltaF[3:6]
             all_zero = np.all(np.abs(deltaW) < 1e-5)
-            if all_zero:
+            if all_zero or not self.processR:
                 R_direct_new = rt_direct[0]
             else:
                 suc, rot_delta = RotMatFromAxisAngle(deltaW)
+                assert suc
                 R_direct_new = rot_delta.dot(rt_direct[0])
 
-            rt_inversed_new = SE3Inv((R_direct_new, T_direct))
+            rt_inversed_new = SE3Inv((R_direct_new, T_direct_new))
             self.framei_from_world_RT_list[frame_ind] = rt_inversed_new
 
-    def BundleAdjustmentReprojError(self, overwrite_track_id = None, overwrite_x3D=None, overwrite_frame_ind=None, overwrite_rt=None):
+    def ReprojError(self, overwrite_track_id = None, overwrite_x3D=None, overwrite_frame_ind=None, overwrite_rt=None):
         if not overwrite_track_id is None:
             assert not overwrite_x3D is None, "Provide 3D world point to overwrite"
         if not overwrite_frame_ind is None:
@@ -887,3 +1050,6 @@ class BundleAdjustmentKanatani:
         err_per_point = err_sum / visib_pnts_count if visib_pnts_count > 0 else None
 
         return err_sum, err_per_point
+
+    def ErrChangeRatio(self):
+        return self.err_value / self.err_value_initial
