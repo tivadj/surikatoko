@@ -1,6 +1,6 @@
 import numpy as np
 
-from py.obs_geom import *
+from suriko.obs_geom import *
 
 
 class BundleAdjustmentKanatani:

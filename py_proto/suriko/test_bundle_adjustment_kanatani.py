@@ -1,9 +1,9 @@
 import numpy as np
 import unittest
-from py.bundle_adjustment_kanatani_impl import BundleAdjustmentKanatani
-from py.mvg import PointLife
-from py.obs_geom import *
-from py.test_data_builder import CircusGridDataSet, ParseTestArgs
+from suriko.bundle_adjustment_kanatani_impl import BundleAdjustmentKanatani
+from suriko.mvg import PointLife
+from suriko.obs_geom import *
+from suriko.test_data_builder import CircusGridDataSet, ParseTestArgs
 import cv2
 
 class BundleAdjustmentKanataniTests(unittest.TestCase):

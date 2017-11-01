@@ -3,7 +3,7 @@ import numpy as np
 import numpy.linalg as LA
 import argparse
 
-from py.obs_geom import *
+from suriko.obs_geom import *
 
 def ParseTestArgs():
     parser = argparse.ArgumentParser()

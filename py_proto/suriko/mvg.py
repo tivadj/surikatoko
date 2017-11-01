@@ -32,11 +32,11 @@ import time
 # import pygame, pygame.image
 # from pygame.locals import *
 
-import py.sampson
-import py.ess_5point_stewenius
-import py.la_utils
-import py.test_data_builder
-from py.obs_geom import *
+import suriko.sampson
+import suriko.ess_5point_stewenius
+import suriko.la_utils
+import suriko.test_data_builder
+from suriko.obs_geom import *
 
 try:
     import mpmath # multi-precision math, see http://mpmath.org/
@@ -579,7 +579,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
     e4_stacked = vt.T[:,-1].reshape((3,3)).ravel(order='F') # w==1
 
     M = np.zeros((10, 20), dtype=eltype)
-    py.ess_5point_stewenius.EssentialMat_Stewenius_FillM(e1_stacked, e2_stacked, e3_stacked, e4_stacked, M)
+    suriko.ess_5point_stewenius.EssentialMat_Stewenius_FillM(e1_stacked, e2_stacked, e3_stacked, e4_stacked, M)
 
     # MX=[M1|M2]X=0 => [I|B]X=0
     # B is the Grobner basis
@@ -597,7 +597,7 @@ def FindEssentialMat5PointStewenius(xs1, xs2, proj_ess_space, unity_translation 
                 B = B.astype(eltype)
     elif grobner_basis_comput == 1:
         Mold = M.copy()
-        suc = py.la_utils.GaussJordanElimination(M) # modify inplace
+        suc = suriko.la_utils.GaussJordanElimination(M) # modify inplace
         B = M[:,10:20]
         # TODO: check why it may not succeed
         if not suc:
@@ -1844,7 +1844,7 @@ def RefineFundMat(fund_mat, xs1, xs2, debug = 0):
         return sampson.DistanceMult(cur_fund_mat, xs1, xs2)
     def SampsonDistPrimeFun(fvec):
         fvec_prime = np.zeros_like(fvec)
-        py.sampson.SampsonDistanceMultPrime(fvec, xs1, xs2, fvec_prime)
+        suriko.sampson.SampsonDistanceMultPrime(fvec, xs1, xs2, fvec_prime)
         return fvec_prime
 
     dist_init = SampsonDistFun(fvec0)
@@ -1907,7 +1907,7 @@ def TestSampsonDistance():
 
     # gradient
     fvec = np.zeros(8)
-    py.sampson.SampsonDistanceMultPrime([2, 3, 4, 5, 6, 7, 8, 9], [[2, 3, 4]], [[5, 6, 7]], fvec)
+    suriko.sampson.SampsonDistanceMultPrime([2, 3, 4, 5, 6, 7, 8, 9], [[2, 3, 4]], [[5, 6, 7]], fvec)
     prime_expect = [36.045, 36.4307, -16.1044, -23.3929, 109.888, 196.978, 18.3806, 26.3365]
     assert np.allclose(prime_expect, fvec)
 
@@ -6282,7 +6282,7 @@ class ReconstructDemo:
         provide_ground_truth = True
         img_width, img_height = 640, 480  # target image to project 3D points to
 
-        test_data_gen = py.test_data_builder.CrystallGridDataSet(el_type, img_width, img_height, provide_ground_truth=provide_ground_truth)
+        test_data_gen = suriko.test_data_builder.CrystallGridDataSet(el_type, img_width, img_height, provide_ground_truth=provide_ground_truth)
 
         track_sys = PointsWorld()
         track_sys.elem_type = el_type
