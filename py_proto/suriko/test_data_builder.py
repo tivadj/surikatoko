@@ -238,13 +238,14 @@ class CrystallGridDataSet:
         self.cam_mat_changed = on_computed_cam_mat_fun
 
 class CircusGridDataSet:
-    def __init__(self, el_type, img_width, img_height, world_range, cell_size, rot_radius = None, provide_ground_truth=True):
+    def __init__(self, el_type, img_width, img_height, world_range, cell_size, angles, rot_radius = None, provide_ground_truth=True):
         """:param cell_size cell size between atoms of the crystal"""
         self.el_type = el_type
         self.img_width = img_width
         self.img_height = img_height
         self.world_range = world_range
         self.cell_size = cell_size
+        self.angles = angles
         if rot_radius is None:
             rot_radius = 5 * cell_size[0]
         self.rot_radius = rot_radius
@@ -269,7 +270,8 @@ class CircusGridDataSet:
             for x in np.arange(Wx0, Wx + inclusive_gap, cx):
                 for y in np.arange(Wy0, Wy + inclusive_gap, cy):
                     # x plus small offset to avoid centering on stable point
-                    pnt = np.array([x+0.2, y, z], self.el_type)
+                    z_curve = math.cos(x / Wx * math.pi/2)
+                    pnt = np.array([x+0.2, y, z_curve], self.el_type)
                     self.xs3D.append(pnt)
                     self.xs3D_virtual_ids.append(next_virt_id)
                     next_virt_id += 1
@@ -280,16 +282,13 @@ class CircusGridDataSet:
 
         frame_ind = 0
         # add move_step to upper bound to make inclusive
-        rot_angles = list(np.arange(0, 2*math.pi, math.pi/180))
-        for ang in rot_angles:
+        for ang in self.angles:
             # cam3
             cam3_from_world = np.eye(4, 4, dtype=self.el_type)
             # angle=0 corresponds to OX (to the right) axis
             # -ang to move clockwise
-            #abs_ang = 3*math.pi/2 + math.pi/6 - ang
-            abs_ang = math.pi/2 + math.pi/6 - ang
-            shiftX = cx*math.cos(abs_ang)
-            shiftY = cx*math.sin(abs_ang)
+            shiftX = cx*math.cos(ang)
+            shiftY = cx*math.sin(ang)
             shiftZ = cx
             shift_scale = self.rot_radius / LA.norm([shiftX, shiftY, shiftZ]) # scale offset upto given radius of rotation
             shiftX, shiftY, shiftZ = shiftX * shift_scale, shiftY * shift_scale, shiftZ * shift_scale
@@ -303,7 +302,7 @@ class CircusGridDataSet:
 
             # look down towards the center
             look_down_ang = math.atan2(shiftZ, LA.norm([shiftX, shiftY]))
-            cam3_from_world = SE3Mat(rotMat([1, 0, 0], look_down_ang - math.pi/2), None, dtype=self.el_type).dot(cam3_from_world)
+            cam3_from_world = SE3Mat(rotMat([1, 0, 0], look_down_ang + math.pi/2), None, dtype=self.el_type).dot(cam3_from_world)
             R3 = cam3_from_world[0:3, 0:3].astype(self.el_type)
             T3 = cam3_from_world[0:3, 3].astype(self.el_type)
 

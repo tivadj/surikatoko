@@ -1,14 +1,198 @@
-import numpy as np
-
 from suriko.obs_geom import *
 
+def NormalizeOrRevertRTInternal(rt, R0, T0, world_scale, normalize_or_revert, check_back_conv=True):
+    Rk, Tk = rt
+    if normalize_or_revert == True:
+        newRk = Rk.dot(R0.T)
+        newTk = world_scale * (Tk - Rk.dot(R0.T).dot(T0))
+        result_rt = (newRk, newTk)
+    else:
+        revertRk = Rk.dot(R0)
+        Tktmp = Tk / world_scale
+        revertTk = Tktmp + Rk.dot(T0)
+        result_rt = (revertRk, revertTk)
+
+    if check_back_conv:
+        back_rt = NormalizeOrRevertRTInternal(result_rt, R0, T0, world_scale, not normalize_or_revert,
+                                             check_back_conv=False)
+        assert np.allclose(rt[0], back_rt[0], atol=1e-3), "Error in normalization or reverting"
+        assert np.allclose(rt[1], back_rt[1], atol=1e-3), "Error in normalization or reverting"
+    return result_rt
+
+
+def NormalizeOrRevertPointInternal(X3D, R0, T0, world_scale, normalize_or_revert, check_back_conv=True):
+    if normalize_or_revert == True:
+        newX = R0.dot(X3D) + T0
+        newX *= world_scale
+        result_x = newX
+    else:
+        X3Dtmp = X3D / world_scale
+        result_x = R0.T.dot(X3Dtmp - T0)
+
+    if check_back_conv:
+        back_x = NormalizeOrRevertPointInternal(result_x, R0, T0, world_scale, not normalize_or_revert,
+                                               check_back_conv=False)
+        assert np.allclose(X3D, back_x, atol=1e-3), "Error in normalization or reverting"
+    return result_x
+
+class WorldNormalizer:
+
+    """ Performs normalization, so that (R0,T0) is the identity rotation plus zero translation and T1y=1."""
+    def __init__(self, salient_points, camera_poses, bundle_pnt_ids, t1y_norm, unity_comp_ind):
+        # check t1y!=0 and scene can be normalized
+        get0_from1 = SE3AFromB(camera_poses[0], camera_poses[1])
+        t1 = get0_from1[1]
+        assert not np.isclose(0, t1[unity_comp_ind]), "can't normalize T1 with component {} (into unity)".format(t1, unity_comp_ind)
+
+        self.bundle_pnt_ids = bundle_pnt_ids # ids of points for BA processing
+        self.world_pnts = salient_points
+        self.framei_from_world_RT_list = camera_poses
+        # normalization state
+        self.t1y_norm = t1y_norm
+        self.unity_comp_ind = unity_comp_ind
+        # normalization state
+        self.R0 = None
+        self.T0 = None
+        self.world_scale = None
+
+    def __InitialComponentShift(self, rt0, rt1):
+        SE3AFromB(rt0, rt1)
+        SE3Compose(rt0, SE3Inv(rt1))
+
+    def NormalizeWorldInplaceInternal(self):
+        """ An optimization problem is indeterminant as is, so the boundary condition is introduced:
+        R0=Identity, T0=zeros(3), t2y=1. So the input world's structure is transformed (normalized) into conformed one.
+        """
+        check_post_cond = True
+        if check_post_cond:
+            framei_from_world_RT_list_prenorm = self.framei_from_world_RT_list.copy()
+            world_pnts_prenorm = self.world_pnts.copy()
+
+        pnt_id0 = self.bundle_pnt_ids[0]
+        pnt_id1 = self.bundle_pnt_ids[1]
+
+        R0, T0 = self.framei_from_world_RT_list[pnt_id0]
+        R1, T1 = self.framei_from_world_RT_list[pnt_id1]
+
+        R0, T0 = R0.copy(), T0.copy()  # initial values of R0,T0
+
+        # translation vector from frame0 to frame1
+        get0_from1 = SE3AFromB((R0, T0), (R1, T1))
+        initial_camera_shift = get0_from1[1]
+
+        # make y-component of the first camera shift a unity (formula 27) T1y==1
+        world_scale = self.t1y_norm / initial_camera_shift[self.unity_comp_ind]
+        #world_scale = 1
+
+        for pnt_id in self.bundle_pnt_ids:
+            pnt_ind = pnt_id
+            X3D = self.world_pnts[pnt_ind]
+            newX = NormalizeOrRevertPointInternal(X3D, R0, T0, world_scale, normalize_or_revert=True)
+            self.world_pnts[pnt_ind] = newX
+
+        for frame_ind in range(0, len(self.framei_from_world_RT_list)):
+            rt = self.framei_from_world_RT_list[frame_ind]
+            new_rt = NormalizeOrRevertRTInternal(rt, R0, T0, world_scale, normalize_or_revert=True)
+            self.framei_from_world_RT_list[frame_ind] = new_rt
+
+        self.R0 = R0
+        self.T0 = T0
+        self.world_scale = world_scale
+
+        if check_post_cond:
+            pmsg = ['']
+            assert CheckWorldIsNormalized(self.framei_from_world_RT_list, self.bundle_pnt_ids, self.t1y_norm, self.unity_comp_ind, pmsg), pmsg[0]
+
+    def RevertNormalization(self):
+        R0, T0, world_scale = self.R0, self.T0, self.world_scale
+        # revert unity transformation
+        for pnt_id in self.bundle_pnt_ids:
+            pnt_ind = pnt_id
+            X3D = self.world_pnts[pnt_ind]
+            revertX = NormalizeOrRevertPointInternal(X3D, R0, T0, world_scale, normalize_or_revert=False)
+            self.world_pnts[pnt_ind] = revertX
+
+        for frame_ind in range(0, len(self.framei_from_world_RT_list)):
+            rt = self.framei_from_world_RT_list[frame_ind]
+            revert_rt = NormalizeOrRevertRTInternal(rt, R0, T0, world_scale, normalize_or_revert=False)
+            self.framei_from_world_RT_list[frame_ind] = revert_rt
+
+        # if modifications were made after normalization, the reversion process won't modify the scene into
+        # the initial (pre-normalization) state
+
+
+def NormalizeWorldInplace(salient_points, camera_poses, bundle_pnt_ids, t1y, unity_comp_ind):
+    scene_normalizer = WorldNormalizer(salient_points, camera_poses, bundle_pnt_ids, t1y, unity_comp_ind)
+    scene_normalizer.NormalizeWorldInplaceInternal()
+    return scene_normalizer
+
+def CheckWorldIsNormalized(camera_poses, bundle_pnt_ids, t1y, unity_comp_ind, msg, eps=1e-1):
+    pnt_id0 = bundle_pnt_ids[0]
+    pnt_id1 = bundle_pnt_ids[1]
+
+    # the first frame is the identity
+    rt0 = camera_poses[pnt_id0]
+    if not np.allclose(np.identity(3), rt0[0], atol=eps):
+        msg[0] = "R0=Identity but was\n{}".format(rt0[0])
+        return False
+    if not np.allclose(np.zeros(3), rt0[1], atol=eps):
+        msg[0] = "T0=zeros(3) but was {}".format(rt0[1])
+        return False
+
+    # the second frame has translation of unity length
+    t1 = SE3Inv(camera_poses[pnt_id1])[1]
+    if not np.allclose(t1y, t1[unity_comp_ind], atol=eps):
+        msg[0] = "expected T1y=1 but T1 was {}".format(t1)
+        return False
+    return True
+
+def BundleAdjustmentKanataniReprojError(points_life, cam_mat_pixel_from_meter, world_pnts, framei_from_world_RT_list, overwrite_track_id=None, overwrite_x3D=None, overwrite_frame_ind=None, overwrite_rt=None):
+    if not overwrite_track_id is None:
+        assert not overwrite_x3D is None, "Provide 3D world point to overwrite"
+    if not overwrite_frame_ind is None:
+        assert not overwrite_rt is None, "Provide frame R,T to overwrite"
+
+    frames_count = len(framei_from_world_RT_list)
+    cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
+
+    visib_pnts_count = 0
+    err_sum = 0.0
+
+    for frame_ind in range(0, frames_count):
+        if not overwrite_frame_ind is None and overwrite_frame_ind == frame_ind:
+            R, T = overwrite_rt
+        else:
+            R, T = framei_from_world_RT_list[frame_ind]
+
+        for pnt_life in points_life:
+            if not overwrite_track_id is None and overwrite_track_id == pnt_life.track_id:
+                pnt3D_world = overwrite_x3D
+            else:
+                pnt3D_world = world_pnts[pnt_life.track_id]
+
+            if pnt3D_world is None: continue
+
+            corner_pix = pnt_life.points_list_pixel[frame_ind]
+            assert not corner_pix is None, "Mapped points must be detected in image and hence, the position is known"
+            if False and corner_pix is None: continue
+
+            x3D_cam = SE3Apply((R, T), pnt3D_world)
+            x3D_pix = np.dot(cam_mat_pixel_from_meter, x3D_cam)
+            x = x3D_pix[0] / x3D_pix[2]
+            y = x3D_pix[1] / x3D_pix[2]
+            one_err = (x - corner_pix[0]) ** 2 + (y - corner_pix[1]) ** 2
+
+            err_sum += one_err
+            visib_pnts_count += 1
+
+    return err_sum
 
 class BundleAdjustmentKanatani:
     """
     Performs Bundle adjustment (BA) inplace.
     source: "Bundle adjustment for 3-d reconstruction" Kanatani Sugaya 2010
     """
-    def __init__(self, min_err_change = 1e-5, max_iter = None, debug = 0):
+    def __init__(self, min_err_change = 1e-8, max_iter = None, debug = 0):
         """
         :param min_err_change: stops if error change between two consecutive iterations is less than this value
         :param max_iter: stops when iterating over this number of iterations
@@ -36,7 +220,7 @@ class BundleAdjustmentKanatani:
         self.unity_comp_ind = 1 # 0 for X, 1 for Y; index of T1 to be set to unity
         self.normalize_pattern = np.array([0, 1, 2, 3, 4, 5, 6 + self.unity_comp_ind]) # R0=Identity, T0=[0,0,0], T1y=1
 
-    def ComputeInplace(self, pnt_track_list, cam_mat_pixel_from_meter, salient_points, camera_frames, check_derivatives=False):
+    def ComputeInplace(self, pnt_track_list, cam_mat_pixel_from_meter, salient_points, camera_poses, check_derivatives=False):
         """
         :return: True if optimization converges successfully.
         Stop conditions:
@@ -47,7 +231,7 @@ class BundleAdjustmentKanatani:
         self.points_life = pnt_track_list
         self.cam_mat_pixel_from_meter = cam_mat_pixel_from_meter
         self.world_pnts = salient_points
-        self.framei_from_world_RT_list = camera_frames
+        self.framei_from_world_RT_list = camera_poses
 
         self.elem_type = type(salient_points[0][0])
 
@@ -62,138 +246,19 @@ class BundleAdjustmentKanatani:
             bundle_pnt_ids.append(pnt_id)
         self.bundle_pnt_ids = bundle_pnt_ids
 
-        world_pnts_prenorm = self.world_pnts.copy()
-        framei_from_world_RT_list_prenorm = self.framei_from_world_RT_list.copy()
-
-        norm_params = self.NormalizeWorld()
+        scene_normalizer = NormalizeWorldInplace(salient_points, camera_poses, bundle_pnt_ids, self.T1y, self.unity_comp_ind)
 
         result = self.ComputeOnNormalizedWorld(check_derivatives)
 
-        self.RevertNormalization(bundle_pnt_ids, norm_params)
+        # check world is still normalized after optimization
+        pmsg = ['']
+        assert CheckWorldIsNormalized(camera_poses, bundle_pnt_ids, self.T1y, self.unity_comp_ind, pmsg), pmsg[0]
 
-        check_normalization_is_reversed = True
-        if False and check_normalization_is_reversed: # !!! this doesn't make sense if world is changed inplace
-            x1expect = world_pnts_prenorm[1]
-            x1actual = self.world_pnts[1]
-            assert np.isclose(x1expect[0], x1actual[0], atol=1e-5), "Normalization side-effects must be reversed"
-            t1expect = framei_from_world_RT_list_prenorm[1][1]
-            t1actual = self.framei_from_world_RT_list[1][1]
-            assert np.isclose(t1expect[0], t1actual[0], atol=1e-5), "Normalization side-effects must be reversed"
-
+        scene_normalizer.RevertNormalization()
         return result
-
-    def NormalizeOrRevertRT(self, rt, R0, T0, world_scale, normalize_or_revert, check_back_conv=True):
-        Rk,Tk = rt
-        if normalize_or_revert == True:
-            newRk = Rk.dot(R0.T)
-            newTk = world_scale * (Tk - Rk.dot(R0.T).dot(T0))
-            result_rt = (newRk, newTk)
-        else:
-            revertRk = Rk.dot(R0)
-            Tktmp = Tk / world_scale
-            revertTk = Tktmp + Rk.dot(T0)
-            result_rt = (revertRk, revertTk)
-
-        if check_back_conv:
-            back_rt = self.NormalizeOrRevertRT(result_rt, R0, T0, world_scale, not normalize_or_revert, check_back_conv=False)
-            assert np.allclose(rt[0], back_rt[0], atol=1e-3), "Error in normalization or reverting"
-            assert np.allclose(rt[1], back_rt[1], atol=1e-3), "Error in normalization or reverting"
-        return result_rt
-
-    def NormalizeOrRevertPoint(self, X3D, R0, T0, world_scale, normalize_or_revert, check_back_conv=True):
-        if normalize_or_revert == True:
-            newX = R0.dot(X3D) + T0
-            newX *= world_scale
-            result_x = newX
-        else:
-            X3Dtmp = X3D / world_scale
-            result_x = R0.T.dot(X3Dtmp - T0)
-
-        if check_back_conv:
-            back_x = self.NormalizeOrRevertPoint(result_x, R0, T0, world_scale, not normalize_or_revert, check_back_conv=False)
-            assert np.allclose(X3D, back_x, atol=1e-3), "Error in normalization or reverting"
-        return result_x
-
-    def NormalizeWorld(self):
-        """ An optimization problem is indeterminant as is, so the boundary condition is introduced:
-        R0=Identity, T0=zeros(3), t2y=1. So the input world's structure is transformed (normalized) into conformed one.
-        """
-        check_post_cond = True
-        if check_post_cond:
-            framei_from_world_RT_list_prenorm = self.framei_from_world_RT_list.copy()
-            world_pnts_prenorm = self.world_pnts.copy()
-
-        pnt_id0 = self.bundle_pnt_ids[0]
-        pnt_id1 = self.bundle_pnt_ids[1]
-
-        R0,T0 = self.framei_from_world_RT_list[pnt_id0]
-        R1,T1 = self.framei_from_world_RT_list[pnt_id1]
-
-        R0, T0 = R0.copy(), T0.copy() # initial values of R0,T0
-
-        # translation vector from frame0 to frame1
-        initial_camera_shift = T0 - R0.dot(R1.T).dot(T1)
-
-        # make y-component of the first camera shift a unity (formula 27) T1y==1
-        world_scale = self.T1y / initial_camera_shift[self.unity_comp_ind]
-
-        for pnt_id in self.bundle_pnt_ids:
-            pnt_ind = pnt_id
-            X3D = self.world_pnts[pnt_ind]
-            newX = self.NormalizeOrRevertPoint(X3D, R0, T0, world_scale, normalize_or_revert=True)
-            self.world_pnts[pnt_ind] = newX
-
-        for frame_ind in range(0, len(self.framei_from_world_RT_list)):
-            rt = self.framei_from_world_RT_list[frame_ind]
-            new_rt = self.NormalizeOrRevertRT(rt, R0, T0, world_scale, normalize_or_revert=True)
-            self.framei_from_world_RT_list[frame_ind] = new_rt
-
-        if check_post_cond:
-            pmsg = ['']
-            assert self.CheckWorldIsNormalized(pmsg), pmsg[0]
-
-        norm_params = (R0, T0, world_scale)
-        return norm_params
-
-    def CheckWorldIsNormalized(self, msg, eps=1e-1):
-        pnt_id0 = self.bundle_pnt_ids[0]
-        pnt_id1 = self.bundle_pnt_ids[1]
-
-        # the first frame is the identity
-        rt0 = self.framei_from_world_RT_list[pnt_id0]
-        if not np.allclose(np.identity(3), rt0[0], atol=eps):
-            msg[0] = "R0=Identity but was\n{}".format(rt0[0])
-            return False
-        if not np.allclose(np.zeros(3), rt0[1], atol=eps):
-            msg[0] = "T0=zeros(3) but was {}".format(rt0[1])
-            return False
-
-        # the second frame has translation of unity length
-        t2 = SE3Inv(self.framei_from_world_RT_list[pnt_id1])[1]
-        if not np.allclose(self.T1y, t2[1], atol=eps):
-            msg[0] = "expected T1y=1 but T1 was {}".format(t2)
-            return False
-        return True
-
-    def RevertNormalization(self, bundle_pnt_ids, norm_params):
-        R0, T0, world_scale = norm_params
-        # revert unity transformation
-        for pnt_id in bundle_pnt_ids:
-            pnt_ind = pnt_id
-            X3D = self.world_pnts[pnt_ind]
-            revertX = self.NormalizeOrRevertPoint(X3D, R0, T0, world_scale, normalize_or_revert=False)
-            self.world_pnts[pnt_ind] = revertX
-
-        for frame_ind in range(0, len(self.framei_from_world_RT_list)):
-            rt = self.framei_from_world_RT_list[frame_ind]
-            revert_rt = self.NormalizeOrRevertRT(rt, R0, T0, world_scale, normalize_or_revert=False)
-            self.framei_from_world_RT_list[frame_ind] = revert_rt
 
     def ComputeOnNormalizedWorld(self, check_derivatives):
         result = self.ComputeOnNormalizedWorldCore(check_derivatives)
-        # check world is still normalized after optimization
-        pmsg = ['']
-        assert self.CheckWorldIsNormalized(pmsg), pmsg[0]
         return result
 
     def ComputeOnNormalizedWorldCore(self, check_derivatives):
@@ -236,17 +301,13 @@ class BundleAdjustmentKanatani:
         world_pnts_revert_copy = self.world_pnts.copy()
         framei_from_world_RT_list_revert_copy = self.framei_from_world_RT_list.copy()
 
-        self.err_value_initial,_ = self.ReprojError(None, None, None, None)
+        self.err_value_initial = self.__ReprojError(None, None, None, None)
         self.err_value = self.err_value_initial
 
-        # TODO: if abs(opt_fun_value)<eps then success
+        # NOTE: we don't check absolute error, because corrupted with noise data may have arbitrary large reproj err
 
         it = 1
         hessian_factor = 0.0001  # hessian's diagonal multiplier
-
-        if self.debug >= 3:
-            print("initial: err_value={} hessian_factor={}".format(self.err_value, hessian_factor))
-
         while True:
             self.ComputeDerivatives(points_count, frames_count, check_derivatives, gradE, gradE2_onlyW, deriv_second_point, deriv_second_frame, deriv_second_pointframe)
 
@@ -269,7 +330,7 @@ class BundleAdjustmentKanatani:
 
                 self.ApplyCorrections(points_count, frames_count, corrections)
 
-                err_value_new,_ = self.ReprojError(None, None, None, None)
+                err_value_new = self.__ReprojError(None, None, None, None)
 
                 err_value_change = err_value_new - self.err_value
 
@@ -285,7 +346,7 @@ class BundleAdjustmentKanatani:
 
                 debug_successfull_revertion = True
                 if debug_successfull_revertion:
-                    opt_fun_value_reverted,_ = self.ReprojError(None, None, None, None)
+                    opt_fun_value_reverted = self.__ReprojError(None, None, None, None)
                     assert np.isclose(self.err_value, opt_fun_value_reverted)
 
                 if not self.max_hessian_factor is None and hessian_factor > self.max_hessian_factor:
@@ -304,7 +365,7 @@ class BundleAdjustmentKanatani:
             self.err_value = err_value_new
 
             if self.debug >= 3:
-                print("it={} err_value={} hessian_factor={}".format(it, self.err_value, hessian_factor))
+                print("it={} reproj_err={} hessian_factor={}".format(it, self.err_value, hessian_factor))
 
             if math.fabs(err_value_change) < self.min_err_change:
                 if self.debug >= 3:
@@ -342,11 +403,11 @@ class BundleAdjustmentKanatani:
         def EstimateFirstPartialDerivPoint(pnt_id, pnt0, xyz_ind):
             pnt3D_left = pnt0.copy()
             pnt3D_left[xyz_ind] -= eps
-            x1_err_sum, x1_err_per_point = self.ReprojError(pnt_id, pnt3D_left, None, None)
+            x1_err_sum = self.__ReprojError(pnt_id, pnt3D_left, None, None)
 
             pnt3D_right = pnt0.copy()
             pnt3D_right[xyz_ind] += eps
-            x2_err_sum, x2_err_per_point = self.ReprojError(pnt_id, pnt3D_right, None, None)
+            x2_err_sum = self.__ReprojError(pnt_id, pnt3D_right, None, None)
             return (x2_err_sum - x1_err_sum) / (2 * eps)
 
         def EstimateFirstPartialDerivTranslation(frame_ind, T_direct, R_direct, w_direct, t_ind):
@@ -359,12 +420,12 @@ class BundleAdjustmentKanatani:
             t1dir = T_direct.copy()
             t1dir[t_ind] -= eps
             r1inv, t1inv = SE3Inv((R_direct_tmp, t1dir))
-            t1_err_sum, t1_err_per_point = self.ReprojError(None, None, frame_ind, (r1inv, t1inv))
+            t1_err_sum = self.__ReprojError(None, None, frame_ind, (r1inv, t1inv))
 
             t2dir = T_direct.copy()
             t2dir[t_ind] += eps
             r2inv, t2inv = SE3Inv((R_direct_tmp, t2dir))
-            t2_err_sum, t2_err_per_point = self.ReprojError(None, None, frame_ind, (r2inv, t2inv))
+            t2_err_sum = self.__ReprojError(None, None, frame_ind, (r2inv, t2inv))
             return (t2_err_sum - t1_err_sum) / (2 * eps)
 
         def EstimateFirstPartialDerivRotation(frame_ind, t_direct, w_direct, w_ind):
@@ -373,14 +434,14 @@ class BundleAdjustmentKanatani:
             suc, R1_direct = RotMatFromAxisAngle(w1)
             assert suc
             R1inv, T1inv = SE3Inv((R1_direct, t_direct))
-            R1_err_sum, t1_err_per_point = self.ReprojError(None, None, frame_ind, (R1inv, T1inv))
+            R1_err_sum = self.__ReprojError(None, None, frame_ind, (R1inv, T1inv))
 
             w2 = w_direct.copy()
             w2[w_ind] += eps
             suc, R2 = RotMatFromAxisAngle(w2)
             assert suc
             R2inv, T2inv = SE3Inv((R2, t_direct))
-            R2_err_sum, R2_err_per_point = self.ReprojError(None, None, frame_ind, (R2inv, T2inv))
+            R2_err_sum = self.__ReprojError(None, None, frame_ind, (R2inv, T2inv))
             return (R2_err_sum - R1_err_sum) / (2 * eps)
 
         def ErrAtXVec(xvec, pnt_id, frame_ind):
@@ -393,7 +454,7 @@ class BundleAdjustmentKanatani:
             assert suc
             r_inv, t_inv = SE3Inv((r_direct, t_direct))
 
-            result, _ = self.ReprojError(pnt_id, point3D, frame_ind, (r_inv, t_inv))
+            result = self.__ReprojError(pnt_id, point3D, frame_ind, (r_inv, t_inv))
             return result
 
         xvec = np.zeros(9, dtype=el_type)
@@ -759,8 +820,8 @@ class BundleAdjustmentKanatani:
             grads_gaps = A_gaps.dot(corrects_naive_gaps)
             diff = grads_gaps - b_gaps
             small_value = LA.norm(diff) # this value should be small and shows that corrections are right
-            if self.debug >= 3:
-                print("naive: corrs_back_err={} hessian_factor={}".format(small_value, hessian_factor))
+            if not small_value < 1 and self.debug >= 3:
+                print("warning: naive: should be small, small_value={} hessian_factor={}".format(small_value, hessian_factor))
 
         self.FillCorrectionsPlainFromGaps(points_count, corrects_naive_gaps, corrections)
 
@@ -884,8 +945,8 @@ class BundleAdjustmentKanatani:
             grads = A_gaps.dot(corrections_gaps)
             diff = grads - b_gaps
             small_value = LA.norm(diff)
-            if self.debug >= 3:
-                print("two-phase corrs_back_err={} hessian_factor={} corrs_refer={}".format(small_value, hessian_factor, diff_corrections_all))
+            if not small_value < 1 and self.debug >= 3:
+                print("warning: naive: should be small, small_value={} hessian_factor={}".format(small_value, hessian_factor))
 
     def FillCorrectionsPlainFromGaps(self, points_count, corrections_gaps, corrections_plain):
         """ copy corrections with gaps to plain corrections """
@@ -912,63 +973,6 @@ class BundleAdjustmentKanatani:
         # copy corrections for other frames intact
         corrections_plain[out_off:] = corrections_gaps[3 * points_count + 2:]
         assert np.all(np.isfinite(corrections_plain)), "Failed to copy normalized corrections"
-
-    def BundleAdjustmentApplyCorrectionsOld(self, points_count, frames_count, bundle_pnt_ids, corrections, reverse_update):
-        # for pnt_ind in range(0, points_count):
-        #     deltaX = corrections[pnt_ind * 3:(pnt_ind + 1) * 3]
-        #     if reverse_update:
-        #         deltaX = -deltaX
-        #
-        #     pnt_id = bundle_pnt_ids[pnt_ind]
-        #     self.world_pnts[pnt_id] += deltaX
-        #
-        for frame_ind in range(0, frames_count):
-            rt_inversed = self.framei_from_world_RT_list[frame_ind]
-            rt_direct = SE3Inv(rt_inversed)
-
-            suc, w_direct = AxisAngleFromRotMat(rt_direct[0])
-            if suc:
-                deltaF = corrections[points_count*3 + frame_ind*6:points_count*3 + (frame_ind+1)*6]
-
-                deltaW = deltaF[3:6]
-                if reverse_update:
-                    deltaW = -deltaW
-                w_direct_new = w_direct + deltaW
-
-                suc, R_direct = RotMatFromAxisAngle(w_direct_new)
-                assert suc
-
-                deltaT = deltaF[0:3]
-                if reverse_update:
-                    deltaT = -deltaT
-                T_direct = rt_direct[1] + deltaT
-
-                rt_inversed_new = SE3Inv((R_direct, T_direct))
-
-                #revert
-                reverse_updateAAA = not reverse_update
-                rt_directAAA = SE3Inv(rt_inversed_new)
-                suc, w_directAAA = AxisAngleFromRotMat(rt_directAAA[0])
-                if suc:
-                    deltaFAAA = corrections[points_count * 3 + frame_ind * 6:points_count * 3 + (frame_ind + 1) * 6]
-
-                    deltaWAAA = deltaFAAA[3:6]
-                    if reverse_updateAAA:
-                        deltaWAAA = -deltaWAAA
-                    w_direct_newAAA = w_directAAA + deltaWAAA
-
-                    suc, R_directAAA = RotMatFromAxisAngle(w_direct_newAAA)
-                    assert suc
-
-                    deltaTAAA = deltaFAAA[0:3]
-                    if reverse_updateAAA:
-                        deltaTAAA = -deltaTAAA
-                    T_directAAA = rt_directAAA[1] + deltaTAAA
-
-                    rt_inversed_new = SE3Inv((R_directAAA, T_directAAA))
-
-                #
-                self.framei_from_world_RT_list[frame_ind] = rt_inversed_new
 
     def ApplyCorrections(self, points_count, frames_count, corrections):
         for pnt_ind in range(0, points_count):
@@ -1001,55 +1005,11 @@ class BundleAdjustmentKanatani:
             rt_inversed_new = SE3Inv((R_direct_new, T_direct_new))
             self.framei_from_world_RT_list[frame_ind] = rt_inversed_new
 
-    def ReprojError(self, overwrite_track_id = None, overwrite_x3D=None, overwrite_frame_ind=None, overwrite_rt=None):
-        if not overwrite_track_id is None:
-            assert not overwrite_x3D is None, "Provide 3D world point to overwrite"
-        if not overwrite_frame_ind is None:
-            assert not overwrite_rt is None, "Provide frame R,T to overwrite"
+    def __ReprojError(self, overwrite_track_id = None, overwrite_x3D=None, overwrite_frame_ind=None, overwrite_rt=None):
+        err_sum = BundleAdjustmentKanataniReprojError(self.points_life, self.cam_mat_pixel_from_meter, self.world_pnts, self.framei_from_world_RT_list,
+                                                   overwrite_track_id=None, overwrite_x3D=None,
+                                                   overwrite_frame_ind=None, overwrite_rt=None)
+        return err_sum
 
-        frames_count = len(self.framei_from_world_RT_list)
-        cam_mat_pixel_from_meter = self.cam_mat_pixel_from_meter
-
-        el_type = self.elem_type
-        visib_pnts_count = 0
-        err_sum = 0.0
-
-        for frame_ind in range(0, frames_count):
-            if not overwrite_frame_ind is None and overwrite_frame_ind == frame_ind:
-                R,T = overwrite_rt
-            else:
-                R,T = self.framei_from_world_RT_list[frame_ind]
-
-            for pnt_life in self.points_life:
-                if not overwrite_track_id is None and overwrite_track_id == pnt_life.track_id:
-                    pnt3D_world = overwrite_x3D
-                else:
-                    #continue
-                    pnt3D_world = self.world_pnts[pnt_life.track_id]
-
-                #assert not pnt3D_world is None, "Mapped points must have 3D position"
-                if pnt3D_world is None: continue
-
-                #x_meter = pnt_life.points_list_meter[frame_ind]
-                corner_pix = pnt_life.points_list_pixel[frame_ind]
-                #assert not expect_pix is None, "Mapped points must be detected in image and hence, the position is known"
-                if corner_pix is None: continue
-
-                x3D_cam = SE3Apply((R,T), pnt3D_world)
-                x3D_pix = np.dot(cam_mat_pixel_from_meter, x3D_cam)
-                x = x3D_pix[0]/x3D_pix[2]
-                y = x3D_pix[1]/x3D_pix[2]
-                one_err = (x - corner_pix[0])**2 + (y - corner_pix[1])**2
-                # if one_err > 0.01:
-                #     print("expect={} actual={}".format(corner_pix, (x,y)))
-                # if overwrite_track_id == pnt_life.track_id:
-                #     print("track_id={} frame_ind={} corner={} x3D={} T={} R=\n{}".format(pnt_life.track_id, frame_ind, corner_pix, pnt3D_world, T, R))
-
-                err_sum += one_err
-                visib_pnts_count += 1
-        err_per_point = err_sum / visib_pnts_count if visib_pnts_count > 0 else None
-
-        return err_sum, err_per_point
-
-    def ErrChangeRatio(self):
+    def ErrDecreaseRatio(self):
         return self.err_value / self.err_value_initial

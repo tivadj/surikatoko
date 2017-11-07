@@ -80,6 +80,9 @@ def SE3Inv(rt_tup):
 def RelMotionBFromA(a_from_world, b_from_world):
     return SE3Compose(b_from_world, SE3Inv(a_from_world))
 
+def SE3AFromB(a_from_world, b_from_world):
+    return SE3Compose(a_from_world, SE3Inv(b_from_world))
+
 # v=(3x1)
 def skewSymmeticMat(v):
     assert len(v) == 3, "Provide three components vector v=[x,y,z]"
