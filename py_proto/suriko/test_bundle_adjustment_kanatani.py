@@ -122,7 +122,7 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         camera_poses_noisy = camera_poses.copy()
         if add_noiseX or add_noiseR or add_noiseT:
             np.random.seed(123)
-            angle_delta = math.radians(1)
+            angle_delta = math.radians(2) # ok=2, >=5 too noisy
             err_rad_perc = 0.05
             noise_sig = cell_size[0]*err_rad_perc/3 # 3 due to 3-sigma, 3sig=err_radius
             if add_noiseX:
@@ -160,9 +160,9 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         camera_poses_adj = camera_poses_noisy.copy()
 
         ba = BundleAdjustmentKanatani(debug=self.debug)
-        ba.processX = add_noiseX
-        ba.processR = add_noiseR
-        ba.processT = add_noiseT
+        ba.debug_processX = add_noiseX
+        ba.debug_processR = add_noiseR
+        ba.debug_processT = add_noiseT
         ba.naive_estimate_corrections = False
         converged, err_msg = ba.ComputeInplace(pnt_track_list, cam_mat_pixel_from_meter, salient_points_adj, camera_poses_adj)
         print("converged={} err_msg={}".format(converged, err_msg))

@@ -37,6 +37,7 @@ import suriko.ess_5point_stewenius
 import suriko.la_utils
 import suriko.test_data_builder
 from suriko.obs_geom import *
+from suriko.bundle_adjustment_kanatani_impl import *
 
 try:
     import mpmath # multi-precision math, see http://mpmath.org/
@@ -4751,29 +4752,54 @@ class PointsWorld:
                 reproj_err = self.CalcReprojErr(debug)
                 if debug >= 3: print("anchor-targ: {} reproj_err={} meters".format((anchor_frame_ind, latest_frame_ind), reproj_err))
 
-                eeer = self.BundleAdjustmentReprojError(None, None, None, None)
-
                 self.reproj_err_history.append(reproj_err)
+                print("reproj_err_history={}".format(self.reproj_err_history))
 
-                do_bundle_adj = self.frame_ind == 25
-                if do_bundle_adj:
-                    suc = self.BundleAdjustmentCompute(debug=debug)
+                # hack: arbitraly fix reconstruction
+                do_fix1 = self.frame_ind == 26
+                if do_fix1:
+                    for pnt_ind,pnt_life in enumerate(self.points_life):
+                        gtruth_pos3D = self.ground_truth_map_pnt_pos(world_frame_ind, pnt_life.virtual_feat_id)
+                        scaled_gtruth_pos3D = gtruth_pos3D * self.first_unity_translation_scale_factor
+                        reconstr_pos3D = self.world_pnts[pnt_ind]
+                        if reconstr_pos3D is None:
+                            continue
+                        # err_one = LA.norm(reconstr_pos3D - scaled_gtruth_pos3D)
+                        # err_points += err_one
+                        self.world_pnts[pnt_ind] =  scaled_gtruth_pos3D
+
+                    err_r = 0
+                    err_t = 0
+                    for frame_ind, rt in enumerate(self.framei_from_world_RT_list):
+                        gtruth_R, gtruth_T = self.ground_truth_relative_motion(world_frame_ind, frame_ind)
+                        scaled_T = gtruth_T * self.first_unity_translation_scale_factor
+                        reconstr_R, reconstr_T = rt
+                        errR_one = LA.norm(reconstr_R - gtruth_R)
+                        errT_one = LA.norm(reconstr_T - scaled_T)
+                        err_r += errR_one
+                        err_t += errT_one
+                        self.framei_from_world_RT_list[frame_ind] = (gtruth_R, scaled_T)
 
                 if reproj_err < min_reproj_err:
                     break
 
-                it += 1
                 if it > max_iter:
                     print("reproj_err_history={}".format(self.reproj_err_history))
                     assert False, "Failed to converge the reconstruction"
                     break
 
                 # the iterative reconstruction diverged enough
-                # try to calesce it and minimize a reprojective error
-                #self.LocateCamAndMapBatchRefine(debug, min_reproj_err)
+                # try to coalesce it and minimize a reprojective error
+                optimize_structure = "bundle-adjustment"
+                if optimize_structure == "iterative-refine":
+                    self.LocateCamAndMapBatchRefine(debug, min_reproj_err)
+                elif optimize_structure == "bundle-adjustment":
+                    ba = BundleAdjustmentKanatani(debug=debug)
+                    ba.min_err_change_rel = 0.01
+                    converged, err_msg = ba.ComputeInplace(self.points_life, self.cam_mat_pixel_from_meter, self.world_pnts,self.framei_from_world_RT_list)
+                    print("BundleAdjustmentKanatani converged={} err_msg={}".format(converged, err_msg))
 
-                suc = self.BundleAdjustmentCompute(debug=debug)
-                print("DoBundleAdjustment={}".format(suc))
+                it += 1
         return True
 
     def DrawCameraTrackView(self, img2_bgr, max_track_len=20):
@@ -6010,8 +6036,6 @@ class ReconstructDemo:
                     glVertex3f(pt[0],pt[1],pt[2])
                 glEnd()
 
-    pass
-
     def handlePyGameEvent(self, event):
         moved = False
         if event.type == pygame.KEYDOWN:
@@ -6359,7 +6383,7 @@ class ReconstructDemo:
                 c1 = LA.norm(2 * ess_mat.dot(ess_mat.T).dot(ess_mat) - np.trace(ess_mat.dot(ess_mat.T)) * ess_mat)
                 print("2E*Et*E-trace(E*Et)E==0, actually {}".format(c1))
 
-            #track_sys.ProcessNextImage(img_ind, img_bgr, debug=debug)
+            track_sys.ProcessNextImage(img_ind, img_bgr, debug=debug)
 
             R2 = R3
             T2 = T3
@@ -6367,7 +6391,7 @@ class ReconstructDemo:
             xs_objs_clipped_prev = xs_objs_clipped
             img_ind += 1
 
-            wait_key_press_on_next_frame = True
+            wait_key_press_on_next_frame = False
             if wait_key_press_on_next_frame:
                 cv2.waitKey(0)
         if debug >= 3: print("exiting worker thread")
