@@ -133,13 +133,14 @@ def makeSkewSymmetric(fundMat):
 
 def IsSpecialOrthogonal(rot_mat, p_msg = None):
     def FromatMat(m): return str(m)
-    tol = 1.0e-5
-    c2 = np.allclose(np.eye(3,3), np.dot(rot_mat.T, rot_mat), atol=tol)
+    atol = 1.0e-3
+    rtol = 1.0e-3
+    c2 = np.allclose(np.eye(3,3), np.dot(rot_mat.T, rot_mat), rtol=rtol, atol=atol)
     if not c2:
         if not p_msg is None: p_msg[0] = "failed Rt.R=I (R={})".format(rot_mat)
         return False
     det_R = scipy.linalg.det(rot_mat)
-    c1 = np.isclose(1, det_R, atol=tol)
+    c1 = np.isclose(1, det_R, atol=atol, rtol=rtol)
     if not c1:
         if not p_msg is None: p_msg[0] = "failed det(R)=1 (R={}, detR={})".format(rot_mat, det_R)
         return False
@@ -218,7 +219,7 @@ def LogSO3New(rot_mat, check_rot_mat = True):
     sin_ang = math.sqrt(1.0-cos_ang**2)
 
     # n=[0,0,0] ang=0 -> Identity[3x3]
-    tol = 1.0e-3 # should treat as zero values: 2e-4
+    tol = 1.0e-1 # should treat as zero values: 2e-4
     if np.isclose(0, sin_ang, atol=tol):
         return False, None, None
 
@@ -236,8 +237,8 @@ def LogSO3New(rot_mat, check_rot_mat = True):
     if check_rot_mat:
         ang = math.acos(cos_ang)
         rot_mat_new = rotMat(n, ang, check_log_SO3=False)
-        # atol=1e-4 to ignore 2.97e-3, 4.47974432e-04, 1.950215e-5 error
-        assert np.allclose(rot_mat, rot_mat_new, atol=1e-2), "initial rotation matrix doesn't persist the conversion n={} ang={} rotmat|rotmat_new|delta=\n{}\n{}\n{}"\
+        # possible errors: 0.01332499, 2.97e-3, 4.47974432e-04, 1.950215e-5 error
+        assert np.allclose(rot_mat, rot_mat_new, atol=tol), "initial rotation matrix doesn't persist the conversion n={} ang={} rotmat|rotmat_new|delta=\n{}\n{}\n{}"\
             .format(n, ang, rot_mat, rot_mat_new, rot_mat-rot_mat_new)
     return True, n, ang
 

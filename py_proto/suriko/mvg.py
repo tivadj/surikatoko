@@ -351,7 +351,8 @@ def IsEssentialMat(ess_mat, perr_msg = None, la_engine="scipy"):
         u,dVec,vt = scipy.linalg.svd(ess_mat)
 
     dVec = dVec.ravel()
-    ok = np.isclose(dVec[0],dVec[1]) and np.isclose(0,dVec[2])
+    atol = 1e-3
+    ok = np.isclose(dVec[0],dVec[1],atol=atol) and np.isclose(0,dVec[2],atol=atol)
     if not ok:
         if not perr_msg is None: perr_msg[0] = "eigen_values(ess_mat)=[X X 0]"
         return False
@@ -376,8 +377,8 @@ def ProjectOntoEssentialSpace(ess_mat_noisy, unity_translation = True, la_engine
     if unity_translation:
         sig = 1
 
-    newSig = np.diag((sig, sig, 0))
-    essMat = np.dot(np.dot(u2, newSig), vt2)
+    newSig = np.diag((sig, sig, 0)).astype(eltype)
+    essMat = np.dot(np.dot(u2, newSig), vt2).astype(eltype)
     return essMat
 
 def FindEssentialMat_FillMatrixA(xs1, xs2, unit_2Dpoint, A):
@@ -1200,15 +1201,15 @@ def Estimate3DPointDepthFromFrames(base_frame_ind, frame_inds, x_per_frame, fram
     alpha_num = 0
     alpha_den = 0
     for frame_ind in frame_inds:
-        # other cameras, except world frame1
+        # other cameras, except base frame
         if frame_ind == base_frame_ind: continue
 
-        x2 = x_per_frame[frame_ind]
+        xi = x_per_frame[frame_ind]
 
-        x2_skew = skewSymmeticMat(x2)
+        xi_skew = skewSymmeticMat(xi)
         frame_R, frame_T = framei_from_base_RT[frame_ind]
-        h1 = np.dot(x2_skew, frame_T)
-        h2 = np.dot(np.dot(x2_skew, frame_R), x1)
+        h1 = np.dot(xi_skew, frame_T)
+        h2 = np.dot(np.dot(xi_skew, frame_R), x1)
         alpha_num += np.dot(h1, h2)
         alpha_den += NormSqr(h1)
         if not math.isfinite(alpha_num) or not math.isfinite(alpha_den) or math.isclose(0, alpha_den):
@@ -3514,12 +3515,14 @@ class PointsWorld:
         self.hack_world_mapping = False
         self.hack_camera_location_in_batch_refine = False
         self.la_engine = "scipy" # default="scipy", ["opencv", "scipy"]
-        # True to pretend that low precision algorithm is actually works in hight precision
+        # True to convert the result of SVD algorithm, which is of type float64, into current working type (eg f16 or f128)
         # default = False
-        # Generally it is a bad idea to hide the real precision of the algorithm and here is used to test how other
-        # parts of the program work with higher precision.
+        # Generally it is a bad idea to upconvert from f64 to f128, because the actual precision is hidden
         # eg. if True, algorithm sqrt(f64)->f32 is coerced into sqrt(f64)->f64 by upconverting result from f32 into f64
-        self.conceal_lost_precision = False
+        # eg. if True, algorithm sqrt(f16)->f64 is coerced into sqrt(f16)->f16 by downconverting result from f64 into f16
+        # If False, then it is problematic to estimate how an algorithm with specified float precision behaves,
+        # because actual float precision is different. But True, when working with f128, introduces the hiding of lost precision f64->f128.
+        self.conceal_lost_precision = True
         self.reproj_err_history = []
 
     def PointById(self, pnt_id):
@@ -3747,7 +3750,7 @@ class PointsWorld:
                 new_map_point_ids = []
                 xs1_new_pixel = []
                 for i,x1 in enumerate(xs1_pixel_tmp):
-                    x1 = np.array(x1, np.float32)
+                    x1 = np.array(x1, dtype=self.elem_type)
                     dist_to_existing_feat = 2.0
                     if self.IsCloseToExistingFeatures(x1, dist_to_existing_feat, self.frame_ind-1):
                         continue
@@ -4368,6 +4371,7 @@ class PointsWorld:
         elif self.la_engine == "scipy":
             u2, dVec2, vt2 = scipy.linalg.svd(cam_R_noisy)
             if self.conceal_lost_precision:
+                u2 = u2.astype(eltype)
                 vt2 = vt2.astype(eltype)
 
         no_guts = np.dot(u2, vt2)
@@ -4462,7 +4466,7 @@ class PointsWorld:
 
         return True, (rel_R, rel_T)
 
-    def Estimate3DPointFromFrames(self, pnt_id, check_drift):
+    def Estimate3DPointFromFrames(self, pnt_id):
         pnt_ind = pnt_id
         pnt_life = self.points_life[pnt_ind]
 
@@ -4489,7 +4493,7 @@ class PointsWorld:
                 print("diff={}".format(diff))
                 print("expect 3D: {}".format(scaled_x3D_world))
                 print("actual 3D: {}".format(x3D_anchor))
-                if check_drift:
+                if self.check_drift:
                     assert False
 
         # convert point in base, into point in the world
@@ -4497,11 +4501,9 @@ class PointsWorld:
         world_from_anchor = SE3Inv(anchor_from_world)
         x3D_world = SE3Apply(world_from_anchor, x3D_anchor)
 
-        # HACK:
-        # x3D_world = scaled_x3D_world
         return x3D_world
 
-    def CalcReprojErr(self, debug):
+    def CalcReprojErr(self, debug, divide_by_count=True):
         """Calculate projection error"""
         # MASKS formula 11.18, page 397
         result = 0.0
@@ -4516,7 +4518,7 @@ class PointsWorld:
                 continue
 
             for frame_ind in range(pnt_life.start_frame_ind, pnt_life.last_frame_ind):
-                x_expect = pnt_life.points_list_meter[frame_ind]
+                x_expect = pnt_life.points_list_pixel[frame_ind]
                 x_expectN = x_expect / x_expect[-1]
 
                 # transform 3D point into the frame
@@ -4529,7 +4531,41 @@ class PointsWorld:
                 # if debug >= 3: print("xexpect={0} xact={1} err={2} meters".format(x_expect, x3D_frameiN, err))
                 result += err
                 one_err_count += 1
-        if one_err_count > 0:
+        if divide_by_count and one_err_count > 0:
+            result /= one_err_count
+        return result
+
+    def CalcReprojErrPixel(self, debug, divide_by_count):
+        """Calculate projection error"""
+        # MASKS formula 11.18, page 397
+        result = 0.0
+        points_count = len(self.points_life)
+        one_err_count = 0
+        for pnt_ind in range(0, points_count):
+            pnt_life = self.points_life[pnt_ind]
+
+            x3D_world = self.world_pnts[pnt_ind]
+            if x3D_world is None:
+                assert not pnt_life.is_mapped  # point hasn't been mapped yet
+                continue
+
+            for frame_ind in range(pnt_life.start_frame_ind, pnt_life.last_frame_ind):
+                x_expect = pnt_life.points_list_pixel[frame_ind]
+
+                # transform 3D point into the frame
+                targ_from_world_RT = self.framei_from_world_RT_list[frame_ind]
+                if targ_from_world_RT[0] is None: continue
+
+                x3D_framei = SE3Apply(targ_from_world_RT, x3D_world)
+
+                x2D_hom = self.cam_mat_pixel_from_meter.dot(x3D_framei)
+                x2D_hom = x2D_hom / x2D_hom[2]
+
+                err = LA.norm(x_expect - x2D_hom[0:2]) ** 2
+                # if debug >= 3: print("xexpect={0} xact={1} err={2} meters".format(x_expect, x3D_frameiN, err))
+                result += err
+                one_err_count += 1
+        if divide_by_count and one_err_count > 0:
             result /= one_err_count
         return result
 
@@ -4602,7 +4638,7 @@ class PointsWorld:
     def MultiViewFactorizationIntegrateNewFrame(self, framei_from_world_RT, world_pnts, debug, min_reproj_err = 1e-4):
         # allocate space for the new frame
         frames_count = self.frame_ind + 1
-        framei_from_world_RT.append((None,None))
+        framei_from_world_RT.append((None,None)) # TODO: why inserting empty RT?
 
         # allocate space for the new frame
         points_count = len(self.points_life)
@@ -4611,8 +4647,8 @@ class PointsWorld:
 
         if frames_count == 1:
             # world's origin
-            rot = np.eye(3)
-            cent = np.zeros(3)
+            rot = np.eye(3, dtype=self.elem_type)
+            cent = np.zeros(3, dtype=self.elem_type)
             framei_from_world_RT[0] = (rot, cent)
             return True
 
@@ -4713,15 +4749,33 @@ class PointsWorld:
                 latest_frame_pnt_ids.append(pnt_life.track_id)
                 latest_frame_pnt_ids_set.add(pnt_life.track_id)
 
-            anchor_frame_ind, common_pnts_count = self.FindAnchorFrame(latest_frame_ind, latest_frame_pnt_ids_set)
-
-            common_pnt_ids = []
-            self.CountCommonPoints(latest_frame_pnt_ids_set, anchor_frame_ind, common_pnt_ids)
+            reproj_err_initial = self.CalcReprojErrPixel(debug, divide_by_count=False)
+            if debug >= 3: print("reproj_err_initial={} pixels".format(reproj_err_initial))
 
             max_iter = 9
             it = 1
+            common_pnt_ids = []
             while True:
+                if it > max_iter:
+                    print("reproj_err_history={}".format(self.reproj_err_history))
+                    assert False, "Failed to converge the reconstruction"
+                    break
+
+                # find relative motion of current frame basing on:
+                # it=1 the set of common points with the previous frame
+                # it=2 the same plus the set of new points of this frame (this is possible because locations for
+                # all points in current frame are found in it=1)
+                #if it == 1:
+                if it == 1 or it == 2:
+                    anchor_frame_ind, common_pnts_count = self.FindAnchorFrame(latest_frame_ind, latest_frame_pnt_ids_set)
+                    common_pnt_ids.clear()
+                    self.CountCommonPoints(latest_frame_pnt_ids_set, anchor_frame_ind, common_pnt_ids)
+
+                    if debug >= 3: print("anchor-targ: {}".format((anchor_frame_ind, latest_frame_ind)))
+
                 frame_ind_from_anchor_RT = self.GetFrameRelativeRT(anchor_frame_ind, latest_frame_ind, common_pnt_ids)
+                assert not frame_ind_from_anchor_RT[0] is None
+                assert not frame_ind_from_anchor_RT[1] is None
 
                 if self.hack_camera_location and not self.ground_truth_relative_motion is None:
                     gtruth_R, gtruth_T = self.ground_truth_relative_motion(anchor_frame_ind, latest_frame_ind)
@@ -4739,58 +4793,57 @@ class PointsWorld:
                 framei_from_world_RT[latest_frame_ind] = frame_ind_from_world_RT
 
                 # determine the depthes of all points in the latest frame
+                world_points_new = dict()
                 for pnt_id in latest_frame_pnt_ids:
-                    x3D_world = self.Estimate3DPointFromFrames(pnt_id, check_drift=False)
+                    # world point is already calculated
+                    if not world_pnts[pnt_id] is None:
+                        continue
+                    x3D_world = self.Estimate3DPointFromFrames(pnt_id)
                     if x3D_world is None: continue
                     if self.hack_world_mapping and not self.ground_truth_map_pnt_pos is None:
                         pnt_life = self.points_life[pnt_id]
                         gtruth_x3D_world = self.ground_truth_map_pnt_pos(world_frame_ind, pnt_life.virtual_feat_id)
                         scaled_x3D_world = gtruth_x3D_world * self.first_unity_translation_scale_factor
                         x3D_world = scaled_x3D_world
-                    world_pnts[pnt_id] = x3D_world
+                    # TODO: recalculate already estimated 3D point?
+                    #world_pnts[pnt_id] = x3D_world
+                    world_points_new[pnt_id] = x3D_world
 
-                reproj_err = self.CalcReprojErr(debug)
-                if debug >= 3: print("anchor-targ: {} reproj_err={} meters".format((anchor_frame_ind, latest_frame_ind), reproj_err))
+                # update all new points at once
+                for pnt_id in latest_frame_pnt_ids:
+                    x3D_world = world_points_new.get(pnt_id,None)
+                    if not x3D_world is None:
+                        world_pnts[pnt_id] = x3D_world
+
+                reproj_err = self.CalcReprojErrPixel(debug, divide_by_count=False)
+                if debug >= 3: print("anchor-targ: {} reproj_err={} pixels reproj_err_initial={}".format((anchor_frame_ind, latest_frame_ind), reproj_err, reproj_err_initial))
 
                 self.reproj_err_history.append(reproj_err)
                 print("reproj_err_history={}".format(self.reproj_err_history))
 
-                # hack: arbitraly fix reconstruction
-                do_fix1 = self.frame_ind == 26
-                if do_fix1:
+                # hack: magically fix reconstruction
+                correct_reconstruction_to_ground_truth = False
+                if correct_reconstruction_to_ground_truth:
                     for pnt_ind,pnt_life in enumerate(self.points_life):
                         gtruth_pos3D = self.ground_truth_map_pnt_pos(world_frame_ind, pnt_life.virtual_feat_id)
                         scaled_gtruth_pos3D = gtruth_pos3D * self.first_unity_translation_scale_factor
+
                         reconstr_pos3D = self.world_pnts[pnt_ind]
                         if reconstr_pos3D is None:
                             continue
-                        # err_one = LA.norm(reconstr_pos3D - scaled_gtruth_pos3D)
-                        # err_points += err_one
                         self.world_pnts[pnt_ind] =  scaled_gtruth_pos3D
 
-                    err_r = 0
-                    err_t = 0
                     for frame_ind, rt in enumerate(self.framei_from_world_RT_list):
                         gtruth_R, gtruth_T = self.ground_truth_relative_motion(world_frame_ind, frame_ind)
                         scaled_T = gtruth_T * self.first_unity_translation_scale_factor
-                        reconstr_R, reconstr_T = rt
-                        errR_one = LA.norm(reconstr_R - gtruth_R)
-                        errT_one = LA.norm(reconstr_T - scaled_T)
-                        err_r += errR_one
-                        err_t += errT_one
                         self.framei_from_world_RT_list[frame_ind] = (gtruth_R, scaled_T)
 
                 if reproj_err < min_reproj_err:
                     break
 
-                if it > max_iter:
-                    print("reproj_err_history={}".format(self.reproj_err_history))
-                    assert False, "Failed to converge the reconstruction"
-                    break
-
                 # the iterative reconstruction diverged enough
                 # try to coalesce it and minimize a reprojective error
-                optimize_structure = "bundle-adjustment"
+                optimize_structure = "bundle-adjustment999"
                 if optimize_structure == "iterative-refine":
                     self.LocateCamAndMapBatchRefine(debug, min_reproj_err)
                 elif optimize_structure == "bundle-adjustment":
@@ -4800,6 +4853,7 @@ class PointsWorld:
                     print("BundleAdjustmentKanatani converged={} err_msg={}".format(converged, err_msg))
 
                 it += 1
+                break # only 1 iteration
         return True
 
     def DrawCameraTrackView(self, img2_bgr, max_track_len=20):
@@ -6295,7 +6349,9 @@ class ReconstructDemo:
         cam_mat_pixel_from_meter = None
 
         el_type = np.float32
-        if main_args.float == "f32":
+        if main_args.float == "f16":
+            el_type = np.float16
+        elif main_args.float == "f32":
             el_type = np.float32
         elif main_args.float == "f64":
             el_type = np.float64
@@ -7406,7 +7462,7 @@ if __name__ == '__main__':
     parser.add_argument("--debug", help="debug level; {0: no debugging, 1: errors, 2: warnings, 3: debug, 4: interactive}", type=int, default=2)
     parser.add_argument("--job", help="specify worker thread to run", type=int, default=2)
     parser.add_argument("--slam", help="[1,3] slam impl", type=int, default=3)
-    parser.add_argument("--float", help="[f32, f64, f128]", type=str, default="f32")
+    parser.add_argument("--float", help="[f16 f32, f64, f128]", type=str, default="f32")
     parser.add_argument("--mpmath", help="[0 or 1]", type=int, default=0)
     args = parser.parse_args()
 
