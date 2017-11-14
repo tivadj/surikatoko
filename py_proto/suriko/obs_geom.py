@@ -86,7 +86,7 @@ def SE3AFromB(a_from_world, b_from_world):
 # v=(3x1)
 def skewSymmeticMat(v):
     assert len(v) == 3, "Provide three components vector v=[x,y,z]"
-    mat = np.array(((0, -v[2], v[1]), (v[2], 0, -v[0]), (-v[1], v[0], 0)))
+    mat = np.array(((0, -v[2], v[1]), (v[2], 0, -v[0]), (-v[1], v[0], 0)), dtype=type(v[0]))
     return mat
 
 def skewSymmeticMatWithAdapter(v, elem_conv_fun, result):
@@ -156,7 +156,8 @@ def RotMatNew(n, ang, check_log_SO3 = True):
     c = math.cos(ang)
     skew1 = skewSymmeticMat(n)
     skew2 = np.dot(skew1, skew1)
-    R = np.eye(3,3) + s*skew1 + (1-c)*skew2
+    el_type = type(n[0])
+    R = np.eye(3,3, dtype=el_type) + s*skew1 + (1-c)*skew2
     p_err = [""]
     assert IsSpecialOrthogonal(R, p_err), p_err[0]
     if check_log_SO3 and False: # TODO: doesn't work for ang=>316deg (300deg around axis=1 or -60deg around axis-1?)
@@ -176,7 +177,7 @@ def rotMat(n, ang, check_log_SO3 = True):
     suc, R = RotMatNew(n, ang, check_log_SO3)
     if suc:
         return R
-    return np.identity(4, dtype=type(n[0]))
+    return np.identity(3, dtype=type(n[0]))
 
 def RotMatFromAxisAngle(axis_angle, check_log_SO3 = True):
     ang = LA.norm(axis_angle)
@@ -218,12 +219,15 @@ def LogSO3New(rot_mat, check_rot_mat = True):
     cos_ang = clamp(cos_ang, -1, 1) # the cosine may be slightly off due to rounding errors
     sin_ang = math.sqrt(1.0-cos_ang**2)
 
+    el_type = type(rot_mat[0,0])
     # n=[0,0,0] ang=0 -> Identity[3x3]
-    tol = 1.0e-1 # should treat as zero values: 2e-4
+    tol = 1.0e-3 # should treat as zero values: 2e-4; non-zero values >= 0.054
+    if el_type == np.float16:
+        tol = 1.0e-2 # should treat as zero values: 1.446e-03
     if np.isclose(0, sin_ang, atol=tol):
         return False, None, None
 
-    n = np.zeros(3)
+    n = np.zeros(3, dtype=el_type)
     n[0] = rot_mat[2,1]-rot_mat[1,2]
     n[1] = rot_mat[0,2]-rot_mat[2,0]
     n[2] = rot_mat[1,0]-rot_mat[0,1]
@@ -234,8 +238,9 @@ def LogSO3New(rot_mat, check_rot_mat = True):
     n_len = LA.norm(n)
     n = n / n_len
 
+    ang = math.acos(cos_ang)
+
     if check_rot_mat:
-        ang = math.acos(cos_ang)
         rot_mat_new = rotMat(n, ang, check_log_SO3=False)
         # possible errors: 0.01332499, 2.97e-3, 4.47974432e-04, 1.950215e-5 error
         assert np.allclose(rot_mat, rot_mat_new, atol=tol), "initial rotation matrix doesn't persist the conversion n={} ang={} rotmat|rotmat_new|delta=\n{}\n{}\n{}"\
