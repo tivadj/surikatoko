@@ -1,16 +1,43 @@
+import sys
 import unittest
+
+import os
+
 from suriko.bundle_adjustment_kanatani_impl import *
 from suriko.mvg import PointLife
 from suriko.obs_geom import *
 from suriko.test_data_builder import CircusGridDataSet, ParseTestArgs
+#from suriko.testing import *
 import suriko.uivis
 import cv2
 
+def Triangulate3DPointHelper(pnt_track_list, proj_mat_list, pnt_id, debug=0):
+    """ :param proj_mat_list: list of projection P[3x4] matrices for each camera"""
+    pnt_ind = pnt_id
+    pnt_life = pnt_track_list[pnt_ind]
+    frames_count = len(proj_mat_list)
+
+    xs2D = []
+    proj_mats_per_frame = []
+    for frame_ind in range(0, frames_count):
+        x2D = pnt_life.points_list_pixel[frame_ind]
+        if x2D is None:
+            continue
+        xs2D.append(x2D)
+        P = proj_mat_list[frame_ind]
+        proj_mats_per_frame.append(P)
+
+    f0 = 1  # TODO: const f0, can it change?
+    return Triangulate3DPointByLeastSquares(xs2D, proj_mats_per_frame, f0, debug)
+
 class BundleAdjustmentKanataniTests(unittest.TestCase):
+#class BundleAdjustmentKanataniTests(suriko.testing.SurikoTestCase): # TODO: this doesn't pick up the tests
     def __init__(self, methodName='runTest'):
         super().__init__(methodName)
         self.debug = 3
         self.elem_type = np.float32
+        from suriko.testing import GetTestRootDir
+        self.tests_data_dir = GetTestRootDir()
 
     def test_normalization_normalize_nochanges_revert_leads_to_original_scene(self):
         cell_size = (0.5, 0.5, 0.5)
@@ -179,4 +206,85 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
 
         scene_ui.CloseAndShutDown()
 
+
+    def test_ba_dinosaur(self):
+        P_file_path = os.path.join(self.tests_data_dir, "oxfvisgeom/dinosaur/dinoPs_as_mat108x4.txt")
+
+        # [frames_count*3,4]
+        P_data = np.genfromtxt(P_file_path, delimiter='\t')
+
+        frames_count = int(P_data.shape[0]/3) # =36
+
+        proj_mat_list = []
+        camera_poses = []
+        K_first = None
+        for frame_ind in range(0, frames_count):
+            proj_mat = np.array(P_data[frame_ind*3:(frame_ind+1)*3, 0:4], dtype=self.elem_type)
+
+            scale, K, (R,t) = DecomposeProjMat(proj_mat)
+            if K_first is None: # all K from each proj mat are identical, because all shots are made with the same camera
+                K_first = K
+            proj_mat_list.append(proj_mat)
+            camera_poses.append(SE3Inv((R,t)))
+        assert not K_first is None, "frames_count>0"
+        # TODO: negative coordinate of principal point! v0=-1070.5155, why is that?
+        # K=[[  3.21741772e+03  -7.86099014e+01   2.89874390e+02]
+        #    [  0.00000000e+00   2.29247192e+03  -1.07051550e+03]
+        #    [  0.00000000e+00   0.00000000e+00   1.00000000e+00]]
+
+        #
+        pnts_file_path = os.path.join(self.tests_data_dir, "oxfvisgeom/dinosaur/viff.xy")
+
+        # delimiter=None because space and double space are used as separators
+        # [points_count x frames_count]
+        pnts_data = np.genfromtxt(pnts_file_path, delimiter=None)
+        points_count = pnts_data.shape[0] # =4983
+
+        pnt_track_list = []
+        for pnt_ind in range(0, points_count):
+            p = PointLife()
+            p.virtual_feat_id = 10000+pnt_ind
+            p.track_id = pnt_ind
+            p.points_list_pixel = [None] * frames_count
+
+            for frame_ind in range(0, frames_count):
+                x,y = pnts_data[pnt_ind, frame_ind*2:(frame_ind+1)*2]
+                if x == -1 or y == -1: # -1 means None
+                    continue
+                p.points_list_pixel[frame_ind] = np.array([x, y], dtype=self.elem_type)
+            pnt_track_list.append(p)
+
+        salient_points = []
+        for pnt_ind in range(0, points_count):
+            x3D = Triangulate3DPointHelper(pnt_track_list, proj_mat_list, pnt_ind)
+            salient_points.append(x3D)
+
+        # show scene
+        scene_ui = suriko.uivis.SceneViewerPyGame((640, 480), "dino points 3D", debug=self.debug)
+        scene_ui.AddScene(salient_points, camera_poses)
+        scene_ui.ShowOnDifferentThread()
+
+        # fix scene using bundle adjustment
+        salient_points_adj = salient_points.copy()
+        camera_poses_adj = camera_poses.copy()
+
+        #
+        ba = BundleAdjustmentKanatani(debug=self.debug, min_err_change_rel=None)
+        ba.max_hessian_factor = None
+        ba.naive_estimate_corrections = False
+        print("start bundle adjustment...")
+        converged, err_msg = ba.ComputeInplace(pnt_track_list, K_first, salient_points_adj, camera_poses_adj)
+        print("converged={} err_msg={}".format(converged, err_msg))
+
+        err_dec_ratio = ba.ErrDecreaseRatio()
+        print("err_dec_ratio={}".format(err_dec_ratio))
+
+        scene_ui.AddScene(salient_points_adj, camera_poses_adj)
+
+        print("err_noisy={}".format(ba.err_value_initial))
+        print("err_xnois={}".format(ba.err_value))
+
+        assert True or err_dec_ratio < 0.5, "Reprojection error was not decreased enough, err_dec_ratio={}".format(err_dec_ratio)
+
+        scene_ui.CloseAndShutDown()
 

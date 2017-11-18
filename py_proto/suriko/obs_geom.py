@@ -146,6 +146,57 @@ def IsSpecialOrthogonal(rot_mat, p_msg = None):
         return False
     return True
 
+def DecomposeProjMat(p3x4, check_post_cond=True):
+    """ Decomposes P[3x4] -> R[3x3],T[3],K[3x3] so that P=scale*K*Rt*[I|-T]
+    where K=matrix of intrinsic parameters
+    where R,T = euclidian motion from camera to world coordinates
+    source: "Bundle adjustment for 3-d reconstruction" Appendix A, Kanatani Sugaya 2010
+    """
+    # copy, because it may flip sign later
+    P_sign = 1
+    Q = p3x4[0:3, 0:3].copy()
+    q = p3x4[0:3, 3].copy()
+
+    # ensure that R will have positive determinant
+    Q_det = LA.det(Q)
+    if Q_det < 0:
+        P_sign = -1
+        Q = -Q
+        q = -q
+
+    # find translation T
+    Q_inv = LA.inv(Q)
+    t = -Q_inv.dot(q)
+
+    # find rotation R
+    QQt = Q.dot(Q.T)
+    # QQt is inverted to allow further use Cholesky decomposition to find K
+    QQt_inv = LA.inv(QQt)
+    C = LA.cholesky(QQt_inv)
+
+    # we need upper triangular matrix, but np.linalg.cholesky returns lower triangular
+    C = C.T
+
+    R = C.dot(Q).T
+
+    if check_post_cond:
+        pmsg = ['']
+        assert IsSpecialOrthogonal(R, pmsg), pmsg[0]
+
+    # find intrinsic parameters K
+    C_inv = LA.inv(C)
+    c_last = C_inv[2, 2]
+    K = C_inv / c_last
+
+    scale_factor = P_sign * c_last
+
+    check_post_cond = True
+    if check_post_cond:
+        P_back = scale_factor * K.dot(R.T).dot(np.hstack((np.eye(3), -t.reshape((3, 1)))))
+        diff = LA.norm(p3x4 - P_back)
+        assert diff < 1e-2, "Failed to decompose P[3x4]->R,T,K (diff={})".format(diff)
+    return scale_factor, K, (R, t)
+
 # Creates the rotation matrix around the vector @n by angle @ang in radians.
 # Using the Rodrigues formula.
 def RotMatNew(n, ang, check_log_SO3 = True):
@@ -368,3 +419,31 @@ def RotMatFromQuat(q, check_back_RtoQ=True):
             .format(R, q, q_back, q-q_back)
 
     return R
+
+def Triangulate3DPointByLeastSquares(xs2D, proj_mat_list, f0, debug):
+    """ Finds the 3D coordinate of a world point from a list of corresponding 2D pixels in multiple images.
+    The orientation of the camera for each shot is specified in the list of projection matrices.
+    """
+    frames_count = len(proj_mat_list)
+    assert frames_count == len(xs2D), "Provide two lists of 2D coordinates and projection matrices of the same length"
+
+    P0 = proj_mat_list[0]
+    el_type = type(P0[0,0])
+
+    # populate matrices A and B to solve for least squares
+    A = np.zeros((frames_count * 2, 3), dtype=el_type)
+    B = np.zeros(frames_count * 2, dtype=el_type)
+    for frame_ind in range(0, frames_count):
+        x2D = xs2D[frame_ind]
+        x, y = x2D
+        P = proj_mat_list[frame_ind]
+        A[frame_ind*2+0, 0:3] = [x*P[2,0] - f0*P[0,0], x*P[2,1] - f0*P[0,1], x*P[2,2] - f0*P[0,2]]
+        A[frame_ind*2+1, 0:3] = [y*P[2,0] - f0*P[1,0], y*P[2,1] - f0*P[1,1], y*P[2,2] - f0*P[1,2]]
+        B[frame_ind*2+0] = -(x*P[2,3] - f0*P[0,3])
+        B[frame_ind*2+1] = -(y*P[2,3] - f0*P[1,3])
+    x3D, residuals, rank, s = LA.lstsq(A,B)
+    if debug >= 3:
+        diff = LA.norm(A.dot(x3D)-B)
+        if diff > 0.1:
+            print("diff={} frames_count={} residuals={} s={}".format(diff, frames_count, residuals, s))
+    return x3D

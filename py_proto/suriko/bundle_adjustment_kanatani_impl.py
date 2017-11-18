@@ -213,8 +213,8 @@ class BundleAdjustmentKanatani:
         self.framei_from_world_RT_list = None
         self.elem_type = None
         self.min_err_change_abs = min_err_change_abs
-        self.min_err_change_rel = min_err_change_rel
-        self.max_iter = max_iter
+        self.min_err_change_rel = min_err_change_rel # set None to skip the check of relative change of the proj error
+        self.max_iter = max_iter # set None to skip the check of the maximum number of iterations
         self.max_hessian_factor = 1e6 # set None to skip the check of the hessian's factor
         self.debug = debug
         # switches
@@ -394,11 +394,12 @@ class BundleAdjustmentKanatani:
                 return True, err_msg  # success
 
             # stop condition: change of error related to the first error
-            err_value_change_rel = math.fabs(err_value_change/self.err_value)
-            if err_value_change_rel < self.min_err_change_rel:
-                if self.debug >= 3:
-                    print("err_value_change_rel={} min_err_change_rel={}".format(err_value_change_rel, self.min_err_change_rel))
-                return True, err_msg # success
+            if not self.min_err_change_rel is None:
+                err_value_change_rel = math.fabs(err_value_change/self.err_value)
+                if err_value_change_rel < self.min_err_change_rel:
+                    if self.debug >= 3:
+                        print("err_value_change_rel={} min_err_change_rel={}".format(err_value_change_rel, self.min_err_change_rel))
+                    return True, err_msg # success
 
             hessian_factor /= 10  # prefer more the Gauss-Newton
             it += 1
@@ -974,7 +975,7 @@ class BundleAdjustmentKanatani:
             diff = grads - b_gaps
             small_value = LA.norm(diff)
             if not small_value < 1 and self.debug >= 3:
-                print("warning: naive: should be small, small_value={} hessian_factor={}".format(small_value, hessian_factor))
+                print("warning: two-phases: should be small, small_value={} hessian_factor={}".format(small_value, hessian_factor))
 
     def __FillCorrectionsPlainFromGaps(self, points_count, corrections_gaps, corrections_plain):
         """ copy corrections with gaps to plain corrections """
