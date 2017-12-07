@@ -35,9 +35,10 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
     def __init__(self, methodName='runTest'):
         super().__init__(methodName)
         self.debug = 3
-        self.elem_type = np.float32
+        self.elem_type = np.float64
         from suriko.testing import GetTestRootDir
         self.tests_data_dir = GetTestRootDir()
+        self.rand_seed = 332
 
     def test_normalization_normalize_nochanges_revert_leads_to_original_scene(self):
         cell_size = (0.5, 0.5, 0.5)
@@ -128,8 +129,9 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
 
         salient_points = ds.GetWorldSalientPoints()
         cam_mat_pixel_from_meter = ds.GetCamMat()
+        cam_mat_pixel_from_meter_list = [cam_mat_pixel_from_meter] * len(data)
 
-        genuine_scene_err = BundleAdjustmentKanataniReprojError(pnt_track_list, cam_mat_pixel_from_meter, salient_points, camera_poses)
+        genuine_scene_err = BundleAdjustmentKanataniReprojError(pnt_track_list, salient_points, camera_poses, cam_mat_pixel_from_meter=cam_mat_pixel_from_meter)
         print("genuine scene reproj error={}".format(genuine_scene_err))
 
         salient_points_norm = salient_points.copy()
@@ -180,18 +182,39 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
 
         scene_ui.AddScene(salient_points_noisy, camera_poses_noisy)
 
-        noise_scene_err = BundleAdjustmentKanataniReprojError(pnt_track_list, cam_mat_pixel_from_meter, salient_points_noisy, camera_poses_noisy)
+        variable_intrinsics = True
+        if variable_intrinsics:
+            # individual K for each frame
+            cam_inerse_orient_rt = None
+            cam_inerse_orient_rt_list = cam_mat_pixel_from_meter_list
+        else:
+            # K=const
+            cam_inerse_orient_rt = cam_mat_pixel_from_meter
+            cam_inerse_orient_rt_list = None
+
+        noise_scene_err = BundleAdjustmentKanataniReprojError(pnt_track_list, salient_points_noisy, camera_poses_noisy,
+                                                              cam_mat_pixel_from_meter=cam_inerse_orient_rt,
+                                                              cam_mat_pixel_from_meter_list=cam_inerse_orient_rt_list)
         print("noise scene reproj error={}".format(noise_scene_err))
 
         salient_points_adj = salient_points_noisy.copy()
         camera_poses_adj = camera_poses_noisy.copy()
 
+        check_derivatives = False
+
         ba = BundleAdjustmentKanatani(debug=self.debug)
+        ba.max_hessian_factor = None
         ba.debug_processX = add_noiseX
         ba.debug_processR = add_noiseR
         ba.debug_processT = add_noiseT
         ba.naive_estimate_corrections = False
-        converged, err_msg = ba.ComputeInplace(pnt_track_list, cam_mat_pixel_from_meter, salient_points_adj, camera_poses_adj)
+        ba.compute_derivatives_mode = "closeform" # "closeform", "finitedifference"
+        ba.estimate_corrections_mode = "twophases" # "naive","twophases","twophases+check_with_naive"
+        ba.same_focal_length_xy = False
+        converged, err_msg = ba.ComputeInplace(pnt_track_list, salient_points_adj, camera_poses_adj,
+                                               cam_mat_pixel_from_meter=cam_inerse_orient_rt,
+                                               cam_mat_pixel_from_meter_list=cam_inerse_orient_rt_list,
+                                               check_derivatives=check_derivatives)
         print("converged={} err_msg={}".format(converged, err_msg))
 
         err_dec_ratio = ba.ErrDecreaseRatio()
@@ -214,18 +237,31 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         P_data = np.genfromtxt(P_file_path, delimiter='\t')
 
         frames_count = int(P_data.shape[0]/3) # =36
+        print("frames_count={}".format(frames_count))
+
+        same_focal_length_xy = False
 
         proj_mat_list = []
         camera_poses = []
         K_first = None
+        K_list = []
         for frame_ind in range(0, frames_count):
             proj_mat = np.array(P_data[frame_ind*3:(frame_ind+1)*3, 0:4], dtype=self.elem_type)
 
             scale, K, (R,t) = DecomposeProjMat(proj_mat)
+            if same_focal_length_xy:
+                favg = K[0,0] + K[1,1]
+                K[0,0] = K[1,1] = favg
+
             if K_first is None: # all K from each proj mat are identical, because all shots are made with the same camera
                 K_first = K
             proj_mat_list.append(proj_mat)
             camera_poses.append(SE3Inv((R,t)))
+            K_list.append(K)
+
+            #diff_to_first = LA.norm(K_first-K)
+            #diff_to_first_uv = LA.norm(K_first[0:2,2]-K[0:2,2])
+            #print("diff_to_first={} diff_to_first_uv={}".format(diff_to_first,diff_to_first_uv))
         assert not K_first is None, "frames_count>0"
         # TODO: negative coordinate of principal point! v0=-1070.5155, why is that?
         # K=[[  3.21741772e+03  -7.86099014e+01   2.89874390e+02]
@@ -239,12 +275,35 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         # [points_count x frames_count]
         pnts_data = np.genfromtxt(pnts_file_path, delimiter=None)
         points_count = pnts_data.shape[0] # =4983
+        print("points_count={}".format(points_count))
+
+        debug_subset_data = False # reduce large dataset to process bundle adjustment quicker
+        if debug_subset_data:
+            take_ratio = 0.005
+            np.random.seed(self.rand_seed)
+            points_active = np.random.uniform(0, 1, size=points_count) < take_ratio
+        else:
+            points_active = np.ones(points_count, dtype=np.bool)
 
         pnt_track_list = []
+        pnt_ind_filtered = 0
+        visib_pnts_count = 0
         for pnt_ind in range(0, points_count):
+            if not points_active[pnt_ind]:
+                continue
+
+            visible_in_frames_count = 0
+            for frame_ind in range(0, frames_count):
+                x, y = pnts_data[pnt_ind, frame_ind * 2:(frame_ind + 1) * 2]
+                if x == -1 or y == -1:  # -1 means None
+                    continue
+                visible_in_frames_count += 1
+
+            if False and visible_in_frames_count < 6: continue
+
             p = PointLife()
             p.virtual_feat_id = 10000+pnt_ind
-            p.track_id = pnt_ind
+            p.track_id = pnt_ind_filtered
             p.points_list_pixel = [None] * frames_count
 
             for frame_ind in range(0, frames_count):
@@ -252,12 +311,49 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
                 if x == -1 or y == -1: # -1 means None
                     continue
                 p.points_list_pixel[frame_ind] = np.array([x, y], dtype=self.elem_type)
+                visib_pnts_count += 1
             pnt_track_list.append(p)
+            pnt_ind_filtered += 1
+        print("total number of visiable points in all frames: {}".format(visib_pnts_count))
+
+        print("frames_count: {}".format(frames_count))
+        points_count = len(pnt_track_list)
+        print("points_count: {}".format(points_count))
 
         salient_points = []
+        pnt_ind_filtered = 0
         for pnt_ind in range(0, points_count):
-            x3D = Triangulate3DPointHelper(pnt_track_list, proj_mat_list, pnt_ind)
+            if not points_active[pnt_ind]:
+                continue
+            x3D = Triangulate3DPointHelper(pnt_track_list, proj_mat_list, pnt_ind_filtered)
             salient_points.append(x3D)
+            pnt_ind_filtered += 1
+
+        reproj_errP = ReprojError(pnt_track_list, proj_mat_list, salient_points)
+        print("reproj errorP ={} pix".format(reproj_errP))
+
+        reproj_err_Ks = BundleAdjustmentKanataniReprojErrorNew(pnt_track_list, K_list, salient_points, camera_poses)
+        print("reproj errorKs={} pix".format(reproj_err_Ks))
+
+        reproj_err = BundleAdjustmentKanataniReprojError(pnt_track_list, salient_points, camera_poses, cam_mat_pixel_from_meter=K_first)
+        print("reproj errorK1={} pix".format(reproj_err))
+
+        # debug projection
+        debug_reproj_err = False
+        if debug_reproj_err:
+            for pnt_ind in range(0, points_count):
+                x3D = salient_points[pnt_ind]
+                for frame_ind in range(0, frames_count):
+                    x, y = pnts_data[pnt_ind, frame_ind * 2:(frame_ind + 1) * 2]
+                    if x == -1 or y == -1:  # -1 means None
+                        continue
+                    x2Dorig = np.array([x, y], dtype=self.elem_type)
+                    P = proj_mat_list[frame_ind]
+                    x2Dnew = P.dot(np.hstack((x3D, 1)))
+                    x2Dnew = x2Dnew / x2Dnew[-1]
+                    diff_pix = LA.norm(x2Dnew[0:2] - x2Dorig)
+                    if diff_pix > 1:
+                        print(diff_pix)
 
         # show scene
         scene_ui = suriko.uivis.SceneViewerPyGame((640, 480), "dino points 3D", debug=self.debug)
@@ -268,12 +364,30 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         salient_points_adj = salient_points.copy()
         camera_poses_adj = camera_poses.copy()
 
+        variable_intrinsics = False
+        if variable_intrinsics:
+            # individual K for each frame
+            cam_mat_pixel_from_meter = None
+            cam_mat_pixel_from_meter_list = K_list
+        else:
+            # K=const
+            cam_mat_pixel_from_meter = K_first
+            cam_mat_pixel_from_meter_list = None
+
+        check_derivatives = False
+
         #
         ba = BundleAdjustmentKanatani(debug=self.debug, min_err_change_rel=None)
         ba.max_hessian_factor = None
-        ba.naive_estimate_corrections = False
+        ba.compute_derivatives_mode = "closeform" # "closeform", "finitedifference"
+        ba.estimate_corrections_mode = "twophases" # "naive","twophases","twophases+check_with_naive"
+        ba.same_focal_length_xy = same_focal_length_xy
+
         print("start bundle adjustment...")
-        converged, err_msg = ba.ComputeInplace(pnt_track_list, K_first, salient_points_adj, camera_poses_adj)
+        converged, err_msg = ba.ComputeInplace(pnt_track_list, salient_points_adj, camera_poses_adj,
+                                               cam_mat_pixel_from_meter=cam_mat_pixel_from_meter,
+                                               cam_mat_pixel_from_meter_list=cam_mat_pixel_from_meter_list,
+                                               check_derivatives=check_derivatives)
         print("converged={} err_msg={}".format(converged, err_msg))
 
         err_dec_ratio = ba.ErrDecreaseRatio()

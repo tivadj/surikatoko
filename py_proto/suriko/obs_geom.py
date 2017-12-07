@@ -186,6 +186,7 @@ def DecomposeProjMat(p3x4, check_post_cond=True):
     # find intrinsic parameters K
     C_inv = LA.inv(C)
     c_last = C_inv[2, 2]
+    assert not np.isclose(0, c_last), "division by zero, c_last={}".format(c_last)
     K = C_inv / c_last
 
     scale_factor = P_sign * c_last
@@ -237,6 +238,12 @@ def RotMatFromAxisAngle(axis_angle, check_log_SO3 = True):
     if not suc:
         return False,None
     return True, R
+
+def RotMatFromAxisAngleOrIdentity(axis_angle, check_log_SO3 = True):
+    suc, R = RotMatFromAxisAngle(axis_angle, check_log_SO3)
+    if suc:
+        return R
+    return np.identity(3, dtype=type(axis_angle[0]))
 
 # Fills 4x4 transformation matrix with R,T components.
 # rot_mat[3x3]
