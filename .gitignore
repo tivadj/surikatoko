@@ -1,0 +1,10 @@
+# CLion
+.idea
+cmake-build-*
+
+# Visual Studio
+.vs
+CMakeSettings.json
+
+# specific to this project
+build-*

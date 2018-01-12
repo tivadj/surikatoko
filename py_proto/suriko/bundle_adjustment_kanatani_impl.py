@@ -80,10 +80,6 @@ class WorldNormalizer:
         self.T0 = None
         self.world_scale = None
 
-    def __InitialComponentShift(self, rt0, rt1):
-        SE3AFromB(rt0, rt1)
-        SE3Compose(rt0, SE3Inv(rt1))
-
     def NormalizeWorldInplaceInternal(self):
         """ An optimization problem is indeterminant as is, so the boundary condition is introduced:
         R0=Identity, T0=zeros(3), t2y=1. So the input world's structure is transformed (normalized) into conformed one.
@@ -373,7 +369,7 @@ def BundleAdjustmentKanataniReprojError(points_life, world_pnts, framei_from_wor
             pnt3D_world = world_pnts[pnt_life.track_id]
             if pnt3D_world is None: continue
             pnt_id = pnt_life.track_id
-            assert not pnt_id is None, "Required point track id to identif the track"
+            assert not pnt_id is None, "Required point track id to identify the track"
             bundle_pnt_ids.append(pnt_id)
 
     if not overwrite_track_id is None:

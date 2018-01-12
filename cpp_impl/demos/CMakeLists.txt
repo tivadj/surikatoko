@@ -14,18 +14,14 @@ message(STATUS "PLATFORM_SHORT_NAME=${PLATFORM_SHORT_NAME}") #
 #include_directories(${engine_INCLUDE_DIRS})
 #message(STATUS "engine_INCLUDE_DIRS=${engine_INCLUDE_DIRS}") #
 
-find_package(Eigen3 REQUIRED)
-message(STATUS "EIGEN3_INCLUDE_DIR=${EIGEN3_INCLUDE_DIR}") #
-include_directories(${EIGEN3_INCLUDE_DIR})
+add_executable(demos
+        main.cpp
+        demo-bundle-adj-dinosaur.cpp)
 
+target_link_libraries(demos PRIVATE engine)
+target_include_directories(demos PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
 
-#
-set(srcs main.cpp demo-bundle-adj-dinosaur.cpp)
-add_executable(demos ${srcs})
+target_include_directories(demos PRIVATE ${Boost_INCLUDE_DIRS})
+target_link_libraries(demos PRIVATE ${Boost_LIBRARIES})
 
-target_link_libraries(demos engine)
-
-#target_link_libraries(demos engine)
-find_package(Boost REQUIRED COMPONENTS filesystem)
-include_directories(${Boost_INCLUDE_DIRS})
-target_link_libraries(demos ${Boost_LIBRARIES})
+target_include_directories(demos PRIVATE ${EIGEN3_INCLUDE_DIR})

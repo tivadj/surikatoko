@@ -12,22 +12,25 @@ message("PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}") #
 
 #
 set(lib_hdrs
-        ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.hpp
-        ${PROJECT_SOURCE_DIR}/include/suriko/bundle-adj-kanatani.hpp
-        ${PROJECT_SOURCE_DIR}/include/suriko/eigen-helpers.hpp
-        ${PROJECT_SOURCE_DIR}/include/suriko/obs-geom.hpp
-        ${PROJECT_SOURCE_DIR}/include/suriko/mat-serialization.hpp
+        ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/bundle-adj-kanatani.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/obs-geom.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/mat-serialization.h
         ${PROJECT_SOURCE_DIR}/include/suriko/rt-config.h
         )
-#set(src_headers
-#        include/suriko
-#        )
+set(lib_srcs
+        ${PROJECT_SOURCE_DIR}/src/bundle-adj-kanatani.cpp
+        ${PROJECT_SOURCE_DIR}/src/mat-serialization.cpp
+        ${PROJECT_SOURCE_DIR}/src/obs-geom.cpp
+        )
 
-#add_library(engine ${src_headers}) # NOTE: we do not need library, because there are no *.cpp files
-add_library(engine INTERFACE)
-target_sources(engine INTERFACE ${lib_hdrs})
+add_library(engine)
+target_sources(engine
+        PRIVATE ${lib_srcs}
+        INTERFACE ${lib_hdrs})
 #export(PACKAGE ${PROJECT_NAME})
 
-target_include_directories(engine INTERFACE
+target_include_directories(engine PRIVATE
         ${PROJECT_SOURCE_DIR}/include)
-#include_directories(${src_headers})
+
+target_include_directories(engine PRIVATE ${EIGEN3_INCLUDE_DIR})

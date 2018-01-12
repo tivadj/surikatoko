@@ -6,3 +6,7 @@
       : __assert_fail (#expr, __FILE__, __LINE__, __ASSERT_FUNCTION))
 
 static const bool kSurikoDebug = true;
+
+namespace suriko {
+typedef double Scalar;
+}

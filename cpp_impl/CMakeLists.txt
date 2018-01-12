@@ -45,9 +45,16 @@ set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
 #endif()
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
-add_subdirectory(suriko-prj)
-add_subdirectory(demos)
-
 set(Boost_USE_STATIC_LIBS OFF)
 set(Boost_USE_MULTITHREADED ON)
 set(Boost_USE_STATIC_RUNTIME OFF)
+find_package(Boost REQUIRED COMPONENTS filesystem)
+message(STATUS "Boost_INCLUDE_DIRS=${Boost_INCLUDE_DIRS}") #
+message(STATUS "Boost_LIBRARIES=${Boost_LIBRARIES}") #
+
+find_package(Eigen3 REQUIRED)
+message(STATUS "EIGEN3_INCLUDE_DIR=${EIGEN3_INCLUDE_DIR}") #
+
+add_subdirectory(demos)
+add_subdirectory(suriko-prj)
+

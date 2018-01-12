@@ -10,9 +10,10 @@
 //#include <experimental/filesystem>
 #include <boost/filesystem.hpp>
 #include <Eigen/Dense>
-#include "suriko/bundle-adj-kanatani.hpp"
-#include "suriko/obs-geom.hpp"
-#include "suriko/mat-serialization.hpp"
+#include "suriko/rt-config.h"
+#include "suriko/bundle-adj-kanatani.h"
+#include "suriko/obs-geom.h"
+#include "suriko/mat-serialization.h"
 namespace suriko_demos
 {
 using namespace std;
@@ -21,16 +22,15 @@ using namespace boost::filesystem;
 using Eigen::MatrixXd;
 using namespace suriko;
 
-template <typename Scalar>
 void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff_num_rows, size_t viff_num_cols,
-                             CornerTrackRepository<Scalar> *track_rep)
+                             CornerTrackRepository *track_rep)
 {
     size_t points_count = viff_num_rows;
     size_t frames_count = viff_num_cols/2;
     size_t next_track_id = 0;
     for (size_t pnt_ind = 0; pnt_ind < points_count; ++pnt_ind)
     {
-        CornerTrack<Scalar> track;
+        CornerTrack track;
 
         for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
         {
@@ -39,7 +39,7 @@ void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff
             auto y = viff_data_by_row[i+1];
             if (x == -1 || y == -1) continue;
 
-            track.AddCorner(frame_ind, suriko::Point2<Scalar>(x,y));
+            track.AddCorner(frame_ind, suriko::Point2(x,y));
         }
         if (!track.HasCorners()) continue; // track without registered corners
 
@@ -92,7 +92,7 @@ int DinoDemo(int argc, char* argv[])
     cout <<"frames_count=" <<frames_count <<endl;
 
     vector<Eigen::Matrix<Scalar,3,4>> proj_mat_per_frame;
-    vector<SE3Transform<Scalar>> inverse_orient_cam_per_frame;
+    vector<SE3Transform> inverse_orient_cam_per_frame;
     vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mat_per_frame; // K
 
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
@@ -103,7 +103,7 @@ int DinoDemo(int argc, char* argv[])
 
         Scalar scale_factor;
         Eigen::Matrix<Scalar,3,3> K;
-        SE3Transform<Scalar> direct_orient_cam;
+        SE3Transform direct_orient_cam;
         std::tie(scale_factor, K, direct_orient_cam) = DecomposeProjMat(proj_mat);
 
         intrinsic_cam_mat_per_frame.push_back(K);
@@ -128,16 +128,16 @@ int DinoDemo(int argc, char* argv[])
         return 1;
     }
 
-    CornerTrackRepository<Scalar> track_rep;
+    CornerTrackRepository track_rep;
     PopulateCornersPerFrame(viff_data_by_row, viff_num_rows, viff_num_cols, &track_rep);
 
     vector<size_t> point_track_ids;
     track_rep.PopulatePointTrackIds(&point_track_ids);
 
     // triangulate 3D points
-    vector<Point2<Scalar>> one_pnt_corner_per_frame;
+    vector<Point2> one_pnt_corner_per_frame;
     vector<Eigen::Matrix<Scalar,3,4>> one_pnt_proj_mat_per_frame;
-    FragmentMap<Scalar> map;
+    FragmentMap map;
     for (size_t pnt_track_id : point_track_ids)
     {
         const auto& corner_track = track_rep.GetByPointId(pnt_track_id);
@@ -146,18 +146,18 @@ int DinoDemo(int argc, char* argv[])
         one_pnt_proj_mat_per_frame.clear();
         for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
         {
-            optional<Point2<Scalar>> corner = corner_track.GetCorner(frame_ind);
+            optional<Point2> corner = corner_track.GetCorner(frame_ind);
             if (!corner.has_value())
                 continue;
             one_pnt_corner_per_frame.push_back(corner.value());
             one_pnt_proj_mat_per_frame.push_back(proj_mat_per_frame[frame_ind]);
         }
         Scalar f0 = 1;
-        Point3<Scalar> x3D = Triangulate3DPointByLeastSquares(one_pnt_corner_per_frame, one_pnt_proj_mat_per_frame, f0, debug);
+        Point3 x3D = Triangulate3DPointByLeastSquares(one_pnt_corner_per_frame, one_pnt_proj_mat_per_frame, f0, debug);
         map.AddSalientPoint(pnt_track_id, x3D);
     }
 
-    auto err_initial = BundleAdjustmentKanatani<Scalar>::ReprojError(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
+    auto err_initial = BundleAdjustmentKanatani::ReprojError(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
     cout <<"err_initial=" <<err_initial <<endl;
 
     bool debug_reproj_err = false;
@@ -166,7 +166,7 @@ int DinoDemo(int argc, char* argv[])
         for (size_t point_track_id : point_track_ids) {
             const auto &point_track = track_rep.GetByPointId(point_track_id);
 
-            Point3<Scalar> x3D = map.GetSalientPoint(point_track_id);
+            Point3 x3D = map.GetSalientPoint(point_track_id);
             Eigen::Matrix<Scalar,4,1> x3D_homog(x3D[0], x3D[1], x3D[2], 1);
 
             for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind) {
@@ -189,7 +189,7 @@ int DinoDemo(int argc, char* argv[])
 
     bool check_derivatives = true;
 
-    BundleAdjustmentKanatani<Scalar> ba;
+    BundleAdjustmentKanatani ba;
 
     cout << "start bundle adjustment..." <<endl;
     op = ba.ComputeInplace(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame, check_derivatives);
