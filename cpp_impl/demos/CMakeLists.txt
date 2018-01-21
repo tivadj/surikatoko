@@ -18,10 +18,12 @@ add_executable(demos
         main.cpp
         demo-bundle-adj-dinosaur.cpp)
 
-target_link_libraries(demos PRIVATE engine)
+target_link_libraries(demos engine)
 target_include_directories(demos PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
 
 target_include_directories(demos PRIVATE ${Boost_INCLUDE_DIRS})
-target_link_libraries(demos PRIVATE ${Boost_LIBRARIES})
+target_link_libraries(demos ${Boost_LIBRARIES})
+#target_link_libraries(demos Boost::filesystem)
 
-target_include_directories(demos PRIVATE ${EIGEN3_INCLUDE_DIR})
+#target_include_directories(demos PRIVATE ${EIGEN3_INCLUDE_DIR})
+target_link_libraries (demos Eigen3::Eigen)

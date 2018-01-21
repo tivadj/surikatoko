@@ -1,10 +1,11 @@
 # CLion
-.idea
+.idea*
 cmake-build-*
 
 # Visual Studio
 .vs
 CMakeSettings.json
+CppProperties.json
 
 # specific to this project
 build-*

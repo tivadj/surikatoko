@@ -55,7 +55,8 @@ int DinoDemo(int argc, char* argv[])
     if (argc >= 2)
         test_data = argv[1];
 
-    cout <<"test_data=" <<test_data <<endl;
+	boost::filesystem::path test_data_path = boost::filesystem::absolute(test_data).normalize();
+	cout <<"test_data=" << test_data_path <<endl;
 
     int debug = 3;
 
@@ -75,8 +76,7 @@ int DinoDemo(int argc, char* argv[])
     m2(1,1) = m2(1,0) + m2(0,1);
     std::cout << m2 << std::endl;
 
-    auto proj_mats_file_path = (current_path() / test_data /
-            "oxfvisgeom/dinosaur/dinoPs_as_mat108x4.txt").normalize();
+    auto proj_mats_file_path = (test_data_path / "oxfvisgeom/dinosaur/dinoPs_as_mat108x4.txt").normalize();
 
     vector<Scalar> P_data_by_row;
     size_t P_num_rows, P_num_cols;
@@ -112,7 +112,7 @@ int DinoDemo(int argc, char* argv[])
         inverse_orient_cam_per_frame.push_back(inverse_orient_cam);
     }
 
-    auto viff_mats_file_path = (current_path() / test_data / "oxfvisgeom/dinosaur/viff.xy").normalize();
+    auto viff_mats_file_path = (test_data_path / "oxfvisgeom/dinosaur/viff.xy").normalize();
     vector<Scalar> viff_data_by_row;
     size_t viff_num_rows, viff_num_cols;
     op= ReadMatrixFromFile(viff_mats_file_path, ' ', &viff_data_by_row, &viff_num_rows, &viff_num_cols, &err_msg);
@@ -128,6 +128,9 @@ int DinoDemo(int argc, char* argv[])
         return 1;
     }
 
+    size_t points_count = viff_num_rows; // =4983
+    cout << "points_count=" <<points_count <<endl;
+
     CornerTrackRepository track_rep;
     PopulateCornersPerFrame(viff_data_by_row, viff_num_rows, viff_num_cols, &track_rep);
 
@@ -140,7 +143,7 @@ int DinoDemo(int argc, char* argv[])
     FragmentMap map;
     for (size_t pnt_track_id : point_track_ids)
     {
-        const auto& corner_track = track_rep.GetByPointId(pnt_track_id);
+        const auto& corner_track = track_rep.GetPointTrackById(pnt_track_id);
 
         one_pnt_corner_per_frame.clear();
         one_pnt_proj_mat_per_frame.clear();
@@ -160,11 +163,11 @@ int DinoDemo(int argc, char* argv[])
     auto err_initial = BundleAdjustmentKanatani::ReprojError(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
     cout <<"err_initial=" <<err_initial <<endl;
 
-    bool debug_reproj_err = false;
+	bool debug_reproj_err = false;
     if (debug_reproj_err)
     {
         for (size_t point_track_id : point_track_ids) {
-            const auto &point_track = track_rep.GetByPointId(point_track_id);
+            const auto &point_track = track_rep.GetPointTrackById(point_track_id);
 
             Point3 x3D = map.GetSalientPoint(point_track_id);
             Eigen::Matrix<Scalar,4,1> x3D_homog(x3D[0], x3D[1], x3D[2], 1);

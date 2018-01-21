@@ -8,7 +8,7 @@ message(STATUS "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}") #
 message(STATUS "CMAKE_SIZEOF_VOID_P=${CMAKE_SIZEOF_VOID_P}") #
 message(STATUS "PROJECT_ARCH=${PROJECT_ARCH}") #
 message(STATUS "PLATFORM_SHORT_NAME=${PLATFORM_SHORT_NAME}") #
-message("PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}") #
+message(STATUS "PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}") #
 
 #
 set(lib_hdrs
@@ -26,11 +26,17 @@ set(lib_srcs
 
 add_library(engine)
 target_sources(engine
-        PRIVATE ${lib_srcs}
-        INTERFACE ${lib_hdrs})
-#export(PACKAGE ${PROJECT_NAME})
+        PRIVATE ${lib_srcs} ${lib_hdrs})
 
 target_include_directories(engine PRIVATE
         ${PROJECT_SOURCE_DIR}/include)
 
-target_include_directories(engine PRIVATE ${EIGEN3_INCLUDE_DIR})
+#target_include_directories(engine PRIVATE ${Boost_INCLUDE_DIRS})
+#target_link_libraries(engine PRIVATE ${Boost_LIBRARIES})
+target_link_libraries(engine PRIVATE Boost::filesystem Boost::diagnostic_definitions Boost::disable_autolinking)
+message(STATUS "Boost_FILESYSTEM_LIBRARY_DEBUG=${Boost_FILESYSTEM_LIBRARY_DEBUG}")
+
+#target_include_directories(engine PRIVATE ${EIGEN3_INCLUDE_DIR})
+target_link_libraries (engine PRIVATE Eigen3::Eigen)
+
+target_link_libraries(engine PRIVATE GuidelineGSL)

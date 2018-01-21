@@ -1,9 +1,11 @@
 #include <string>
 #include <array>
+#include <algorithm> // std::fill
 #include <vector>
 #include <optional>
 #include <cmath> // std::isnan
 #include <iostream>
+#include <gsl/span>
 #include <Eigen/Dense>
 #include "suriko/approx-alg.h"
 #include "suriko/bundle-adj-kanatani.h"
@@ -211,15 +213,28 @@ bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams
     return true;
 }
 
-/// Performs Bundle adjustment (BA) inplace. Iteratively shifts world points and cameras position and orientation so
-/// that the reprojection error is minimized.
-/// TODO: think about it: the synthetic scene, corrupted with noise, probably will not be 'repaired' (adjusted) to zero reprojection error.
-/// source: "Bundle adjustment for 3-d reconstruction" Kanatani Sugaya 2010
-bool BundleAdjustmentKanatani::ReprojError(const FragmentMap& map,
+class SalientPointPatch
+{
+    size_t point_track_id_;
+    suriko::Point3 pnt3D_world_;
+public:
+    SalientPointPatch(size_t point_track_id, const Point3 &pnt3D_world)
+            : point_track_id_(point_track_id),
+              pnt3D_world_(pnt3D_world) {}
+    size_t PointTrackId() const{
+        return point_track_id_;
+    }
+    const suriko::Point3& PatchedSalientPoint() const{
+        return pnt3D_world_;
+    }
+};
+
+Scalar ReprojErrorWithOverlap(const FragmentMap& map,
                         const std::vector<SE3Transform>& inverse_orient_cams,
                         const CornerTrackRepository& track_rep,
                         const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
-                        const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats)
+                        const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
+                        const SalientPointPatch* point_patch)
 {
     assert(intrinsic_cam_mats != nullptr);
 
@@ -242,7 +257,11 @@ bool BundleAdjustmentKanatani::ReprojError(const FragmentMap& map,
 
             suriko::Point2 corner_pix = corner.value();
 
-            suriko::Point3 x3D = map.GetSalientPoint(point_track.TrackId);
+            suriko::Point3 x3D(0,0,0);
+            if (point_patch != nullptr && point_track.TrackId == point_patch->PointTrackId())
+                x3D = point_patch->PatchedSalientPoint();
+            else
+                x3D = map.GetSalientPoint(point_track.TrackId);
 
             suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, x3D);
             suriko::Point3 x3D_pix = suriko::Point3(K * x3D_cam.Mat()); // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
@@ -254,19 +273,24 @@ bool BundleAdjustmentKanatani::ReprojError(const FragmentMap& map,
             Scalar y = x3D_pix[1] / x3D_pix[2];
 
             Scalar one_err = Sqr(x - corner_pix[0]) + Sqr(y - corner_pix[1]);
-            if (one_err > 10)
-            {
-                std::cout <<" pnt_track_id" <<point_track.TrackId;
-            }
-            std::cout <<"err_sum=" <<err_sum <<std::endl;
             SRK_ASSERT(std::isfinite(one_err));
 
             err_sum += one_err;
         }
-        std::cout <<err_sum <<std::endl;
     }
     SRK_ASSERT(std::isfinite(err_sum));
     return err_sum;
+}
+
+Scalar BundleAdjustmentKanatani::ReprojError(const FragmentMap& map,
+                        const std::vector<SE3Transform>& inverse_orient_cams,
+                        const CornerTrackRepository& track_rep,
+                        const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
+                        const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats)
+{
+    SalientPointPatch* point_patch = nullptr;
+    return ReprojErrorWithOverlap(map, inverse_orient_cams, track_rep,shared_intrinsic_cam_mat, intrinsic_cam_mats,
+                                  point_patch);
 }
 
 /// :return: True if optimization converges successfully.
@@ -294,6 +318,18 @@ bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
     if (!normalize_op)
         return false;
 
+    //
+    frame_vars_ = 3;
+
+    // allocate space
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
+
+    gradE_finite_diff.resize(points_count*kPointVars + frames_count*frame_vars_); // [3*points_count+10*frames_count]
+    deriv_second_point_finite_diff.resize(points_count*kPointVars, kPointVars); // [3*points_count,3]
+    deriv_second_frame_finite_diff.resize(frames_count*frame_vars_, frame_vars_); // [10*frames_count,10]
+    deriv_second_pointframe_finite_diff.resize(points_count*kPointVars, frames_count*frame_vars_); // [3*points_count,10*frames_count]
+
     bool result = ComputeOnNormalizedWorld();
 
     if (kSurikoDebug)
@@ -308,11 +344,81 @@ bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
     }
     scene_normalizer_.RevertNormalization();
 
-    return true;
+    return result;
 }
 
 bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
 {
+    Scalar finite_diff_eps = 1e-5;
+    ComputeDerivativesFiniteDifference(finite_diff_eps, &gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff);
     return true;
 }
+
+void BundleAdjustmentKanatani::ComputeDerivativesFiniteDifference(
+        Scalar finite_diff_eps,
+        std::vector<Scalar>* gradE,
+        EigenDynMat* deriv_second_point,
+        EigenDynMat* deriv_second_frame,
+        EigenDynMat* deriv_second_pointframe)
+{
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
+
+    static const Scalar kNan = std::numeric_limits<Scalar>::quiet_NaN();
+    if (kSurikoDebug) {
+        std::fill(gradE->begin(), gradE->end(), kNan);
+        deriv_second_point->fill(kNan);
+        deriv_second_frame->fill(kNan);
+        deriv_second_pointframe->fill(kNan);
+    }
+
+    // compute point derivatives
+    track_rep_->IteratePointsMarker();
+    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+    {
+        const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
+
+        const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+
+        size_t pnt_ind = point_track_id;
+        gsl::span<Scalar> gradPoint = gsl::make_span(&(*gradE)[pnt_ind*kPointVars], kPointVars);
+        for (size_t xyz_ind=0; xyz_ind < kPointVars; ++xyz_ind)
+            gradPoint[xyz_ind] = EstimateFirstPartialDerivPoint(point_track_id, salient_point, xyz_ind, finite_diff_eps);
+
+        int zz=5;
+    }
+
+    if (kSurikoDebug) {
+        auto isfinite_pred = [](auto x) -> bool { return std::isfinite(x);};
+
+        bool c1 = std::all_of(gradE->begin(), gradE->end(), isfinite_pred);
+        SRK_ASSERT(c1 && "failed to compute gradE");
+
+        bool c2 = deriv_second_point->unaryExpr(isfinite_pred).all();
+        SRK_ASSERT(c2 && "failed to compute deriv_second_point");
+
+        bool c3 = deriv_second_frame->unaryExpr(isfinite_pred).all();
+        SRK_ASSERT(c3 && "failed to compute deriv_second_frame");
+
+        bool c4 = deriv_second_pointframe->unaryExpr(isfinite_pred).all();
+        SRK_ASSERT(c4 && "failed to compute deriv_second_pointframe");
+    }
+}
+
+auto BundleAdjustmentKanatani::EstimateFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t xyz_ind, Scalar finite_diff_eps) -> Scalar
+{
+    suriko::Point3 pnt3D_left = pnt3D_world; // copy
+    pnt3D_left[xyz_ind] -= finite_diff_eps;
+    SalientPointPatch point_patch_left(point_track_id, pnt3D_left);
+
+    Scalar x1_err_sum = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch_left);
+
+    suriko::Point3 pnt3D_right = pnt3D_world; // copy
+    pnt3D_right[xyz_ind] += finite_diff_eps;
+    SalientPointPatch point_patch_right(point_track_id, pnt3D_right);
+
+    Scalar x2_err_sum = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch_right);
+    return (x2_err_sum - x1_err_sum) / (2 * finite_diff_eps);
+}
+
 }

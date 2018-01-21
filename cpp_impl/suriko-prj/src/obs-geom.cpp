@@ -6,8 +6,8 @@
 
 namespace suriko
 {
-auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2 { return suriko::Point2(m); }
-auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3 { return suriko::Point3(m); }
+//auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2 { return suriko::Point2(m); }
+//auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3 { return suriko::Point3(m); }
 
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform {
     SE3Transform result;
@@ -54,14 +54,13 @@ void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &v
     assert(point_track_id < salient_points.size());
     salient_points[point_track_id] = value;
 }
-suriko::Point3 FragmentMap::GetSalientPoint(size_t point_track_id) const
+const suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id) const
 {
     assert(point_track_id < salient_points.size());
-    std::optional<suriko::Point3> sal_pnt = salient_points[point_track_id];
+    const auto& sal_pnt = salient_points[point_track_id];
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
-
 
 bool CornerTrack::HasCorners() const {
     return StartFrameInd != -1;
@@ -96,10 +95,16 @@ void CornerTrack::CheckConsistent()
 }
 
 
-suriko::CornerTrack& CornerTrackRepository::GetByPointId(size_t point_id)
+suriko::CornerTrack& CornerTrackRepository::GetPointTrackById(size_t point_track_id)
 {
-    size_t pnt_ind = point_id;
-    return CornerTracks[pnt_ind];
+    size_t point_track_ind = point_track_id;
+    return CornerTracks[point_track_ind];
+}
+
+const suriko::CornerTrack& CornerTrackRepository::GetPointTrackById(size_t point_track_id) const
+{
+    size_t point_track_ind = point_track_id;
+    return CornerTracks[point_track_ind];
 }
 
 void CornerTrackRepository::PopulatePointTrackIds(std::vector<size_t> *result) {

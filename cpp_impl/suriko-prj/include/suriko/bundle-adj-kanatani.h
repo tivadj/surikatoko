@@ -84,8 +84,20 @@ class BundleAdjustmentKanatani
     Scalar t1y_ = 1.0; // const, y-component of the first camera shift, usually T1y==1
     int unity_comp_ind_ = 1; // 0 for X, 1 for Y; index of T1 to be set to unity
 
+    typedef Eigen::Matrix<Scalar,Eigen::Dynamic,Eigen::Dynamic> EigenDynMat;
+
+    // cache gradients
+    std::vector<Scalar> gradE_finite_diff;
+    EigenDynMat deriv_second_point_finite_diff;
+    EigenDynMat deriv_second_frame_finite_diff;
+    EigenDynMat deriv_second_pointframe_finite_diff;
+
+
+    static const size_t kPointVars = 3; // number of variables in 3D point [X,Y,Z]
+    int frame_vars_; // number of variables to parameterize a camera orientation [[fx fy u0 v0] T1 T2 T3 W1 W2 W3]
+
 public:
-    static bool ReprojError(const FragmentMap& map,
+    static Scalar ReprojError(const FragmentMap& map,
                             const std::vector<SE3Transform>& inverse_orient_cams,
                             const CornerTrackRepository& track_rep,
                             const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat = nullptr,
@@ -102,7 +114,17 @@ public:
                         const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat = nullptr,
                         const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats = nullptr,
                         bool check_derivatives=false);
-
+private:
     bool ComputeOnNormalizedWorld();
+
+    /// Computes finite difference approximation of derivatives.
+    /// finitdiff_eps: finite difference step to approximate derivative
+    void ComputeDerivativesFiniteDifference(Scalar finite_diff_eps,
+                                            std::vector<Scalar>* gradE,
+                                            EigenDynMat* deriv_second_point,
+                                            EigenDynMat* deriv_second_frame,
+                                            EigenDynMat* deriv_second_pointframe);
+
+    auto EstimateFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t xyz_ind, Scalar finite_diff_eps) -> Scalar;
 };
 }

@@ -26,7 +26,7 @@ public:
     Scalar& operator[] (size_t i)       { return mat_(i); };
 };
 
-auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2;
+//auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2;
 
 class Point3 {
     Eigen::Matrix<Scalar,3,1> mat_;
@@ -47,7 +47,7 @@ public:
     Scalar& operator[] (size_t i)       { return mat_(i); };
 };
 
-auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
+//auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
 
     /// SE3=Special Euclidean transformation in 3D.
 /// Direct camera movement transforms 3D points from camera frame into world frame.
@@ -76,7 +76,7 @@ public:
 
     void SetSalientPoint(size_t point_track_id, const suriko::Point3 &value);
 
-    suriko::Point3 GetSalientPoint(size_t point_track_id) const;
+    const suriko::Point3& GetSalientPoint(size_t point_track_id) const;
 
     size_t PointTrackCount() const { return point_track_count; }
 };
@@ -105,9 +105,12 @@ class CornerTrackRepository
 public:
 	std::vector<suriko::CornerTrack> CornerTracks;
 
-    suriko::CornerTrack& GetByPointId(size_t point_id);
+    const suriko::CornerTrack& GetPointTrackById(size_t point_track_id) const;
+          suriko::CornerTrack& GetPointTrackById(size_t point_track_id);
 
     void PopulatePointTrackIds(std::vector<size_t> *result);
+
+    void IteratePointsMarker() const {}
 };
 
 
