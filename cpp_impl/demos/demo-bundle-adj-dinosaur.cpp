@@ -10,6 +10,7 @@
 //#include <experimental/filesystem>
 #include <boost/filesystem.hpp>
 #include <Eigen/Dense>
+#include <gflags/gflags.h>
 #include "suriko/rt-config.h"
 #include "suriko/bundle-adj-kanatani.h"
 #include "suriko/obs-geom.h"
@@ -49,14 +50,26 @@ void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff
     }
 }
 
+static bool ValidateDirectoryExists(const char *flagname, const std::string &value)
+{
+    boost::filesystem::path test_data_path = boost::filesystem::absolute(value).normalize();
+    if (boost::filesystem::is_directory(test_data_path))
+        return true;
+    std::cout <<"directory " <<test_data_path.string() << " doesn't exist" <<std::endl;
+    return false;
+}
+
+DEFINE_string(testdata, "NOTFOUND", "Abs/rel path to testdata directory");
+DEFINE_validator(testdata, &ValidateDirectoryExists);
+
 int DinoDemo(int argc, char* argv[])
 {
-    const char* test_data = "";
-    if (argc >= 2)
-        test_data = argv[1];
+    gflags::ParseCommandLineFlags(&argc, &argv, true);
+
+    const string& test_data = FLAGS_testdata;
 
 	boost::filesystem::path test_data_path = boost::filesystem::absolute(test_data).normalize();
-	cout <<"test_data=" << test_data_path <<endl;
+	cout <<"testdata=" << test_data_path <<endl;
 
     int debug = 3;
 

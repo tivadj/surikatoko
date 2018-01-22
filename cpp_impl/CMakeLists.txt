@@ -94,6 +94,9 @@ else()
     message(SEND_ERROR "Unable to find GSL (Guideline Support Library) include folder. There is no directory: ${GuidelineGSL_INCLUDE_DIR}")
 endif()
 
+find_package(gflags REQUIRED)
+message(STATUS "GFLAGS_INCLUDE_DIR=${GFLAGS_INCLUDE_DIR}")
+
 add_subdirectory(demos)
 add_subdirectory(suriko-prj)
 

@@ -1,3 +1,6 @@
+# specific to this project
+build-*
+
 # CLion
 .idea*
 cmake-build-*
@@ -7,5 +10,5 @@ cmake-build-*
 CMakeSettings.json
 CppProperties.json
 
-# specific to this project
-build-*
+# Python
+*.pyc

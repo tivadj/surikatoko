@@ -17,6 +17,7 @@ _ACRTIMP void __cdecl _wassert(
         )
 #else
 // Ubuntu
+// This is from /usr/include/assert.h
 #define SRK_ASSERT(expr)  \
     (static_cast <bool> (expr) \
       ? void (0) \
