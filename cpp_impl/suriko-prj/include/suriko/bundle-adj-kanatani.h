@@ -6,7 +6,6 @@
 #include <cmath> // std::isnan
 #include <iostream>
 #include <Eigen/Dense>
-#include "suriko/rt-config.h"
 #include "suriko/obs-geom.h"
 
 namespace suriko
@@ -25,16 +24,16 @@ class SceneNormalizer
     FragmentMap* map_ = nullptr;
     std::vector<SE3Transform>* inverse_orient_cams_ = nullptr;
     Scalar normalized_t1y_dist_ = Scalar(); // expected T1y (or T1x) distance after normalization
-    Scalar unity_comp_ind_ = Scalar(); // index of 3-element T1(x,y,z) to normalize (0 to use T1x; 1 to use T1y)
+    int unity_comp_ind_ = 1; // index of 3-element T1(x,y,z) to normalize (0 to use T1x; 1 to use T1y)
 
     // store pre-normalized state
     SE3Transform prenorm_rt0_;
-    Scalar world_scale_; // world, scaled with this multiplier, is transformed into normalized world
+    Scalar world_scale_ = 0; // world, scaled with this multiplier, is transformed into normalized world
 
     friend auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
                                               Scalar t1y_norm, int unity_comp_ind, bool* success);
 
-    SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, Scalar unity_comp_ind);
+    SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, int unity_comp_ind);
 
     enum class NormalizeAction
     {

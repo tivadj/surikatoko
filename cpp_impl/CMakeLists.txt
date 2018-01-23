@@ -19,10 +19,16 @@ message(STATUS "CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}")
 message(STATUS "CMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "CMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}")
 
-# at least C++14 is required (because of std::make_unique)
+# C++14 is required (because of std::make_unique)
+# C++17 is required (because of [[noreturn]])
 if (MSVC)
     #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++latest")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++17")
+
+    # warnings
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_CRT_SECURE_NO_WARNINGS") # suppress warning: strtok is unsafe
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_NEGATORS_DEPRECATION_WARNING") # suppress warning: std::not1() is deprecated
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING") # suppress warning: STL4015: The std::iterator class template (used as a base class to provide typedefs) is deprecated in C++17
 elseif(UNIX)
     # PIC (position-independent code) is required by boost_filesystem (compile boost with this cxxflags=-fPIC too)
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17") # tested on clang
@@ -83,7 +89,6 @@ if (NOT EXISTS ${GuidelineGSL_INCLUDE_DIR})
     endforeach ()
 endif()
 
-
 if (EXISTS ${GuidelineGSL_INCLUDE_DIR})
     add_library(GuidelineGSL INTERFACE)
     target_include_directories(GuidelineGSL INTERFACE
@@ -96,6 +101,10 @@ endif()
 
 find_package(gflags REQUIRED)
 message(STATUS "GFLAGS_INCLUDE_DIR=${GFLAGS_INCLUDE_DIR}")
+
+find_package(glog REQUIRED)
+get_target_property(glog_incl_dirs glog::glog INTERFACE_INCLUDE_DIRECTORIES)
+message(STATUS "glog::glog.INTERFACE_INCLUDE_DIRECTORIES=${glog_incl_dirs}")
 
 add_subdirectory(demos)
 add_subdirectory(suriko-prj)

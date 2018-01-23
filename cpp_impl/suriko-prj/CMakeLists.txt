@@ -40,3 +40,4 @@ message(STATUS "Boost_FILESYSTEM_LIBRARY_DEBUG=${Boost_FILESYSTEM_LIBRARY_DEBUG}
 target_link_libraries (engine PRIVATE Eigen3::Eigen)
 
 target_link_libraries(engine PRIVATE GuidelineGSL)
+target_link_libraries(engine PRIVATE glog::glog)

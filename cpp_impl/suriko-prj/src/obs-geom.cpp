@@ -1,5 +1,6 @@
 #include <cmath> // std::sqrt
 #include <iostream> // std::cerr
+#include <glog/logging.h>
 #include <Eigen/Cholesky>
 #include "suriko/approx-alg.h"
 #include "suriko/obs-geom.h"
@@ -56,7 +57,7 @@ void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &v
 }
 const suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id) const
 {
-    assert(point_track_id < salient_points.size());
+    CHECK(point_track_id < salient_points.size());
     const auto& sal_pnt = salient_points[point_track_id];
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
@@ -70,8 +71,12 @@ void CornerTrack::AddCorner(size_t frame_ind, const suriko::Point2& value)
 {
     if (StartFrameInd == -1)
         StartFrameInd = frame_ind;
-    else
-        SRK_ASSERT(frame_ind >= StartFrameInd && "Can insert points later than the initial (start) frame");
+	else
+	{
+		SRK_ASSERT(StartFrameInd >= 0);
+		CHECK((size_t)StartFrameInd <= frame_ind) << "Can insert points later than the initial (start) frame"
+			<< " StartFrameInd=" << StartFrameInd << " frame_ind=" << frame_ind;
+	}
 
     CoordPerFramePixels.push_back(std::optional<suriko::Point2>(value));
     CheckConsistent();
@@ -79,9 +84,10 @@ void CornerTrack::AddCorner(size_t frame_ind, const suriko::Point2& value)
 
 std::optional<suriko::Point2> CornerTrack::GetCorner(size_t frame_ind) const
 {
-    SRK_ASSERT(StartFrameInd != -1);
+    CHECK(StartFrameInd != -1);
     ptrdiff_t local_ind = frame_ind - StartFrameInd;
-    if (local_ind < 0 || local_ind >= CoordPerFramePixels.size())
+
+    if (local_ind < 0 || (size_t)local_ind >= CoordPerFramePixels.size())
         return std::optional<suriko::Point2>();
     return CoordPerFramePixels[local_ind];
 }
@@ -207,10 +213,10 @@ auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
 {
     size_t frames_count_P = proj_mat_list.size();
     size_t frames_count_xs = xs2D.size();
-    SRK_ASSERT(frames_count_P == frames_count_xs && "Provide two lists of 2D coordinates and projection matrices of the same length");
+    CHECK_EQ(frames_count_P, frames_count_xs) << "Provide two lists of 2D coordinates and projection matrices of the same length";
 
     size_t frames_count = frames_count_P;
-    SRK_ASSERT(frames_count >= 2 && "Provide 2 or more projections of a 3D point");
+    CHECK(frames_count >= 2) << "Provide 2 or more projections of a 3D point";
 
     // populate matrices A and B to solve for least squares
     Eigen::Matrix<Scalar,Eigen::Dynamic,Eigen::Dynamic> A(frames_count * 2, 3);

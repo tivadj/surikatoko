@@ -1,33 +1,31 @@
 #pragma once
+#include <exception> // std::terminate
+#include <gsl/gsl_assert>
 
 #define SRK_DEBUG 1
 
-#if defined(WIN32)
-
-// This is from C:\Program Files (x86)\Windows Kits\10\Include\10.0.16299.0\ucrt\assert.h
-_ACRTIMP void __cdecl _wassert(
-        _In_z_ wchar_t const* _Message,
-        _In_z_ wchar_t const* _File,
-        _In_   unsigned       _Line
-);
-
-#define SRK_ASSERT(expression) (void)(                                                       \
-            (!!(expression)) ||                                                              \
-            (_wassert(_CRT_WIDE(#expression), _CRT_WIDE(__FILE__), (unsigned)(__LINE__)), 0) \
-        )
+// SRK_ASSERT is similar to standard assert macros, but can be
+#if defined(SRK_DEBUG)
+#include <glog/logging.h>
+// use Google glog CHECK macro
+#define SRK_ASSERT(expr) CHECK(expr)
 #else
-// Ubuntu
-// This is from /usr/include/assert.h
-#define SRK_ASSERT(expr)  \
-    (static_cast <bool> (expr) \
-      ? void (0) \
-      : __assert_fail (#expr, __FILE__, __LINE__, __ASSERT_FUNCTION))
-
+#define SRK_ASSERT(expr) void(0)
 #endif
 
 namespace suriko {
 
-static const bool kSurikoDebug = true;
+	static const bool kSurikoDebug =
+#if defined(SRK_DEBUG)
+		true;
+#else
+		false;
+#endif
 
 typedef double Scalar;
+
+/// Indicates that the point of function call is never reached. This allows to satisfy the compiler,
+/// which otherwise emits a warning "not all control paths return a value".
+//[[noreturn]] inline void AssertFalse() { std::terminate(); }
+[[noreturn]] inline void AssertFalse() { Ensures(false); }
 }

@@ -6,21 +6,24 @@
 #include <cmath> // std::isnan
 #include <iostream>
 #include <gsl/span>
+#include <gsl/gsl_assert>
+#include <glog/logging.h>
 #include <Eigen/Dense>
 #include "suriko/approx-alg.h"
 #include "suriko/bundle-adj-kanatani.h"
 #include "suriko/obs-geom.h"
+#include "suriko/rt-config.h"
 
 namespace suriko
 {
 
-SceneNormalizer::SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, Scalar unity_comp_ind)
+SceneNormalizer::SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, int unity_comp_ind)
         :map_(map),
          inverse_orient_cams_(inverse_orient_cams),
          normalized_t1y_dist_(t1y),
          unity_comp_ind_(unity_comp_ind)
 {
-    assert(t1y == 0 || t1y == 1 && "Only T1x and T1y is implemented");
+    CHECK(t1y == 0 || t1y == 1 && "Only T1x and T1y is implemented");
 }
 
 auto SceneNormalizer::Opposite(SceneNormalizer::NormalizeAction action) {
@@ -31,6 +34,7 @@ auto SceneNormalizer::Opposite(SceneNormalizer::NormalizeAction action) {
         case NormalizeAction::Revert:
             return NormalizeAction::Normalize;
     }
+	AssertFalse();
 }
 
 SE3Transform SceneNormalizer::NormalizeOrRevertRT(const SE3Transform& inverse_orient_camk,
@@ -267,7 +271,7 @@ Scalar ReprojErrorWithOverlap(const FragmentMap& map,
             suriko::Point3 x3D_pix = suriko::Point3(K * x3D_cam.Mat()); // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
 
             bool zero_z = IsClose(0, x3D_pix[2], 1e-5);
-            SRK_ASSERT(!zero_z && "homog 2D point can't have Z=0");
+            SRK_ASSERT(!zero_z) << "homog 2D point can't have Z=0";
 
             Scalar x = x3D_pix[0] / x3D_pix[2];
             Scalar y = x3D_pix[1] / x3D_pix[2];
@@ -338,8 +342,7 @@ bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
         std::string err_msg;
         if (!CheckWorldIsNormalized(inverse_orient_cams, t1y_, unity_comp_ind_, &err_msg))
         {
-            std::cout <<err_msg;
-            SRK_ASSERT(false);
+            CHECK(false) <<err_msg;
         }
     }
     scene_normalizer_.RevertNormalization();
@@ -392,16 +395,16 @@ void BundleAdjustmentKanatani::ComputeDerivativesFiniteDifference(
         auto isfinite_pred = [](auto x) -> bool { return std::isfinite(x);};
 
         bool c1 = std::all_of(gradE->begin(), gradE->end(), isfinite_pred);
-        SRK_ASSERT(c1 && "failed to compute gradE");
+        CHECK(c1) << "failed to compute gradE";
 
         bool c2 = deriv_second_point->unaryExpr(isfinite_pred).all();
-        SRK_ASSERT(c2 && "failed to compute deriv_second_point");
+        CHECK(c2) << "failed to compute deriv_second_point";
 
         bool c3 = deriv_second_frame->unaryExpr(isfinite_pred).all();
-        SRK_ASSERT(c3 && "failed to compute deriv_second_frame");
+        CHECK(c3) << "failed to compute deriv_second_frame";
 
         bool c4 = deriv_second_pointframe->unaryExpr(isfinite_pred).all();
-        SRK_ASSERT(c4 && "failed to compute deriv_second_pointframe");
+        CHECK(c4) << "failed to compute deriv_second_pointframe";
     }
 }
 

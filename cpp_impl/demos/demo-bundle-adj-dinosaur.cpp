@@ -1,7 +1,6 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <iostream>
 #include <fstream>
 #include <utility>
 #include <cassert>
@@ -11,6 +10,7 @@
 #include <boost/filesystem.hpp>
 #include <Eigen/Dense>
 #include <gflags/gflags.h>
+#include <glog/logging.h>
 #include "suriko/rt-config.h"
 #include "suriko/bundle-adj-kanatani.h"
 #include "suriko/obs-geom.h"
@@ -20,7 +20,6 @@ namespace suriko_demos
 using namespace std;
 //using namespace std::experimental::filesystem;
 using namespace boost::filesystem;
-using Eigen::MatrixXd;
 using namespace suriko;
 
 void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff_num_rows, size_t viff_num_cols,
@@ -64,30 +63,15 @@ DEFINE_validator(testdata, &ValidateDirectoryExists);
 
 int DinoDemo(int argc, char* argv[])
 {
-    gflags::ParseCommandLineFlags(&argc, &argv, true);
+    gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
+    google::InitGoogleLogging(argv[0]);
 
     const string& test_data = FLAGS_testdata;
 
 	boost::filesystem::path test_data_path = boost::filesystem::absolute(test_data).normalize();
-	cout <<"testdata=" << test_data_path <<endl;
+    LOG(INFO) <<"testdata=" << test_data_path;
 
     int debug = 3;
-
-    typedef double Scalar;
-
-    MatrixXd m(2,2);
-    m(0,0) = 3;
-    m(1,0) = 2.5;
-    m(0,1) = -1;
-    m(1,1) = m(1,0) + m(0,1);
-    std::cout << m << std::endl;
-
-    Eigen::Matrix<Scalar, 2, 2> m2;
-    m2(0,0) = 3;
-    m2(1,0) = 2.5;
-    m2(0,1) = -1;
-    m2(1,1) = m2(1,0) + m2(0,1);
-    std::cout << m2 << std::endl;
 
     auto proj_mats_file_path = (test_data_path / "oxfvisgeom/dinosaur/dinoPs_as_mat108x4.txt").normalize();
 
@@ -97,12 +81,12 @@ int DinoDemo(int argc, char* argv[])
     bool op= ReadMatrixFromFile(proj_mats_file_path, '\t', &P_data_by_row, &P_num_rows, &P_num_cols, &err_msg);
     if (!op)
     {
-        std::cerr << err_msg;
+        LOG(ERROR) << err_msg;
         return 1;
     }
 
     size_t frames_count = P_num_rows / 3;
-    cout <<"frames_count=" <<frames_count <<endl;
+    LOG(INFO) <<"frames_count=" <<frames_count <<endl;
 
     vector<Eigen::Matrix<Scalar,3,4>> proj_mat_per_frame;
     vector<SE3Transform> inverse_orient_cam_per_frame;
@@ -131,18 +115,18 @@ int DinoDemo(int argc, char* argv[])
     op= ReadMatrixFromFile(viff_mats_file_path, ' ', &viff_data_by_row, &viff_num_rows, &viff_num_cols, &err_msg);
     if (!op)
     {
-        cerr << err_msg;
+        LOG(ERROR) << err_msg;
         return 1;
     }
 
     if (frames_count != viff_num_cols / 2)
     {
-        cerr << "Inconsistent frames_count";
+        LOG(ERROR) << "Inconsistent frames_count";
         return 1;
     }
 
     size_t points_count = viff_num_rows; // =4983
-    cout << "points_count=" <<points_count <<endl;
+    LOG(INFO) << "points_count=" <<points_count <<endl;
 
     CornerTrackRepository track_rep;
     PopulateCornersPerFrame(viff_data_by_row, viff_num_rows, viff_num_cols, &track_rep);
@@ -174,7 +158,7 @@ int DinoDemo(int argc, char* argv[])
     }
 
     auto err_initial = BundleAdjustmentKanatani::ReprojError(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
-    cout <<"err_initial=" <<err_initial <<endl;
+    LOG(INFO) <<"err_initial=" <<err_initial <<endl;
 
 	bool debug_reproj_err = false;
     if (debug_reproj_err)
@@ -198,7 +182,7 @@ int DinoDemo(int argc, char* argv[])
                 auto pix_y = x2D_homog[1] / x2D_homog[2];
                 auto err = (cor.Mat() - Eigen::Matrix<Scalar,2,1>(pix_x, pix_y)).norm();
                 if (err > 1)
-                    cout << "repr err=" <<err <<" for point_track_id=" << point_track_id <<endl;
+                    LOG(INFO) << "repr err=" <<err <<" for point_track_id=" << point_track_id <<endl;
             }
         }
     }
@@ -207,7 +191,7 @@ int DinoDemo(int argc, char* argv[])
 
     BundleAdjustmentKanatani ba;
 
-    cout << "start bundle adjustment..." <<endl;
+    LOG(INFO) << "start bundle adjustment..." <<endl;
     op = ba.ComputeInplace(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame, check_derivatives);
 
     return 0;
