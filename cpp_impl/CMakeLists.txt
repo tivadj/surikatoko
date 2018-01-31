@@ -106,6 +106,10 @@ find_package(glog REQUIRED)
 get_target_property(glog_incl_dirs glog::glog INTERFACE_INCLUDE_DIRECTORIES)
 message(STATUS "glog::glog.INTERFACE_INCLUDE_DIRECTORIES=${glog_incl_dirs}")
 
-add_subdirectory(demos)
-add_subdirectory(suriko-prj)
+#enable_testing()
+find_package(GTest REQUIRED)
+message(STATUS "GTEST_INCLUDE_DIRS=${GTEST_INCLUDE_DIRS}")
 
+add_subdirectory(suriko-prj)
+add_subdirectory(suriko-test)
+add_subdirectory(demos)

@@ -91,9 +91,22 @@ class BundleAdjustmentKanatani
     EigenDynMat deriv_second_frame_finite_diff;
     EigenDynMat deriv_second_pointframe_finite_diff;
 
+    static const size_t kPointVarsCount = 3; // number of variables in 3D point [X,Y,Z]
 
-    static const size_t kPointVars = 3; // number of variables in 3D point [X,Y,Z]
-    int frame_vars_; // number of variables to parameterize a camera orientation [[fx fy u0 v0] T1 T2 T3 W1 W2 W3]
+    static const size_t kIntrinsicVarsCount = 4; // count({fx,fy,u0,v0})=4
+    static const size_t kFxFyCount = 2; // count({fx, fy})=2
+    static const size_t kU0V0Count = 2; // count({u0, v0})=2
+    static const size_t kTVarsCount = 3; // count({Tx, Ty, Tz})=3
+    static const size_t kWVarsCount = 3; // count({Wx, Wy, Wz})=3
+
+    size_t frame_vars_count_ = 0; // number of variables to parameterize a camera orientation [[fx fy u0 v0] T1 T2 T3 W1 W2 W3]
+    
+    // maximum count of ([fx fy u0 v0 T1 T2 T3 W1 W2 W3])
+    // camera intrinsics: 0 if K is shared for all frames; 3 for [f u0 v0] if fx=fy; 4 for [fx fy u0 v0]
+    // hence max count of camera intrinsics variables is 4
+    // camera translation: 3 for [T1 T2 T3]
+    // camera axis angle: 3 for [W1 W2 W3]
+    static const size_t kMaxFrameVarsCount = 10;
 
 public:
     static Scalar ReprojError(const FragmentMap& map,
@@ -124,6 +137,52 @@ private:
                                             EigenDynMat* deriv_second_frame,
                                             EigenDynMat* deriv_second_pointframe);
 
-    auto EstimateFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t xyz_ind, Scalar finite_diff_eps) -> Scalar;
+public:
+    /// Represents a camera orientation data for some frame. There are packed and unpacked data, keeped in synced state.
+    class FrameFromOptVarsUpdater
+    {
+        size_t frame_ind_;
+        Eigen::Matrix<Scalar, 3, 3> cam_intrinsics_mat_;
+        SE3Transform direct_orient_cam_;
+        SE3Transform inverse_orient_cam_;
+        bool direct_orient_cam_valid_ = false;
+        bool inverse_orient_cam_valid_ = false;
+
+        std::array<Scalar, kMaxFrameVarsCount> frame_vars_;
+    public:
+        FrameFromOptVarsUpdater(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat, const SE3Transform& direct_orient_cam);
+            
+        void AddDelta(size_t var_ind, Scalar value);
+
+        size_t FrameInd() const { return frame_ind_; }
+
+        const Eigen::Matrix<Scalar, 3, 3>& CamIntrinsicsMat() const {
+            return cam_intrinsics_mat_;
+        }
+        const SE3Transform& InverseOrientCam() {
+            EnsureCameraOrientaionValid();
+            return inverse_orient_cam_;
+        }
+    private:
+        void UpdatePackedVars();
+        void EnsureCameraOrientaionValid();
+    };
+
+private:
+    auto GetFiniteDiffFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, Scalar finite_diff_eps) const -> Scalar;
+    auto GetFiniteDiffSecondPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, size_t var2, Scalar finite_diff_eps) const -> Scalar;
+    auto GetFiniteDiffFirstPartialDerivFocalLengthFxFy(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t fxfy_ind, Scalar finite_diff_eps) const -> Scalar;
+    auto GetFiniteDiffFirstDerivPrincipalPoint(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t u0v0_ind, Scalar finite_diff_eps) const -> Scalar;
+    auto GetFiniteDiffFirstPartialDerivTranslationDirect(size_t frame_ind, const SE3Transform& direct_orient_cam, size_t tind, Scalar finite_diff_eps) const -> Scalar;
+    auto GetFiniteDiffFirstPartialDerivRotation(size_t frame_ind, const SE3Transform& direct_orient_cam,
+        const Eigen::Matrix<Scalar, 3, 1>& w_direct, size_t wind, Scalar finite_diff_eps) const->Scalar;
+
+    auto GetFiniteDiffSecondPartialDerivFrameFrame(const FrameFromOptVarsUpdater& frame_vars_updater, size_t frame_var_ind1, size_t frame_var_ind2, Scalar finite_diff_eps) const->Scalar;
+
+    auto GetFiniteDiffSecondPartialDerivPointFrame(size_t point_track_id, const suriko::Point3& pnt3D_world,
+        const FrameFromOptVarsUpdater& frame_vars_updater, size_t point_var_ind, size_t frame_var_ind, Scalar finite_diff_eps) const->Scalar;
+
+    /// Declares code dependency on the order of variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
+    static void MarkOptVarsOrderDependency() {}
 };
 }

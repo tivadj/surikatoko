@@ -1,4 +1,6 @@
+#include <string>
 #include <cmath> // std::sqrt
+#include <algorithm> // std::clamp
 #include <iostream> // std::cerr
 #include <glog/logging.h>
 #include <Eigen/Cholesky>
@@ -65,6 +67,11 @@ const suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id) const
 
 bool CornerTrack::HasCorners() const {
     return StartFrameInd != -1;
+}
+
+size_t CornerTrack::CornersCount() const
+{
+    return CoordPerFramePixels.size();
 }
 
 void CornerTrack::AddCorner(size_t frame_ind, const suriko::Point2& value)
@@ -143,6 +150,96 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
     return true;
 }
 
+void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat)
+{
+	*skew_mat << 0, -v[2], v[1], v[2], 0, -v[0], -v[1], v[0], 0;
+}
+
+auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input) -> bool
+{
+	// skip precondition checking in Release mode on user request (check_input=false)
+	if (check_input || kSurikoDebug)
+	{
+		// direction must be a unity vector
+		Scalar dir_len = unity_dir.norm();
+		if (!IsClose(1, dir_len)) return false;
+
+		// Rotating about some unity direction by zero angle is described by the identity matrix,
+		// which we can return here. But the symmetric operation of computing direction and angle from R 
+		// is not possible - the direction can't be recovered.
+		if (IsClose(0, ang)) return false;
+	}
+	
+	Scalar s = std::sin(ang);
+	Scalar c = std::cos(ang);
+
+	Eigen::Matrix<Scalar, 3, 3> skew1;
+	SkewSymmetricMat(unity_dir, &skew1);
+
+	*rot_mat = Eigen::Matrix<Scalar, 3, 3>::Identity() + s * skew1 + (1 - c) * skew1 * skew1;
+
+	if (kSurikoDebug) // postcondition
+	{
+		std::string msg;
+		bool ok = IsSpecialOrthogonal(*rot_mat, &msg);
+		CHECK(ok) << msg;
+	}
+	return true;
+}
+
+auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool
+{
+	Scalar ang = axis_angle.norm();
+	if (IsClose(0, ang)) return false;
+
+	Eigen::Matrix<Scalar, 3, 1> unity_dir = axis_angle / ang;
+	const bool check_input = false;
+	return RotMatFromUnityDirAndAngle(unity_dir, ang, rot_mat, check_input);
+}
+
+auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input) -> bool
+{
+	// skip precondition checking in Release mode on user request (check_input=false)
+	if (check_input || kSurikoDebug)
+	{
+		std::string msg;
+		bool ok = IsSpecialOrthogonal(rot_mat, &msg);
+		CHECK(ok) << msg;
+	}
+	Scalar cos_ang = 0.5*(rot_mat.trace() - 1);
+	cos_ang = std::clamp<Scalar>(cos_ang, -1, 1); // the cosine may be slightly off due to rounding errors
+
+	Scalar sin_ang = std::sqrt(1.0 - cos_ang * cos_ang);
+	Scalar atol = 1e-3;
+	if (IsClose(0, sin_ang, 0, atol))
+		return false;
+
+	auto& udir = *unity_dir;
+	udir[0] = rot_mat(2, 1) - rot_mat(1, 2);
+	udir[1] = rot_mat(0, 2) - rot_mat(2, 0);
+	udir[2] = rot_mat(1, 0) - rot_mat(0, 1);
+	udir *= 0.5 / sin_ang;
+
+	// direction vector is already close to unity, but due to rounding errors it diverges
+	// TODO: check where the rounding error appears
+	Scalar dirlen = udir.norm();
+	udir *= 1 / dirlen;
+
+	*ang = std::acos(cos_ang);
+	return true;
+}
+
+auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> dir) -> bool
+{
+	Eigen::Matrix<Scalar, 3, 1> unity_dir;
+	Scalar ang;
+	bool op = LogSO3(rot_mat, &unity_dir, &ang);
+	if (!op) return false;
+
+	*dir = unity_dir * ang;
+	return true;
+}
+
 auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_post_cond)
 -> std::tuple<Scalar, Eigen::Matrix<Scalar, 3, 3>, SE3Transform>
 {
@@ -196,9 +293,9 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 
     if (check_post_cond)
     {
-        Eigen::Matrix<Scalar, 3, 4> right;
-        right <<Mat33::Identity(), -t;
-        Eigen::Matrix<Scalar, 3, 4> P_back = scale_factor * K * R.transpose() * right;
+        Eigen::Matrix<Scalar, 3, 4> rt34;
+        rt34 <<Mat33::Identity(), -t;
+        Eigen::Matrix<Scalar, 3, 4> P_back = scale_factor * K * R.transpose() * rt34;
         auto diff = (proj_mat - P_back).norm();
         assert(diff < 1e-2 && "Failed to decompose P[3x4]->R,T,K"); // (diff={})
     }
@@ -207,9 +304,7 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
     return std::make_tuple(scale_factor, K, direct_orient_cam);
 }
 
-auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
-                                      const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0, int debug)
--> suriko::Point3
+auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D, const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0) -> suriko::Point3
 {
     size_t frames_count_P = proj_mat_list.size();
     size_t frames_count_xs = xs2D.size();
@@ -246,7 +341,8 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = householder_qr.solve(B);
 #endif
 
-    if (debug >= 4) {
+    bool debug = false;
+    if (debug) {
         const Eigen::Matrix<Scalar,Eigen::Dynamic,1> diff_vec = A * sol - B;
         Scalar diff = diff_vec.norm();
         if (diff > 0.1) {

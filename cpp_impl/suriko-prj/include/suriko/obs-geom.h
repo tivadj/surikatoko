@@ -3,6 +3,7 @@
 #include <tuple>
 #include <vector>
 #include <optional>
+#include <gsl/pointers> // gsl::not_null
 #include <Eigen/Dense> // Eigen::Matrix
 #include "suriko/rt-config.h"
 
@@ -49,7 +50,7 @@ public:
 
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
 
-    /// SE3=Special Euclidean transformation in 3D.
+/// SE3=Special Euclidean transformation in 3D.
 /// Direct camera movement transforms 3D points from camera frame into world frame.
 /// Inverse camera movement transforms 3D points from world frame into camera frame.
 struct SE3Transform
@@ -92,6 +93,7 @@ public:
     CornerTrack() = default;
 
     bool HasCorners() const;
+    size_t CornersCount() const;
 
     void AddCorner(size_t frame_ind, const suriko::Point2& value);
 
@@ -113,9 +115,26 @@ public:
     void IteratePointsMarker() const {}
 };
 
+/// Constructs 3x3 skew symmetric matrix from 3-element vector.
+void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat);
+
+/// Creates the rotation matrix around the vector @n by angle @ang in radians.
+/// This uses the Rodrigues formula.
+[[nodiscard]]
+auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input = true) -> bool;
+
+[[nodiscard]]
+auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool;
 
 /// Checks if Rt*R=I and det(R)=1.
 bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg = nullptr);
+
+/// Logarithm of SO(3) : R[3x3]->(n, ang) where n = rotation vector, ang = angle in radians.
+[[nodiscard]]
+auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input = true) -> bool;
+
+[[nodiscard]]
+auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> dir) -> bool;
 
 //template <class F>
 //class SalientPointTracker
@@ -138,6 +157,6 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 /// Finds the 3D coordinate of a world point from a list of corresponding 2D pixels in multiple images.
 /// The orientation of the camera for each shot is specified in the list of projection matrices.
 auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
-                                 const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0, int debug)
+                                 const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0)
     -> suriko::Point3;
 }

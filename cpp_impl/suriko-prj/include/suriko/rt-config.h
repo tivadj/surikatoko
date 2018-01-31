@@ -2,7 +2,7 @@
 #include <exception> // std::terminate
 #include <gsl/gsl_assert>
 
-#define SRK_DEBUG 1
+#define SRK_DEBUG
 
 // SRK_ASSERT is similar to standard assert macros, but can be
 #if defined(SRK_DEBUG)
@@ -10,11 +10,19 @@
 // use Google glog CHECK macro
 #define SRK_ASSERT(expr) CHECK(expr)
 #else
-#define SRK_ASSERT(expr) void(0)
+namespace suriko {
+struct NoopOut // allows putting messages after assert, like ASSERT(false) << "failed";
+{
+    template <typename T>
+    NoopOut& operator <<([[maybe_unused]] T x) { return *this; }
+};
+}
+#define SRK_ASSERT(expr) NoopOut()
 #endif
 
 namespace suriko {
 
+	/// Preferred way to turn on/off debug branches at runtime (compared to SRK_DEBUG preprocessor directive).
 	static const bool kSurikoDebug =
 #if defined(SRK_DEBUG)
 		true;

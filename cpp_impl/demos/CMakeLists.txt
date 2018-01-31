@@ -10,15 +10,15 @@ message(STATUS "CMAKE_SIZEOF_VOID_P=${CMAKE_SIZEOF_VOID_P}") #
 message(STATUS "PROJECT_ARCH=${PROJECT_ARCH}") #
 message(STATUS "PLATFORM_SHORT_NAME=${PLATFORM_SHORT_NAME}") #
 
-#find_package(engine REQUIRED)
-#include_directories(${engine_INCLUDE_DIRS})
-#message(STATUS "engine_INCLUDE_DIRS=${engine_INCLUDE_DIRS}") #
+#find_package(suriko-engine REQUIRED)
+#include_directories(${suriko-engine_INCLUDE_DIRS})
+#message(STATUS "suriko-engine_INCLUDE_DIRS=${suriko-engine_INCLUDE_DIRS}") #
 
 add_executable(demos
         main.cpp
         demo-bundle-adj-dinosaur.cpp)
 
-target_link_libraries(demos engine)
+target_link_libraries(demos suriko-engine)
 target_include_directories(demos PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
 
 target_include_directories(demos PRIVATE ${Boost_INCLUDE_DIRS})
