@@ -17,6 +17,59 @@
 namespace suriko
 {
 
+namespace {
+    constexpr auto kWVarsCount = BundleAdjustmentKanatani::kWVarsCount;
+
+    /// Declares code dependency on the order of variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
+    void MarkOptVarsOrderDependency() {}
+
+    /// Axis angle can't be recovered for identity R matrix. This situation may occur when at some point the
+    /// camera orientation coincide with the orientation at the first time point of the first frame. Such camera orientation
+    /// may be inferred from the neighbour camera orientations.
+    void MarkUndeterminedCameraOrientationAxisAngle() {}
+}
+
+
+/// Apply infinitesimal correction w to rotation matrix in the form of Rnew=(I+hat(w))*R where hat(w) is [3x3] and w is 3-element axis angle
+void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, const Eigen::Matrix<Scalar, kWVarsCount, 1>& direct_w_delta,
+    Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>* Rnew)
+{
+    Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_w_delta_hat;
+    SkewSymmetricMat(direct_w_delta, &direct_w_delta_hat);
+
+    // Rnew = (I + hat(w))*R
+    *Rnew = (Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>::Identity() + direct_w_delta_hat) * R;
+}
+
+void AddDeltaToFrameInplace(gsl::span<const Scalar> frame_vars_delta, Eigen::Matrix<Scalar, 3, 3>* cam_intrinsics_mat, SE3Transform* direct_orient_cam)
+{
+    MarkOptVarsOrderDependency();
+    Eigen::Matrix<Scalar, 3, 3>& K = *cam_intrinsics_mat;
+    Scalar delta_fx = frame_vars_delta[0];
+    K(0, 0) += delta_fx;
+    Scalar delta_fy = frame_vars_delta[1];
+    K(1, 1) += delta_fy;
+    Scalar delta_u0 = frame_vars_delta[2];
+    K(0, 2) += delta_u0;
+    Scalar delta_v0 = frame_vars_delta[3];
+    K(1, 2) += delta_v0;
+
+    SE3Transform& rt = *direct_orient_cam;
+    Scalar direct_tx = frame_vars_delta[4];
+    rt.T[0] += direct_tx;
+    Scalar direct_ty = frame_vars_delta[5];
+    rt.T[1] += direct_ty;
+    Scalar direct_tz = frame_vars_delta[6];
+    rt.T[2] += direct_tz;
+
+    Eigen::Map<const Eigen::Matrix<Scalar, kWVarsCount, 1>> direct_w_delta(&frame_vars_delta[7]);
+
+    Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> newR;
+    IncrementRotMat(rt.R, direct_w_delta, &newR);
+    rt.R = newR;
+}
+
+//
 SceneNormalizer::SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, int unity_comp_ind)
         :map_(map),
     inverse_orient_cams_(inverse_orient_cams),
@@ -251,11 +304,11 @@ public:
     {
     }
 
-    void PopulateFrom(BundleAdjustmentKanatani::FrameFromOptVarsUpdater& frame_vars_updater)
+    FramePatch(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& inverse_orient_cam)
+        : frame_ind_(frame_ind),
+        K_(K),
+        inverse_orient_cam_(inverse_orient_cam)
     {
-        frame_ind_ = frame_vars_updater.FrameInd();
-        K_ = frame_vars_updater.CamIntrinsicsMat();
-        inverse_orient_cam_ = frame_vars_updater.InverseOrientCam();
     }
 
     size_t FrameInd() const
@@ -274,6 +327,8 @@ public:
     }
 };
 
+/// Internal routine to compute the bandle adjustment's reprojection error
+/// with ability to overlap variables for specific salient point and/or camera orientation.
 Scalar ReprojErrorWithOverlap(const FragmentMap& map,
                                 const std::vector<SE3Transform>& inverse_orient_cams,
                                 const CornerTrackRepository& track_rep,
@@ -309,7 +364,11 @@ Scalar ReprojErrorWithOverlap(const FragmentMap& map,
         {
             std::optional<suriko::Point2> corner = point_track.GetCorner(frame_ind);
             if (!corner.has_value())
+            {
+                // the salient point is not detected in current frame and 
+                // hence doesn't influence the reprojection error
                 continue;
+            }
 
             suriko::Point2 corner_pix = corner.value();
             suriko::Point3 x3D = map.GetSalientPoint(point_track.TrackId);
@@ -409,170 +468,11 @@ bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
 bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
 {
     Scalar finite_diff_eps = 1e-5;
-    ComputeDerivativesFiniteDifference(finite_diff_eps, &gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff);
+    ComputeCloseFormReprErrorDerivatives(&gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff, finite_diff_eps);
     return true;
 }
 
-void BundleAdjustmentKanatani::ComputeDerivativesFiniteDifference(
-    Scalar finite_diff_eps,
-    std::vector<Scalar>* gradE,
-    EigenDynMat* deriv_second_pointpoint,
-    EigenDynMat* deriv_second_frameframe,
-    EigenDynMat* deriv_second_pointframe)
-{
-    size_t points_count = map_->PointTrackCount();
-    size_t frames_count = inverse_orient_cams_->size();
-
-    static const Scalar kNan = std::numeric_limits<Scalar>::quiet_NaN();
-    if (kSurikoDebug)
-    {
-        std::fill(gradE->begin(), gradE->end(), kNan);
-        deriv_second_pointpoint->fill(kNan);
-        deriv_second_frameframe->fill(kNan);
-        deriv_second_pointframe->fill(kNan);
-    }
-
-    // compute point derivatives
-    track_rep_->IteratePointsMarker();
-    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
-    {
-        LOG(INFO) << "point_track_id=" << point_track_id;
-        const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
-
-        const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
-
-        size_t pnt_ind = point_track_id;
-
-        // 1st derivative Point
-        gsl::span<Scalar> gradPoint = gsl::make_span(&(*gradE)[pnt_ind * kPointVarsCount], kPointVarsCount);
-        for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
-            gradPoint[var1] = GetFiniteDiffFirstPartialDerivPoint(point_track_id, salient_point, var1, finite_diff_eps);
-
-        // 2nd derivative Point - Point
-        for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
-            for (size_t var2 = 0; var2 < kPointVarsCount; ++var2)
-                (*deriv_second_pointpoint)(pnt_ind * kPointVarsCount + var1, var2) = GetFiniteDiffSecondPartialDerivPoint(point_track_id, salient_point, var1, var2, finite_diff_eps);
-
-        if (kSurikoDebug)
-        {
-            // check point hessian is invertible
-            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian = (*deriv_second_pointpoint).middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount);
-
-            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv;
-            bool is_inverted = false;
-            Scalar det = 0;
-            point_hessian.computeInverseAndDetWithCheck(point_hessian_inv, det, is_inverted);
-            CHECK(is_inverted) << "3x3 matrix of second derivatives of points is not invertible, point_track_id=" <<point_track_id << " det=" << det << " mat=\n" << point_hessian;
-        }
-    }
-
-    // dT
-    size_t grad_frames_section_offset = points_count * kPointVarsCount; // frames goes after points
-    for (size_t frame_ind = 1; frame_ind < frames_count; ++frame_ind)
-    {
-        LOG(INFO) << "frame_ind=" << frame_ind;
-
-        const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
-        const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
-
-        size_t grad_cur_frame_offset = grad_frames_section_offset + frame_ind * frame_vars_count_;
-
-        track_rep_->IteratePointsMarker();
-        for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
-        {
-            const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
-
-            const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
-
-            size_t pnt_ind = point_track_id;
-
-            MarkOptVarsOrderDependency();
-            size_t inside_frame = 0;
-
-            gsl::span<Scalar> grad_cam_intrinsic_vars = gsl::make_span(&(*gradE)[grad_cur_frame_offset], frame_vars_count_);
-
-            // finite difference of intrinsic variables
-            for (size_t fxfy_ind = 0; fxfy_ind < kFxFyCount; ++fxfy_ind)
-            {
-                grad_cam_intrinsic_vars[fxfy_ind] = 
-                    GetFiniteDiffFirstPartialDerivFocalLengthFxFy(frame_ind, K, fxfy_ind, finite_diff_eps);
-            }
-            inside_frame += kFxFyCount;
-
-            for (size_t u0v0_ind = 0; u0v0_ind < kU0V0Count; ++u0v0_ind)
-            {
-                grad_cam_intrinsic_vars[inside_frame + u0v0_ind] =
-                    GetFiniteDiffFirstDerivPrincipalPoint(frame_ind, K, u0v0_ind, finite_diff_eps);
-            }
-            inside_frame += kU0V0Count;
-
-            const SE3Transform& direct_orient_cam = SE3Inv(inverse_orient_cam);
-
-            // 1st derivaive of T translation
-            for (size_t tind = 0; tind < kTVarsCount; ++tind)
-            {
-                grad_cam_intrinsic_vars[inside_frame + tind] =
-                    GetFiniteDiffFirstPartialDerivTranslationDirect(frame_ind, direct_orient_cam, tind, finite_diff_eps);
-            }
-            inside_frame += kTVarsCount;
-
-            // 1st derivative of W (axis angle representation of rotation)
-            // Axis angle can't be recovered for identity R matrix. This situation may occur when at some point the
-            // camera orientation coincide with the orientation at the first time point. Then such camera orientation
-            // may be inferred from the neighbour camera orientations.
-            Eigen::Matrix<Scalar, 3, 1> direct_w;
-            bool op = AxisAngleFromRotMat(direct_orient_cam.R, &direct_w);
-            if (op)
-            {
-                for (size_t wind = 0; wind < kWVarsCount; ++wind)
-                {
-                    grad_cam_intrinsic_vars[inside_frame + wind] =
-                        GetFiniteDiffFirstPartialDerivRotation(frame_ind, direct_orient_cam, direct_w, wind, finite_diff_eps);
-                }
-                inside_frame += kWVarsCount;
-
-                FrameFromOptVarsUpdater frame_vars_updater(frame_ind, K, direct_orient_cam);
-
-                // 2nd derivative Frame - Frame
-                for (size_t var1 = 0; var1 < frame_vars_count_; ++var1)
-                    for (size_t var2 = 0; var2 < frame_vars_count_; ++var2)
-                    {
-                        Scalar ax = GetFiniteDiffSecondPartialDerivFrameFrame(frame_vars_updater, var1, var2, finite_diff_eps);
-                        (*deriv_second_frameframe)(frame_ind * frame_vars_count_ + var1, var2) = ax;
-                    }
-
-                // 2nd derivative Point - Frame
-                for (size_t point_var_ind = 0; point_var_ind < kPointVarsCount; ++point_var_ind)
-                    for (size_t frame_var_ind = 0; frame_var_ind < frame_vars_count_; ++frame_var_ind)
-                    {
-                        Scalar ax = GetFiniteDiffSecondPartialDerivPointFrame(point_track_id, salient_point, frame_vars_updater, point_var_ind, frame_var_ind, finite_diff_eps);
-                        (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var_ind, frame_ind * frame_vars_count_ + frame_var_ind) = ax;
-                    }
-            }
-        }
-    }
-
-    if (kSurikoDebug) // postcondition: all derivatives must be set
-    {
-        auto isfinite_pred = [](auto x) -> bool { return std::isfinite(x); };
-
-        bool c1 = std::all_of(gradE->begin(), gradE->end(), isfinite_pred);
-        CHECK(c1) << "failed to compute gradE";
-
-        bool c2 = deriv_second_pointpoint->unaryExpr(isfinite_pred).all();
-        CHECK(c2) << "failed to compute deriv_second_pointpoint";
-
-        bool c3 = deriv_second_frameframe->unaryExpr(isfinite_pred).all();
-        CHECK(c3) << "failed to compute deriv_second_frameframe";
-
-        bool c4 = deriv_second_pointframe->unaryExpr(isfinite_pred).all();
-        CHECK(c4) << "failed to compute deriv_second_pointframe";
-    }
-}
-
-auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivPoint(size_t point_track_id,
-                                                                    const suriko::Point3& pnt3D_world, size_t var1,
-                                                                    Scalar finite_diff_eps) const -> Scalar
+auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, Scalar finite_diff_eps) const -> Scalar
 {
     suriko::Point3 pnt3D_left = pnt3D_world; // copy
     pnt3D_left[var1] -= finite_diff_eps;
@@ -590,10 +490,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivPoint(size_t point_
     return (x2_err_sum - x1_err_sum) / (2 * finite_diff_eps);
 }
 
-auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPoint(size_t point_track_id,
-                                                                    const suriko::Point3& pnt3D_world, size_t var1,
-                                                                    size_t var2,
-                                                                    Scalar finite_diff_eps) const -> Scalar
+auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, size_t var2, Scalar finite_diff_eps) const -> Scalar
 {
     // second order central finite difference formula
     // https://en.wikipedia.org/wiki/Finite_difference
@@ -626,8 +523,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPoint(size_t point
     return value;
 }
 
-auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivFocalLengthFxFy(
-    size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t fxfy_ind, Scalar finite_diff_eps) const -> Scalar
+auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivFocalLengthFxFy(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t fxfy_ind, Scalar finite_diff_eps) const -> Scalar
 {
     auto K_left = K; // copy
     K_left(fxfy_ind, fxfy_ind) -= finite_diff_eps;
@@ -644,7 +540,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivFocalLengthFxFy(
     return value;
 }
 
-auto BundleAdjustmentKanatani::GetFiniteDiffFirstDerivPrincipalPoint(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t u0v0_ind, Scalar finite_diff_eps) const -> Scalar
+auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivPrincipalPoint(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t u0v0_ind, Scalar finite_diff_eps) const -> Scalar
 {
     auto K_left = K; // copy
     K_left(u0v0_ind, 2) -= finite_diff_eps;
@@ -683,25 +579,27 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivTranslationDirect(
     return value;
 }
 
-auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivRotation(size_t frame_ind, const SE3Transform& direct_orient_cam, const Eigen::Matrix<Scalar, 3, 1>& w_direct, size_t wind, Scalar finite_diff_eps) const -> Scalar
+auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivRotation(size_t frame_ind, const SE3Transform& direct_orient_cam, size_t wind, Scalar finite_diff_eps) const -> Scalar
 {
-    Eigen::Matrix<Scalar, 3, 3> rot_mat;
+    Eigen::Matrix<Scalar, kWVarsCount, 1> direct_w_delta;
+    direct_w_delta.fill(0);
+    direct_w_delta[wind] -= finite_diff_eps;
 
-    Eigen::Matrix<Scalar, 3, 1> direct_w1 = w_direct; // copy
-    direct_w1[wind] -= finite_diff_eps;
-    bool op = RotMatFromAxisAngle(direct_w1, &rot_mat);
-    CHECK(op); // TODO: or return 0?
-    SE3Transform direct_rt1(rot_mat, direct_orient_cam.T);
+    Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_Rnew;
+    IncrementRotMat(direct_orient_cam.R, direct_w_delta, &direct_Rnew);
+
+    SE3Transform direct_rt1(direct_Rnew, direct_orient_cam.T);
     SE3Transform invertse_rt1 = SE3Inv(direct_rt1);
     FramePatch patch1(frame_ind, invertse_rt1);
 
     Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch1);
 
-    Eigen::Matrix<Scalar, 3, 1> direct_w2 = w_direct; // copy
-    direct_w2[wind] += finite_diff_eps;
-    op = RotMatFromAxisAngle(direct_w2, &rot_mat);
-    CHECK(op); // TODO: or return 0?
-    SE3Transform direct_rt2(rot_mat, direct_orient_cam.T);
+    //
+    direct_w_delta.fill(0);
+    direct_w_delta[wind] += finite_diff_eps;
+    IncrementRotMat(direct_orient_cam.R, direct_w_delta, &direct_Rnew);
+
+    SE3Transform direct_rt2(direct_Rnew, direct_orient_cam.T);
     SE3Transform invertse_rt2 = SE3Inv(direct_rt2);
     FramePatch patch2(frame_ind, invertse_rt2);
 
@@ -710,57 +608,67 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivRotation(size_t fra
     return value;
 }
 
-auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivFrameFrame(
-    const FrameFromOptVarsUpdater& frame_vars_updater, size_t frame_var_ind1, size_t frame_var_ind2,
-    Scalar finite_diff_eps) const -> Scalar
+auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivFrameFrame(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat, 
+    const SE3Transform& direct_orient_cam, size_t frame_var_ind1, size_t frame_var_ind2, Scalar finite_diff_eps) const -> Scalar
 {
-    FrameFromOptVarsUpdater frame_vars_updater1 = frame_vars_updater; // copy
-    frame_vars_updater1.AddDelta(frame_var_ind1, finite_diff_eps);
-    frame_vars_updater1.AddDelta(frame_var_ind2, finite_diff_eps);
-    FramePatch frame_patch_right_right;
-    frame_patch_right_right.PopulateFrom(frame_vars_updater1);
-
-    FrameFromOptVarsUpdater frame_vars_updater2 = frame_vars_updater; // copy
-    frame_vars_updater2.AddDelta(frame_var_ind1, finite_diff_eps);
-    frame_vars_updater2.AddDelta(frame_var_ind2, -finite_diff_eps);
-    FramePatch frame_patch_right_left;
-    frame_patch_right_left.PopulateFrom(frame_vars_updater2);
-
-    FrameFromOptVarsUpdater frame_vars_updater3 = frame_vars_updater; // copy
-    frame_vars_updater3.AddDelta(frame_var_ind1, -finite_diff_eps);
-    frame_vars_updater3.AddDelta(frame_var_ind2, finite_diff_eps);
-    FramePatch frame_patch_left_right;
-    frame_patch_left_right.PopulateFrom(frame_vars_updater3);
-
-    FrameFromOptVarsUpdater frame_vars_updater4 = frame_vars_updater; // copy
-    frame_vars_updater4.AddDelta(frame_var_ind1, -finite_diff_eps);
-    frame_vars_updater4.AddDelta(frame_var_ind2, -finite_diff_eps);
-    FramePatch frame_patch_left_left;
-    frame_patch_left_left.PopulateFrom(frame_vars_updater4);
-
+    std::array<Scalar, kMaxFrameVarsCount> frame_vars_delta;
+    
     // var1 + eps, var2 + eps
+    frame_vars_delta.fill(0);
+    frame_vars_delta[frame_var_ind1] += finite_diff_eps;
+    frame_vars_delta[frame_var_ind2] += finite_diff_eps;
+    Eigen::Matrix<Scalar, 3, 3> K = cam_intrinsics_mat;
+    SE3Transform direct_rt = direct_orient_cam;
+    AddDeltaToFrameInplace(frame_vars_delta, &K, &direct_rt);
+    SE3Transform inverse_orient_cam = SE3Inv(direct_rt);
+    FramePatch frame_patch_right_right(frame_ind, K, inverse_orient_cam);
+
     Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_right_right);
 
     // var1 + eps, var2 - eps
+    frame_vars_delta.fill(0);
+    frame_vars_delta[frame_var_ind1] += finite_diff_eps;
+    frame_vars_delta[frame_var_ind2] -= finite_diff_eps;
+    K = cam_intrinsics_mat;
+    direct_rt = direct_orient_cam;
+    AddDeltaToFrameInplace(frame_vars_delta, &K, &direct_rt);
+    inverse_orient_cam = SE3Inv(direct_rt);
+    FramePatch frame_patch_right_left(frame_ind, K, inverse_orient_cam);
+
     Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_right_left);
 
     // var1 - eps, var2 + eps
+    frame_vars_delta.fill(0);
+    frame_vars_delta[frame_var_ind1] -= finite_diff_eps;
+    frame_vars_delta[frame_var_ind2] += finite_diff_eps;
+    K = cam_intrinsics_mat;
+    direct_rt = direct_orient_cam;
+    AddDeltaToFrameInplace(frame_vars_delta, &K, &direct_rt);
+    inverse_orient_cam = SE3Inv(direct_rt);
+    FramePatch frame_patch_left_right(frame_ind, K, inverse_orient_cam);
     Scalar e3 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_left_right);
 
     // var1 - eps, var2 - eps
+    frame_vars_delta.fill(0);
+    frame_vars_delta[frame_var_ind1] -= finite_diff_eps;
+    frame_vars_delta[frame_var_ind2] -= finite_diff_eps;
+    K = cam_intrinsics_mat;
+    direct_rt = direct_orient_cam;
+    AddDeltaToFrameInplace(frame_vars_delta, &K, &direct_rt);
+    inverse_orient_cam = SE3Inv(direct_rt);
+    FramePatch frame_patch_left_left(frame_ind, K, inverse_orient_cam);
     Scalar e4 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_left_left);
 
     // second order central finite difference formula
     // https://en.wikipedia.org/wiki/Finite_difference
-    //Scalar value = (e1 - e2 - e3 + e4) / (4 * finite_diff_eps * finite_diff_eps);
-    Scalar k = 1 / finite_diff_eps;
-    Scalar value = (e1 - e2 - e3 + e4) *0.25*k*k;
+    Scalar value = (e1 - e2 - e3 + e4) / (4 * finite_diff_eps * finite_diff_eps);
     return value;
 }
 
 auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointFrame(
-    size_t point_track_id, const suriko::Point3& pnt3D_world,
-    const FrameFromOptVarsUpdater& frame_vars_updater, size_t point_var_ind, size_t frame_var_ind,
+    size_t point_track_id, const suriko::Point3& pnt3D_world, size_t point_var_ind,
+    size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat,
+    const SE3Transform& direct_orient_cam, size_t frame_var_ind,
     Scalar finite_diff_eps) const -> Scalar
 {
     suriko::Point3 point1 = pnt3D_world; // copy
@@ -772,15 +680,21 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointFrame(
     SalientPointPatch point_patch2(point_track_id, point2);
 
     //
-    FrameFromOptVarsUpdater frame_vars_updater1 = frame_vars_updater; // copy
-    frame_vars_updater1.AddDelta(frame_var_ind, -finite_diff_eps);
-    FramePatch frame_patch1;
-    frame_patch1.PopulateFrom(frame_vars_updater1);
+    std::array<Scalar, kMaxFrameVarsCount> frame_vars_delta{};
+    frame_vars_delta[frame_var_ind] = -finite_diff_eps;
+    Eigen::Matrix<Scalar, 3, 3> K1 = cam_intrinsics_mat;
+    SE3Transform direct_rt1 = direct_orient_cam;
+    AddDeltaToFrameInplace(frame_vars_delta, &K1, &direct_rt1);
+    SE3Transform inverse_orient_cam1 = SE3Inv(direct_rt1);
+    FramePatch frame_patch1(frame_ind, K1, inverse_orient_cam1);
 
-    FrameFromOptVarsUpdater frame_vars_updater2 = frame_vars_updater; // copy
-    frame_vars_updater2.AddDelta(frame_var_ind, finite_diff_eps);
-    FramePatch frame_patch2;
-    frame_patch2.PopulateFrom(frame_vars_updater2);
+    frame_vars_delta[frame_var_ind] = finite_diff_eps;
+    Eigen::Matrix<Scalar, 3, 3> K2 = cam_intrinsics_mat;
+    SE3Transform direct_rt2 = direct_orient_cam;
+    AddDeltaToFrameInplace(frame_vars_delta, &K2, &direct_rt2);
+    SE3Transform inverse_orient_cam2 = SE3Inv(direct_rt2);
+    FramePatch frame_patch2(frame_ind, K2, inverse_orient_cam2);
+    FramePatch frame_patch2tmp(frame_ind, K2, inverse_orient_cam1);
 
     // var1 + eps, var2 + eps
     Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch2, &frame_patch2);
@@ -793,6 +707,9 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointFrame(
 
     // var1 - eps, var2 - eps
     Scalar e4 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch1);
+    
+    Scalar etmp1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2);
+    Scalar etmp2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2tmp);
 
     // second order central finite difference formula
     // https://en.wikipedia.org/wiki/Finite_difference
@@ -800,102 +717,394 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointFrame(
     return value;
 }
 
-BundleAdjustmentKanatani::FrameFromOptVarsUpdater::FrameFromOptVarsUpdater(
-    size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat, const SE3Transform& direct_orient_cam)
-    : frame_ind_(frame_ind),
-        cam_intrinsics_mat_(cam_intrinsics_mat),
-        direct_orient_cam_(direct_orient_cam)
+void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
+    EigenDynMat* deriv_second_pointpoint,
+    EigenDynMat* deriv_second_frameframe,
+    EigenDynMat* deriv_second_pointframe, Scalar finite_diff_eps)
 {
-    inverse_orient_cam_ = SE3Inv(direct_orient_cam_);
-    direct_orient_cam_valid_ = true;
-    inverse_orient_cam_valid_ = true;
-    UpdatePackedVars();
-}
+    Scalar rough_rtol = 0.2; // used to compare close and finite difference derivatives
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
 
-void BundleAdjustmentKanatani::FrameFromOptVarsUpdater::UpdatePackedVars()
-{
-    frame_vars_[0] = cam_intrinsics_mat_(0, 0); // fx
-    frame_vars_[1] = cam_intrinsics_mat_(1, 1); // fy
-    frame_vars_[2] = cam_intrinsics_mat_(0, 2); // u0
-    frame_vars_[3] = cam_intrinsics_mat_(1, 2); // v0
-    frame_vars_[4] = direct_orient_cam_.T[0]; // Tx
-    frame_vars_[5] = direct_orient_cam_.T[1]; // Ty
-    frame_vars_[6] = direct_orient_cam_.T[2]; // Tz
+    // each reproj error derivative with respect to all variables is a sum of parts => initialize with zeros
+    std::fill(grad_error->begin(), grad_error->end(), 0);
+    deriv_second_pointpoint->fill(0);
+    deriv_second_frameframe->fill(0);
+    deriv_second_pointframe->fill(0);
 
-    //
-    SRK_ASSERT(direct_orient_cam_valid_);
+    // The derivatives of error function with respect to variables are computed in two steps:
+    // 1. The Pqr derivatives are computed. Pqr=P*[X Y Z 1] where P[3x4] is a projection matrix; Pqr[3x1].
+    // 2. The error derivatives are computed using the Pqr derivatives.
 
-    Eigen::Matrix<Scalar, 3, 1> direct_w;
-    bool op = AxisAngleFromRotMat(direct_orient_cam_.R, &direct_w);
-    CHECK(op);
-
-    frame_vars_[7] = direct_w[0]; // Wx
-    frame_vars_[8] = direct_w[1]; // Wy
-    frame_vars_[9] = direct_w[2]; // Wz
-}
-
-void BundleAdjustmentKanatani::FrameFromOptVarsUpdater::AddDelta(size_t var_ind, Scalar value)
-{
-    frame_vars_[var_ind] += value;
-
-    // update dependent 'expanded' structues
-
-    if (var_ind < kIntrinsicVarsCount)
+    // compute point derivatives
+    track_rep_->IteratePointsMarker();
+    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
     {
-        switch (var_ind)
+        const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
+
+        const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+
+        size_t pnt_ind = point_track_id;
+        gsl::span<Scalar> grad_point = gsl::make_span(&(*grad_error)[pnt_ind * kPointVarsCount], kPointVarsCount);
+
+        for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
         {
-        case 0:
-        case 1:
-            cam_intrinsics_mat_(var_ind, var_ind) += value;
-            break;
-        case 2:
-        case 3:
+            std::optional<suriko::Point2> corner_pix_opt = point_track.GetCorner(frame_ind);
+            if (!corner_pix_opt.has_value())
             {
-                size_t row = var_ind - kFxFyCount; // count([fx,fy])=2
-                cam_intrinsics_mat_(row, 2) += value;
-                break;
+                // Te salient point is not detected in current frame and hence doesn't influence the reprojection error.
+                continue;
             }
-        default: AssertFalse();
-        }
-    }
-    else if (var_ind < kIntrinsicVarsCount + kTVarsCount)
-    {
-        size_t i = var_ind - kIntrinsicVarsCount;
+            
+            const suriko::Point2& corner_pix = corner_pix_opt.value();
 
-        // updating translation in direct camera leads to corresponding changes in both R and T in inverse camera
-        if (direct_orient_cam_valid_)
-        {
-            // update direct camera orientation if it is up to date
-            direct_orient_cam_.T[i] += value;
+            const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
+            const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
+
+            Scalar f0 = K(2, 2);
+
+            suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
+            Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
+            const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+
+            Eigen::Matrix<Scalar, 3, 4> P;
+            P << K * inverse_orient_cam.R, K * inverse_orient_cam.T;
+
+            Eigen::Matrix<Scalar, kPointVarsCount, PqrCount> point_pqr_deriv;
+            ComputePointPqrDerivatives(P, &point_pqr_deriv);
+
+            // 1st derivative Point
+            for (size_t xyz_ind = 0; xyz_ind < kPointVarsCount; ++xyz_ind)
+            {
+                Scalar ax = FirstDerivFromPqrDerivative(f0, pqr, corner_pix, point_pqr_deriv(xyz_ind, 0), point_pqr_deriv(xyz_ind, 1), point_pqr_deriv(xyz_ind, 2));
+                grad_point[xyz_ind] += ax;
+            }
+
+            // 2nd derivative Point - Point
+            for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
+            {
+                Scalar gradp_byvar1 = point_pqr_deriv(var1, kPCompInd);
+                Scalar gradq_byvar1 = point_pqr_deriv(var1, kQCompInd);
+                Scalar gradr_byvar1 = point_pqr_deriv(var1, kRCompInd);
+                for (size_t var2 = 0; var2 < kPointVarsCount; ++var2)
+                {
+                    Scalar gradp_byvar2 = point_pqr_deriv(var2, kPCompInd);
+                    Scalar gradq_byvar2 = point_pqr_deriv(var2, kQCompInd);
+                    Scalar gradr_byvar2 = point_pqr_deriv(var2, kRCompInd);
+                    Scalar ax = SecondDerivFromPqrDerivative(pqr, gradp_byvar1, gradq_byvar1, gradr_byvar1, gradp_byvar2, gradq_byvar2, gradr_byvar2);
+                    (*deriv_second_pointpoint)(pnt_ind * kPointVarsCount + var1, var2) += ax;
+                }
+            }
         }
-        inverse_orient_cam_valid_ = false;
+
+        // all frames where the current point visible are processed, and now derivative with respect to point are ready and can be checked
+        if (kSurikoDebug)
+        {
+            // check point hessian is invertible
+            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian = (*deriv_second_pointpoint).middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount);
+
+            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv;
+            bool is_inverted = false;
+            Scalar det = 0;
+            point_hessian.computeInverseAndDetWithCheck(point_hessian_inv, det, is_inverted);
+            CHECK(is_inverted) << "3x3 matrix of second derivatives of points is not invertible, point_track_id=" << point_track_id << " det=" << det << " mat=\n" << point_hessian;
+
+            if (debug_reproj_error_first_derivatives_) // slow, check if requested
+            {
+                // 1st derivative Point
+                for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
+                {
+                    Scalar close_deriv = grad_point[var1];
+                    Scalar finite_diff_deriv = GetFiniteDiffFirstPartialDerivPoint(point_track_id, salient_point, var1, finite_diff_eps);
+                    if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
+                        VLOG(4) << "d1point[" << var1 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                }
+            }
+            if (debug_reproj_error_derivatives_pointpoint_) // slow, check if requested
+            {
+                // 2nd derivative Point - Point
+                for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
+                    for (size_t var2 = 0; var2 < kPointVarsCount; ++var2)
+                    {
+                        Scalar close_deriv = (*deriv_second_pointpoint)(pnt_ind * kPointVarsCount + var1, var2);
+
+                        Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivPointPoint(point_track_id, salient_point, var1, var2, finite_diff_eps);
+                        if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
+                            VLOG(4) << "d2pointpoint[" << var1 << "," << var2 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                    }
+            }
+        }
     }
-    else
+
+    // dT
+    size_t grad_frames_section_offset = points_count * kPointVarsCount; // frames goes after points
+    for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
-        SRK_ASSERT(var_ind < kIntrinsicVarsCount + kTVarsCount + kWVarsCount);
-        // updating rotation in the form of axis angle invalidates a direct (and inverse) camera orientation 
-        direct_orient_cam_valid_ = false;
-        inverse_orient_cam_valid_ = false;
+        const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
+        const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
+        Scalar f0 = K(2, 2);
+
+        size_t grad_cur_frame_offset = grad_frames_section_offset + frame_ind * frame_vars_count_;
+        gsl::span<Scalar> grad_frame = gsl::make_span(&(*grad_error)[grad_cur_frame_offset], frame_vars_count_);
+
+        track_rep_->IteratePointsMarker();
+        for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+        {
+            const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
+            std::optional<suriko::Point2> corner_pix_opt = point_track.GetCorner(frame_ind);
+            if (!corner_pix_opt.has_value())
+            {
+                // Te salient point is not detected in current frame and hence doesn't influence the reprojection error.
+                continue;
+            }
+            
+            const suriko::Point2& corner_pix = corner_pix_opt.value();
+
+            const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+
+            suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
+            Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
+            const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+
+            Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount> frame_pqr_deriv;
+            size_t actual_frame_vars_count = 0;
+            ComputeFramePqrDerivatives(K, inverse_orient_cam, salient_point, corner_pix, &frame_pqr_deriv, &actual_frame_vars_count);
+            SRK_ASSERT(frame_vars_count_ == actual_frame_vars_count) << "all " << frame_vars_count_ << " pqr derivatives must be set, but only " << actual_frame_vars_count << " were set";
+
+            // 1st derivative of error with respect to all frame variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
+            for (size_t frame_var_ind = 0; frame_var_ind < frame_vars_count_; ++frame_var_ind)
+            {
+                Scalar dp_by_var = frame_pqr_deriv(frame_var_ind, kPCompInd);
+                Scalar dq_by_var = frame_pqr_deriv(frame_var_ind, kQCompInd);
+                Scalar dr_by_var = frame_pqr_deriv(frame_var_ind, kRCompInd);
+                Scalar s = FirstDerivFromPqrDerivative(f0, pqr, corner_pix, dp_by_var, dq_by_var, dr_by_var);
+                grad_frame[frame_var_ind] += s;
+            }
+
+            // 2nd derivative of reprojection error with respect to Frame - Frame variables
+            for (size_t var1 = 0; var1 < frame_vars_count_; ++var1)
+            {
+                Scalar dp_by_var1 = frame_pqr_deriv(var1, kPCompInd);
+                Scalar dq_by_var1 = frame_pqr_deriv(var1, kQCompInd);
+                Scalar dr_by_var1 = frame_pqr_deriv(var1, kRCompInd);
+                
+                for (size_t var2 = 0; var2 < frame_vars_count_; ++var2)
+                {
+                    Scalar dp_by_var2 = frame_pqr_deriv(var2, kPCompInd);
+                    Scalar dq_by_var2 = frame_pqr_deriv(var2, kQCompInd);
+                    Scalar dr_by_var2 = frame_pqr_deriv(var2, kRCompInd);
+
+                    Scalar s = SecondDerivFromPqrDerivative(pqr, dp_by_var1, dq_by_var1, dr_by_var1, dp_by_var2, dq_by_var2, dr_by_var2);
+                    (*deriv_second_frameframe)(frame_ind * frame_vars_count_ + var1, var2) += s;
+                }
+            }
+
+            Eigen::Matrix<Scalar, 3, 4> P;
+            P << K * inverse_orient_cam.R, K * inverse_orient_cam.T;
+
+            Eigen::Matrix<Scalar, kPointVarsCount, PqrCount> point_pqr_deriv;
+            ComputePointPqrDerivatives(P, &point_pqr_deriv);
+
+            // 2nd derivative of reprojection error with respect to Point - Frame variables
+            for (size_t point_var_ind = 0; point_var_ind < kPointVarsCount; ++point_var_ind)
+            {
+                Scalar gradp_by_var1 = point_pqr_deriv(point_var_ind, kPCompInd);
+                Scalar gradq_by_var1 = point_pqr_deriv(point_var_ind, kQCompInd);
+                Scalar gradr_by_var1 = point_pqr_deriv(point_var_ind, kRCompInd);
+
+                for (size_t frame_var_ind = 0; frame_var_ind < frame_vars_count_; ++frame_var_ind)
+                {
+                    Scalar gradp_by_var2 = frame_pqr_deriv(frame_var_ind, kPCompInd);
+                    Scalar gradq_by_var2 = frame_pqr_deriv(frame_var_ind, kQCompInd);
+                    Scalar gradr_by_var2 = frame_pqr_deriv(frame_var_ind, kRCompInd);
+
+                    Scalar s = SecondDerivFromPqrDerivative(pqr, gradp_by_var1, gradq_by_var1, gradr_by_var1, gradp_by_var2, gradq_by_var2, gradr_by_var2);
+                    size_t pnt_ind = point_track_id;
+                    (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var_ind, frame_ind * frame_vars_count_ + frame_var_ind) += s;
+                }
+            }
+        }
+
+        // all points in the current frame are processed, and now derivative with respect to frame are ready and can be checked
+        if (kSurikoDebug)
+        {
+            SE3Transform direct_orient_cam = SE3Inv(inverse_orient_cam);
+            if (debug_reproj_error_first_derivatives_) // slow, check if requested
+            {
+                // 1st derivative with respect to Point variables
+                for (size_t var1 = 0; var1 < frame_vars_count_; ++var1)
+                {
+                    Scalar close_deriv = grad_frame[var1];
+
+                    auto frame_finite_diff_deriv_fun = [this, frame_ind, &K, &direct_orient_cam, finite_diff_eps](size_t fram_var_ind) -> Scalar
+                    {
+                        SRK_ASSERT(fram_var_ind < frame_vars_count_);
+
+                        size_t inside_frame_ind = fram_var_ind;
+                        if (inside_frame_ind < kFxFyCount)
+                            return GetFiniteDiffFirstPartialDerivFocalLengthFxFy(frame_ind, K, inside_frame_ind, finite_diff_eps);
+                        inside_frame_ind -= kFxFyCount;
+
+                        if (inside_frame_ind < kU0V0Count)
+                            return GetFiniteDiffFirstPartialDerivPrincipalPoint(frame_ind, K, inside_frame_ind, finite_diff_eps);
+                        inside_frame_ind -= kU0V0Count;
+
+                        if (inside_frame_ind < kTVarsCount)
+                            return GetFiniteDiffFirstPartialDerivTranslationDirect(frame_ind, direct_orient_cam, inside_frame_ind, finite_diff_eps);
+                        inside_frame_ind -= kTVarsCount;
+
+                        return GetFiniteDiffFirstPartialDerivRotation(frame_ind, direct_orient_cam, inside_frame_ind, finite_diff_eps);
+                    };
+                    Scalar finite_diff_deriv = frame_finite_diff_deriv_fun(var1);
+
+                    if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
+                        VLOG(4) << "d1frame[" << var1 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                }
+            }
+            if (debug_reproj_error_derivatives_frameframe_) // slow, check if requested
+            {
+                // 2nd derivative with respect to Frame - Frame variables
+                for (size_t var1 = 0; var1 < frame_vars_count_; ++var1)
+                    for (size_t var2 = 0; var2 < frame_vars_count_; ++var2)
+                    {
+                        Scalar close_deriv = (*deriv_second_frameframe)(frame_ind * frame_vars_count_ + var1, var2);
+
+                        Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivFrameFrame(frame_ind, K, direct_orient_cam, var1, var2, finite_diff_eps);
+                        if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
+                            VLOG(4) << "d2frameframe[" << var1 << "," << var2 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                    }
+            }
+        }
+    }
+
+    if (kSurikoDebug && debug_reproj_error_derivatives_pointframe_) // slow, check if requested
+    {
+        for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
+        {
+            const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
+            SE3Transform direct_orient_cam = SE3Inv(inverse_orient_cam);
+            const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
+
+            track_rep_->IteratePointsMarker();
+            for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+            {
+                const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+
+                // 2nd derivative with respect to Point - Frame variables
+                for (size_t point_var = 0; debug_reproj_error_derivatives_pointframe_ && point_var < kPointVarsCount; ++point_var)
+                    for (size_t frame_var = 0; frame_var < frame_vars_count_; ++frame_var)
+                    {
+                        size_t pnt_ind = point_track_id;
+                        Scalar close_deriv = (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var, frame_ind * frame_vars_count_ + frame_var);
+
+                        Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivPointFrame(point_track_id, salient_point, point_var, frame_ind, K, direct_orient_cam, frame_var, finite_diff_eps);
+                        if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
+                            VLOG(4) << "d2frameframe[" << point_var << "," << frame_var << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                    }
+            }
+        }
     }
 }
 
-void BundleAdjustmentKanatani::FrameFromOptVarsUpdater::EnsureCameraOrientaionValid()
+void BundleAdjustmentKanatani::ComputePointPqrDerivatives(const Eigen::Matrix<Scalar,3,4>& P, Eigen::Matrix<Scalar, kPointVarsCount, PqrCount>* point_pqr_deriv) const
 {
-    if (!direct_orient_cam_valid_)
-    {
-        direct_orient_cam_.T[0] = frame_vars_[4]; // Tx
-        direct_orient_cam_.T[1] = frame_vars_[5]; // Ty
-        direct_orient_cam_.T[2] = frame_vars_[6]; // Tz
+    point_pqr_deriv->row(0) = P.col(0); // d(p, q, r) / dX
+    point_pqr_deriv->row(1) = P.col(1); // d(p, q, r) / dY
+    point_pqr_deriv->row(2) = P.col(2); // d(p, q, r) / dZ
+}
 
-        Eigen::Map<Eigen::Matrix<Scalar, 3, 1>> direct_w_mat(&frame_vars_[kIntrinsicVarsCount + kTVarsCount]);
-        bool op = RotMatFromAxisAngle(direct_w_mat, &direct_orient_cam_.R);
-        CHECK(op);
-        direct_orient_cam_valid_ = true;
-    }
-    if (!inverse_orient_cam_valid_)
-    {
-        inverse_orient_cam_ = SE3Inv(direct_orient_cam_);
-        inverse_orient_cam_valid_ = true;
-    }
+void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& inverse_orient_cam, 
+    const suriko::Point3& salient_point, const suriko::Point2& corner_pix,
+    Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount>* frame_pqr_deriv, gsl::not_null<size_t*> out_frame_vars_count) const
+{
+    Scalar fx = K(0, 0);
+    Scalar fy = K(1, 1);
+    Scalar u0 = K(0, 2);
+    Scalar v0 = K(1, 2);
+    Scalar f0 = K(2, 2);
+
+    suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
+    Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
+    const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+
+    MarkOptVarsOrderDependency();
+    size_t inside_frame = 0;
+
+    // Pqr derivatives with respect to camera intrinsic variables [fx fy u0 v0]
+    // fx
+    Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount>& pqr_deriv = *frame_pqr_deriv;
+    pqr_deriv(inside_frame, kPCompInd) = (1 / fx) * pqr[0] - u0 / (f0 * fx) * pqr[2];
+    pqr_deriv(inside_frame, kQCompInd) = 0;
+    pqr_deriv(inside_frame, kRCompInd) = 0;
+    inside_frame += 1;
+
+    // fy
+    pqr_deriv(inside_frame, kPCompInd) = 0;
+    pqr_deriv(inside_frame, kQCompInd) = (1 / fy) * pqr[1] - v0 / (f0 * fy) * pqr[2];
+    pqr_deriv(inside_frame, kRCompInd) = 0;
+    inside_frame += 1;
+
+    // u0
+    pqr_deriv(inside_frame, kPCompInd) = (1 / f0) * pqr[2];
+    pqr_deriv(inside_frame, kQCompInd) = 0;
+    pqr_deriv(inside_frame, kRCompInd) = 0;
+    inside_frame += 1;
+
+    // v0
+    pqr_deriv(inside_frame, kPCompInd) = 0;
+    pqr_deriv(inside_frame, kQCompInd) = (1 / f0) * pqr[2];
+    pqr_deriv(inside_frame, kRCompInd) = 0;
+    inside_frame += 1;
+
+    const SE3Transform& direct_orient_cam = SE3Inv(inverse_orient_cam);
+
+    // 1st derivaive of error with respect to T translation
+    Eigen::Matrix<Scalar, kTVarsCount, PqrCount> tvars_pqr_deriv;
+    tvars_pqr_deriv.col(0) = -(fx * direct_orient_cam.R.col(0) + u0 * direct_orient_cam.R.col(2)); // dp / d(Tx, Ty, Tz)
+    tvars_pqr_deriv.col(1) = -(fy * direct_orient_cam.R.col(1) + v0 * direct_orient_cam.R.col(2)); // dq / d(Tx, Ty, Tz)
+    tvars_pqr_deriv.col(2) = -(f0 * direct_orient_cam.R.col(2)); // dr / d(Tx, Ty, Tz)
+
+    pqr_deriv.middleRows<kTVarsCount>(inside_frame) = tvars_pqr_deriv;
+    inside_frame += kTVarsCount;
+
+    // 1st derivative of error with respect to direct W (axis angle representation of rotation)
+    Eigen::Matrix<Scalar, kWVarsCount, 1> rot1 = fx * direct_orient_cam.R.col(0) + u0 * direct_orient_cam.R.col(2);
+    Eigen::Matrix<Scalar, kWVarsCount, 1> rot2 = fy * direct_orient_cam.R.col(1) + v0 * direct_orient_cam.R.col(2);
+    Eigen::Matrix<Scalar, kWVarsCount, 1> rot3 = f0 * direct_orient_cam.R.col(2);
+
+    Eigen::Matrix<Scalar, kPointVarsCount, 1> t_to_salient_point = salient_point.Mat() - direct_orient_cam.T;
+
+    Eigen::Matrix<Scalar, kWVarsCount, PqrCount> wvars_pqr_deriv;
+    wvars_pqr_deriv.col(kPCompInd) = rot1.cross(t_to_salient_point);
+    wvars_pqr_deriv.col(kQCompInd) = rot2.cross(t_to_salient_point);
+    wvars_pqr_deriv.col(kRCompInd) = rot3.cross(t_to_salient_point);
+
+    pqr_deriv.middleRows<kWVarsCount>(inside_frame) = wvars_pqr_deriv;
+    inside_frame += kWVarsCount;
+    *out_frame_vars_count = inside_frame;
+}
+
+// formula 8, returns scalar or vector depending on gradp_byvar type
+Scalar BundleAdjustmentKanatani::FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2& corner_pix,
+    Scalar gradp_byvar, Scalar gradq_byvar, Scalar gradr_byvar) const
+{
+    SRK_ASSERT(!IsClose(0, pqr[2])) << "z != 0 because z is in denominator";
+    Scalar result =
+        (pqr[0] / pqr[2] - corner_pix[0] / f0) * (pqr[2] * gradp_byvar - pqr[0] * gradr_byvar) +
+        (pqr[1] / pqr[2] - corner_pix[1] / f0) * (pqr[2] * gradq_byvar - pqr[1] * gradr_byvar);
+    result *= 2 / (pqr[2] * pqr[2]);
+    return result;
+}
+
+// formula 9
+Scalar BundleAdjustmentKanatani::SecondDerivFromPqrDerivative(const Eigen::Matrix<Scalar, 3, 1>& pqr,
+    Scalar gradp_byvar1, Scalar gradq_byvar1, Scalar gradr_byvar1,
+    Scalar gradp_byvar2, Scalar gradq_byvar2, Scalar gradr_byvar2) const
+{
+    Scalar s =
+        (pqr[2] * gradp_byvar1 - pqr[0] * gradr_byvar1) * (pqr[2] * gradp_byvar2 - pqr[0] * gradr_byvar2) +
+        (pqr[2] * gradq_byvar1 - pqr[1] * gradr_byvar1) * (pqr[2] * gradq_byvar2 - pqr[1] * gradr_byvar2);
+    s *= 2 / (pqr[2] * pqr[2] * pqr[2] * pqr[2]);
+    return s;
 }
 }

@@ -10,7 +10,7 @@ bool IsClose(F1 a, F2 b,
              typename std::common_type<F1,F2>::type atol = 1.0e-8)
 {
     typedef typename std::common_type<F1,F2>::type F;
-    return std::abs(a - b) <= (atol + rtol * std::max<F>(a, b));
+    return std::abs(a - b) <= (atol + rtol * std::abs(std::max<F>(a, b)));
 }
 
 template <typename F>

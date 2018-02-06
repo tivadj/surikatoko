@@ -152,7 +152,10 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
 
 void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat)
 {
-	*skew_mat << 0, -v[2], v[1], v[2], 0, -v[0], -v[1], v[0], 0;
+	*skew_mat << 
+        0, -v[2], v[1],
+        v[2], 0, -v[0],
+        -v[1], v[0], 0;
 }
 
 auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input) -> bool

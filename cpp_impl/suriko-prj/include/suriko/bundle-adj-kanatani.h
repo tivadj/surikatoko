@@ -73,13 +73,35 @@ bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams
 /// source: "Bundle adjustment for 3-d reconstruction" Kanatani Sugaya 2010
 class BundleAdjustmentKanatani
 {
+    static const size_t kPointVarsCount = 3; // number of variables in 3D point [X,Y,Z]
+
+    static const size_t kIntrinsicVarsCount = 4; // count({fx,fy,u0,v0})=4
+    static const size_t kFxFyCount = 2; // count({fx, fy})=2
+    static const size_t kU0V0Count = 2; // count({u0, v0})=2
+    static const size_t kTVarsCount = 3; // count({directTx, directTy, directTz})=3
+    static const size_t PqrCount = 3; // count({p,q,r})=3, pqr=P*[X,Y,Z,1]
+    static const size_t kPCompInd = 0;
+    static const size_t kQCompInd = 1;
+    static const size_t kRCompInd = 2;
+    //static const size_t kWVarsCount = internals::kWVarsCount;
+public:
+    static const size_t kWVarsCount = 3; // count({directWx, directWy, directWz})=3
+private:
+    // maximum count of ([fx fy u0 v0 Tx Ty Tz Wx Wy Wz])
+    // camera intrinsics: 0 if K is shared for all frames; 3 for [f u0 v0] if fx=fy; 4 for [fx fy u0 v0]
+    // hence max count of camera intrinsics variables is 4
+    // direct mode camera translation: 3 for [directTx directTy directTz]
+    // direct mode camera axis angle: 3 for [directWx directWy directWz]
+    static const size_t kMaxFrameVarsCount = 10;
+
+private:
     FragmentMap* map_ = nullptr;
     std::vector<SE3Transform>* inverse_orient_cams_ = nullptr;
     const CornerTrackRepository* track_rep_ = nullptr;
     const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat_ = nullptr;
     const std::vector<Eigen::Matrix<Scalar, 3, 3>> * intrinsic_cam_mats_ = nullptr;
     SceneNormalizer scene_normalizer_;
-
+    
     Scalar t1y_ = 1.0; // const, y-component of the first camera shift, usually T1y==1
     int unity_comp_ind_ = 1; // 0 for X, 1 for Y; index of T1 to be set to unity
 
@@ -91,23 +113,15 @@ class BundleAdjustmentKanatani
     EigenDynMat deriv_second_frame_finite_diff;
     EigenDynMat deriv_second_pointframe_finite_diff;
 
-    static const size_t kPointVarsCount = 3; // number of variables in 3D point [X,Y,Z]
-
-    static const size_t kIntrinsicVarsCount = 4; // count({fx,fy,u0,v0})=4
-    static const size_t kFxFyCount = 2; // count({fx, fy})=2
-    static const size_t kU0V0Count = 2; // count({u0, v0})=2
-    static const size_t kTVarsCount = 3; // count({Tx, Ty, Tz})=3
-    static const size_t kWVarsCount = 3; // count({Wx, Wy, Wz})=3
-
-    size_t frame_vars_count_ = 0; // number of variables to parameterize a camera orientation [[fx fy u0 v0] T1 T2 T3 W1 W2 W3]
+    size_t frame_vars_count_ = 0; // number of variables to parameterize a camera orientation [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
     
-    // maximum count of ([fx fy u0 v0 T1 T2 T3 W1 W2 W3])
-    // camera intrinsics: 0 if K is shared for all frames; 3 for [f u0 v0] if fx=fy; 4 for [fx fy u0 v0]
-    // hence max count of camera intrinsics variables is 4
-    // camera translation: 3 for [T1 T2 T3]
-    // camera axis angle: 3 for [W1 W2 W3]
-    static const size_t kMaxFrameVarsCount = 10;
-
+    // True to compare close derivatives of reprojection error with finite difference approximation.
+    // The computation of finite differences is slow and this value should be false in normal debug and release modes.
+    // TODO: figure out how to optimize away in runtime
+    bool debug_reproj_error_first_derivatives_ = false;
+    bool debug_reproj_error_derivatives_pointpoint_ = false;
+    bool debug_reproj_error_derivatives_frameframe_ = false;
+    bool debug_reproj_error_derivatives_pointframe_ = false;
 public:
     static Scalar ReprojError(const FragmentMap& map,
                             const std::vector<SE3Transform>& inverse_orient_cams,
@@ -126,63 +140,45 @@ public:
                         const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat = nullptr,
                         const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats = nullptr,
                         bool check_derivatives=false);
+
 private:
     bool ComputeOnNormalizedWorld();
 
-    /// Computes finite difference approximation of derivatives.
-    /// finitdiff_eps: finite difference step to approximate derivative
-    void ComputeDerivativesFiniteDifference(Scalar finite_diff_eps,
-                                            std::vector<Scalar>* gradE,
-                                            EigenDynMat* deriv_second_point,
-                                            EigenDynMat* deriv_second_frame,
-                                            EigenDynMat* deriv_second_pointframe);
-
-public:
-    /// Represents a camera orientation data for some frame. There are packed and unpacked data, keeped in synced state.
-    class FrameFromOptVarsUpdater
-    {
-        size_t frame_ind_;
-        Eigen::Matrix<Scalar, 3, 3> cam_intrinsics_mat_;
-        SE3Transform direct_orient_cam_;
-        SE3Transform inverse_orient_cam_;
-        bool direct_orient_cam_valid_ = false;
-        bool inverse_orient_cam_valid_ = false;
-
-        std::array<Scalar, kMaxFrameVarsCount> frame_vars_;
-    public:
-        FrameFromOptVarsUpdater(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat, const SE3Transform& direct_orient_cam);
-            
-        void AddDelta(size_t var_ind, Scalar value);
-
-        size_t FrameInd() const { return frame_ind_; }
-
-        const Eigen::Matrix<Scalar, 3, 3>& CamIntrinsicsMat() const {
-            return cam_intrinsics_mat_;
-        }
-        const SE3Transform& InverseOrientCam() {
-            EnsureCameraOrientaionValid();
-            return inverse_orient_cam_;
-        }
-    private:
-        void UpdatePackedVars();
-        void EnsureCameraOrientaionValid();
-    };
-
-private:
     auto GetFiniteDiffFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, Scalar finite_diff_eps) const -> Scalar;
-    auto GetFiniteDiffSecondPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, size_t var2, Scalar finite_diff_eps) const -> Scalar;
     auto GetFiniteDiffFirstPartialDerivFocalLengthFxFy(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t fxfy_ind, Scalar finite_diff_eps) const -> Scalar;
-    auto GetFiniteDiffFirstDerivPrincipalPoint(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t u0v0_ind, Scalar finite_diff_eps) const -> Scalar;
+    auto GetFiniteDiffFirstPartialDerivPrincipalPoint(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t u0v0_ind, Scalar finite_diff_eps) const -> Scalar;
     auto GetFiniteDiffFirstPartialDerivTranslationDirect(size_t frame_ind, const SE3Transform& direct_orient_cam, size_t tind, Scalar finite_diff_eps) const -> Scalar;
-    auto GetFiniteDiffFirstPartialDerivRotation(size_t frame_ind, const SE3Transform& direct_orient_cam,
-        const Eigen::Matrix<Scalar, 3, 1>& w_direct, size_t wind, Scalar finite_diff_eps) const->Scalar;
+    auto GetFiniteDiffFirstPartialDerivRotation(size_t frame_ind, const SE3Transform& direct_orient_cam, size_t wind, Scalar finite_diff_eps) const->Scalar;
+    
+    auto GetFiniteDiffSecondPartialDerivPointPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, size_t var2, Scalar finite_diff_eps) const->Scalar;
+    
+    auto GetFiniteDiffSecondPartialDerivFrameFrame(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat,
+        const SE3Transform& direct_orient_cam, size_t frame_var_ind1, size_t frame_var_ind2, Scalar finite_diff_eps) const->Scalar;
+    
+    auto GetFiniteDiffSecondPartialDerivPointFrame(
+        size_t point_track_id, const suriko::Point3& pnt3D_world, size_t point_var_ind,
+        size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat,
+        const SE3Transform& direct_orient_cam, size_t frame_var_ind,
+        Scalar finite_diff_eps) const->Scalar;
+    //
+    void ComputeCloseReprErrorDerivatives(std::vector<Scalar>* grad_error,
+        EigenDynMat* deriv_second_pointpoint,
+        EigenDynMat* deriv_second_frameframe,
+        EigenDynMat* deriv_second_pointframe,
+        [[maybe_unused]] Scalar finite_diff_eps);
 
-    auto GetFiniteDiffSecondPartialDerivFrameFrame(const FrameFromOptVarsUpdater& frame_vars_updater, size_t frame_var_ind1, size_t frame_var_ind2, Scalar finite_diff_eps) const->Scalar;
+    /// Each row contains(p, q, r) derivatives for X(row = 0), Y, Z variables
+    void ComputePointPqrDerivatives(const Eigen::Matrix<Scalar, 3, 4>& P, Eigen::Matrix<Scalar, 3, 3>* point_pqr_deriv) const;
 
-    auto GetFiniteDiffSecondPartialDerivPointFrame(size_t point_track_id, const suriko::Point3& pnt3D_world,
-        const FrameFromOptVarsUpdater& frame_vars_updater, size_t point_var_ind, size_t frame_var_ind, Scalar finite_diff_eps) const->Scalar;
+    void ComputeFramePqrDerivatives(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& inverse_orient_cam, 
+        const suriko::Point3& salient_point, const suriko::Point2& corner_pix,
+        Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount>* frame_pqr_deriv, gsl::not_null<size_t*> out_frame_vars_count) const;
 
-    /// Declares code dependency on the order of variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
-    static void MarkOptVarsOrderDependency() {}
+    Scalar FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2& corner_pix,
+        Scalar gradp_byvar, Scalar gradq_byvar, Scalar gradr_byvar) const;
+
+    Scalar SecondDerivFromPqrDerivative(const Eigen::Matrix<Scalar, 3, 1>& pqr,
+        Scalar gradp_byvar1, Scalar gradq_byvar1, Scalar gradr_byvar1,
+        Scalar gradp_byvar2, Scalar gradq_byvar2, Scalar gradr_byvar2) const;
 };
 }

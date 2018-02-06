@@ -207,6 +207,7 @@ int DinoDemo(int argc, char* argv[])
     LOG(INFO) << "start bundle adjustment..." <<endl;
     op = ba.ComputeInplace(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame, check_derivatives);
 
+    LOG(INFO) << "bundle adjustment finished" << endl;
     return 0;
 }
 }
