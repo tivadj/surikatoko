@@ -14,6 +14,7 @@ message(STATUS "PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}") #
 set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.h
         ${PROJECT_SOURCE_DIR}/include/suriko/bundle-adj-kanatani.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/eigen-helpers.hpp
         ${PROJECT_SOURCE_DIR}/include/suriko/obs-geom.h
         ${PROJECT_SOURCE_DIR}/include/suriko/mat-serialization.h
         ${PROJECT_SOURCE_DIR}/include/suriko/rt-config.h

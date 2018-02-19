@@ -200,14 +200,12 @@ int DinoDemo(int argc, char* argv[])
         }
     }
 
-    bool check_derivatives = true;
-
     BundleAdjustmentKanatani ba;
 
     LOG(INFO) << "start bundle adjustment..." <<endl;
-    op = ba.ComputeInplace(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame, check_derivatives);
+    op = ba.ComputeInplace(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
 
-    LOG(INFO) << "bundle adjustment finished" << endl;
+    LOG(INFO) << "bundle adjustment finished with result: " <<op << endl;
     return 0;
 }
 }

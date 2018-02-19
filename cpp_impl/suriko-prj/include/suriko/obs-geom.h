@@ -78,6 +78,7 @@ public:
     void SetSalientPoint(size_t point_track_id, const suriko::Point3 &value);
 
     const suriko::Point3& GetSalientPoint(size_t point_track_id) const;
+          suriko::Point3& GetSalientPoint(size_t point_track_id);
 
     size_t PointTrackCount() const { return point_track_count; }
 };

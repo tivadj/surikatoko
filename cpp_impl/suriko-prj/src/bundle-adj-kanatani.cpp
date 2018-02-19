@@ -13,12 +13,18 @@
 #include "suriko/bundle-adj-kanatani.h"
 #include "suriko/obs-geom.h"
 #include "suriko/rt-config.h"
+#include "suriko/eigen-helpers.hpp"
 
 namespace suriko
 {
 
 namespace {
     constexpr auto kWVarsCount = BundleAdjustmentKanatani::kWVarsCount;
+
+    constexpr bool kDebugCorrectSalientPoints = true; // true to optimize salient points
+    constexpr bool kDebugCorrectCamIntrinsics = true;
+    constexpr bool kDebugCorrectTranslations = true;
+    constexpr bool kDebugCorrectRotations = true;
 
     /// Declares code dependency on the order of variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
     void MarkOptVarsOrderDependency() {}
@@ -30,15 +36,37 @@ namespace {
 }
 
 
-/// Apply infinitesimal correction w to rotation matrix in the form of Rnew=(I+hat(w))*R where hat(w) is [3x3] and w is 3-element axis angle
-void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, const Eigen::Matrix<Scalar, kWVarsCount, 1>& direct_w_delta,
+/// Apply infinitesimal correction w to rotation matrix.
+void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, const Eigen::Matrix<Scalar, kWVarsCount, 1>& w_delta,
     Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>* Rnew)
 {
-    Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_w_delta_hat;
-    SkewSymmetricMat(direct_w_delta, &direct_w_delta_hat);
+    constexpr int impl = 2;
+    if (impl == 1)
+    {
+        // Rnew = (I + hat(w))*R where hat(w) is [3x3] and w is 3-element axis angle
+        Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_w_delta_hat;
+        SkewSymmetricMat(w_delta, &direct_w_delta_hat);
 
-    // Rnew = (I + hat(w))*R
-    *Rnew = (Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>::Identity() + direct_w_delta_hat) * R;
+        *Rnew = (Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>::Identity() + direct_w_delta_hat) * R;
+    }
+    else
+    {
+        // Rnew = Rodrigues(w)*R
+        Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> rot_w;
+        bool op = RotMatFromAxisAngle(w_delta, &rot_w);
+        if (op)
+        {
+            *Rnew = rot_w * R; // formula 24 page 4
+        }
+        else
+        {
+            // Rodrigues formula failed. Keep R unchanged.
+            *Rnew = R;
+        }
+    }
+    std::string msg;
+    bool is_so3 = IsSpecialOrthogonal(*Rnew, &msg);
+    SRK_ASSERT(is_so3) << msg;
 }
 
 void AddDeltaToFrameInplace(gsl::span<const Scalar> frame_vars_delta, Eigen::Matrix<Scalar, 3, 3>* cam_intrinsics_mat, SE3Transform* direct_orient_cam)
@@ -70,7 +98,7 @@ void AddDeltaToFrameInplace(gsl::span<const Scalar> frame_vars_delta, Eigen::Mat
 }
 
 //
-SceneNormalizer::SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, int unity_comp_ind)
+SceneNormalizer::SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, size_t unity_comp_ind)
         :map_(map),
     inverse_orient_cams_(inverse_orient_cams),
     normalized_t1y_dist_(t1y),
@@ -212,7 +240,7 @@ void SceneNormalizer::RevertNormalization()
     }
 }
 
-auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y_dist, int unity_comp_ind, bool* success)
+auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y_dist, size_t unity_comp_ind, bool* success)
 {
     *success = false;
 
@@ -397,6 +425,32 @@ Scalar ReprojErrorWithOverlap(const FragmentMap& map,
     return err_sum;
 }
 
+void BundleAdjustmentKanatani::UpdateNormalizePattern()
+{
+    MarkOptVarsOrderDependency();
+
+    size_t off = 0;
+    size_t out_ind = 0;
+    
+    // R0 = Identity, T0 = [0, 0, 0], T1y = 1
+    // Frame 0
+    off += kIntrinsicVarsCount;
+    normalize_pattern_[out_ind++] = off + 0; // T0x
+    normalize_pattern_[out_ind++] = off + 1; // T0y
+    normalize_pattern_[out_ind++] = off + 2; // T0z
+    normalize_pattern_[out_ind++] = off + 3; // W0x
+    normalize_pattern_[out_ind++] = off + 4; // W0y
+    normalize_pattern_[out_ind++] = off + 5; // W0z
+    off += kTVarsCount + kWVarsCount;
+
+    // Frame 1
+    off += kIntrinsicVarsCount;
+    normalize_pattern_[out_ind++] = off + unity_comp_ind_; // (T1x or) T1y
+
+    normalize_pattern_count_ = out_ind;
+    SRK_ASSERT(normalize_pattern_count_ <= normalize_pattern_.size());
+}
+
 Scalar BundleAdjustmentKanatani::ReprojError(const FragmentMap& map,
                                                 const std::vector<SE3Transform>& inverse_orient_cams,
                                                 const CornerTrackRepository& track_rep,
@@ -409,17 +463,11 @@ Scalar BundleAdjustmentKanatani::ReprojError(const FragmentMap& map,
                                     point_patch, frame_patch);
 }
 
-/// :return: True if optimization converges successfully.
-/// Stop conditions:
-/// 1) If a change of error function slows down and becomes less than self.min_err_change
-/// NOTE: There is no sense to provide absolute threshold on error function because when noise exist, the error will
-/// not get close to zero.
 bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
                                                 std::vector<SE3Transform>& inverse_orient_cams,
                                                 const CornerTrackRepository& track_rep,
                                                 const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
-                                                const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
-                                                bool check_derivatives)
+                                                std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats)
 {
     this->map_ = &map;
     this->inverse_orient_cams_ = &inverse_orient_cams;
@@ -437,6 +485,8 @@ bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
     //
     frame_vars_count_ = kIntrinsicVarsCount + kTVarsCount + kWVarsCount;
     SRK_ASSERT(frame_vars_count_ <= kMaxFrameVarsCount);
+    
+    UpdateNormalizePattern();
 
     // allocate space
     size_t points_count = map_->PointTrackCount();
@@ -446,8 +496,14 @@ bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
     // [3*points_count+10*frames_count]
     deriv_second_point_finite_diff.resize(points_count * kPointVarsCount, kPointVarsCount); // [3*points_count,3]
     deriv_second_frame_finite_diff.resize(frames_count * frame_vars_count_, frame_vars_count_); // [10*frames_count,10]
-    deriv_second_pointframe_finite_diff.resize(points_count * kPointVarsCount, frames_count * frame_vars_count_);
-    // [3*points_count,10*frames_count]
+    deriv_second_pointframe_finite_diff.resize(points_count * kPointVarsCount, frames_count * frame_vars_count_); // [3*points_count,10*frames_count]
+    corrections_.resize(points_count * kPointVarsCount + frame_vars_count_ * frames_count, 1); // corrections of vars
+    
+    size_t normalized_frame_vars_count = frame_vars_count_ * frames_count - normalize_pattern_count_;
+    decomp_lin_sys_left_side1_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
+    decomp_lin_sys_right_side_.resize(normalized_frame_vars_count, 1);
+    matG_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
+    normalized_vars_count_ = kPointVarsCount * points_count + frame_vars_count_ * frames_count - normalize_pattern_count_;
 
     bool result = ComputeOnNormalizedWorld();
 
@@ -467,9 +523,93 @@ bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
 
 bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
 {
-    Scalar finite_diff_eps = 1e-5;
-    ComputeCloseFormReprErrorDerivatives(&gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff, finite_diff_eps);
-    return true;
+    Scalar err_value_initial = ReprojError(*map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+    Scalar err_value = err_value_initial;
+
+    // NOTE: we don't check absolute error here, because corrupted with noise data may have arbitrary large reproj err
+
+    size_t it = 1;
+    Scalar hessian_factor = 0.0001; // hessian's diagonal multiplier
+    VLOG(4) << "initial reproj_err=" << err_value_initial << " hessian_factor=" << hessian_factor;
+
+    while(true)
+    {
+        constexpr Scalar finite_diff_eps_debug = 1e-5;
+        ComputeCloseFormReprErrorDerivatives(&gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff, finite_diff_eps_debug);
+
+
+        enum class TargFunDecreaseResult { Decreased, HessianOverflow };
+
+        // tries to decrease target optimization function by varying hessian's diagonal factor
+        auto try_decrease_targ_fun = [this](Scalar entry_err_value, Scalar* hessian_factor, Scalar* err_value_new) -> TargFunDecreaseResult
+        {
+            // backup current state(world points and camera orientations)
+            FragmentMap map_copy = *map_;
+            std::vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mats_copy = *intrinsic_cam_mats_;
+            std::vector<SE3Transform> inverse_orient_cam_copy = *inverse_orient_cams_;
+
+            // loop to find a hessian factor which decreases the target optimization function
+            while (true)
+            {
+                // 1. the normalization(known R0, T0, T1y) is applied to corrections introducing gaps(plane->gaps)
+                // 2. the linear system of equations is solved for vector of gapped corrections
+                // 3. the gapped corrections are converted back to the plane vector(gaps->plane)
+                // 4. the plane vector of corrections is used to adjust the optimization variables
+
+                bool impl = true;
+                if (impl)
+                    EstimateCorrectionsDecomposedInTwoPhases(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
+                else
+                    EstimateCorrectionsNaive(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
+
+                ApplyCorrections(corrections_);
+
+                *err_value_new = ReprojError(*map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+                VLOG(4) << "try_hessian: got reproj_err=" << *err_value_new << " for hessian_factor=" << *hessian_factor;
+                
+                Scalar err_value_change = *err_value_new - entry_err_value;
+                bool target_fun_decreased = err_value_change < 0;
+                if (target_fun_decreased)
+                    return TargFunDecreaseResult::Decreased;
+
+                // at this point, the value of target minimization function increases, try again with different hessian factor
+                // restore saved state
+                *map_ = map_copy;
+                *intrinsic_cam_mats_ = intrinsic_cam_mats_copy;
+                *inverse_orient_cams_ = inverse_orient_cam_copy;
+
+                *hessian_factor *= 10; // prefer more the Steepest descent
+
+                if (*hessian_factor >  max_hessian_factor_)
+                {
+                    // prevent overflow for too big factors
+                    return TargFunDecreaseResult::HessianOverflow;
+                }
+            }
+            AssertFalse();
+        };
+
+        Scalar err_value_new = std::numeric_limits<Scalar>::quiet_NaN();
+        TargFunDecreaseResult decrease_result = try_decrease_targ_fun(err_value, &hessian_factor, &err_value_new);
+
+        VLOG(4) << "it=" << it << " reproj_err=" << err_value_new << " hessian_factor=" << hessian_factor;
+
+        if (decrease_result == TargFunDecreaseResult::HessianOverflow)
+            return false; // failed to optimize
+
+        Scalar err_value_change = err_value_new - err_value;
+        SRK_ASSERT(err_value_change < 0) << "Target error function's value must decrease";
+
+        if (std::abs(err_value_change) < min_err_change_abs_)
+            return true; // success, reached target level of minimization of reprojection error
+
+        err_value = err_value_new;
+
+        // reprojection error is decreased, but not enough => continue
+        hessian_factor /= 10; // prefer more the Gauss - Newton
+        it += 1;
+    }
+    AssertFalse();
 }
 
 auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, Scalar finite_diff_eps) const -> Scalar
@@ -1106,5 +1246,380 @@ Scalar BundleAdjustmentKanatani::SecondDerivFromPqrDerivative(const Eigen::Matri
         (pqr[2] * gradq_byvar1 - pqr[1] * gradr_byvar1) * (pqr[2] * gradq_byvar2 - pqr[1] * gradr_byvar2);
     s *= 2 / (pqr[2] * pqr[2] * pqr[2] * pqr[2]);
     return s;
+}
+
+void BundleAdjustmentKanatani::FillHessian(const EigenDynMat& deriv_second_pointpoint,
+    const EigenDynMat& deriv_second_frameframe,
+    const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, EigenDynMat* hessian)
+{
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
+    
+    SRK_ASSERT(hessian->rows() == hessian->rows()) << "Provide square matrix";
+    SRK_ASSERT((size_t)hessian->rows() == points_count * kPointVarsCount + frames_count * frame_vars_count_);
+
+    hessian->fill(0);
+
+    track_rep_->IteratePointsMarker();
+    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+    {
+        size_t pnt_ind = point_track_id;
+        size_t vert_offset = pnt_ind * kPointVarsCount;
+        
+        // [3x3] point-point matrices on the diagonal
+        hessian->block<kPointVarsCount, kPointVarsCount>(vert_offset, vert_offset) = deriv_second_pointpoint.middleRows<kPointVarsCount>(vert_offset);
+
+        const auto& point_frame = deriv_second_pointframe.block(vert_offset, 0, kPointVarsCount, frames_count * frame_vars_count_); // [3x9*frames_count]
+        hessian->block(vert_offset, points_count * kPointVarsCount, kPointVarsCount, frames_count * frame_vars_count_) = point_frame;
+        hessian->block(points_count * kPointVarsCount, vert_offset, frames_count * frame_vars_count_, kPointVarsCount) = point_frame.transpose();
+    }
+
+    for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
+    {
+        size_t vert_offset = frame_ind * frame_vars_count_;
+        size_t cur_frame_offset = points_count * kPointVarsCount + vert_offset;
+
+        // [9x9] frame-frame matrices
+        hessian->block(cur_frame_offset, cur_frame_offset, frame_vars_count_, frame_vars_count_) = deriv_second_frameframe.middleRows(vert_offset, frame_vars_count_);
+    }
+    
+    // scale diagonal elements
+    for (Eigen::Index i = 0; i < hessian->rows(); ++i)
+    {
+        (*hessian)(i, i) *= (1 + hessian_factor);
+    }
+}
+
+void BundleAdjustmentKanatani::FillCorrectionsGapsFromNormalized(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& normalized_corrections, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
+{
+    constexpr Scalar nan = std::numeric_limits<Scalar>::quiet_NaN();
+
+    auto& corrs_with_gaps = *corrections_with_gaps;
+    if (kSurikoDebug)
+    {
+        corrs_with_gaps.fill(nan);
+    }
+
+    size_t in_ind = 0;
+    size_t out_ind = 0;
+    size_t points_count = map_->PointTrackCount();
+
+    // copy points corrections intact
+    size_t num = points_count * kPointVarsCount;
+    corrs_with_gaps.middleRows(out_ind, num) = normalized_corrections.middleRows(in_ind, num);
+    in_ind += num;
+    out_ind += num;
+
+    constexpr Scalar no_adj = 0; // set zero corrections for frame0(T0 = [0, 0, 0] R0 = Identity), which means 'no adjustments'
+
+    // Frame0
+    // [fx fy u0 v0]
+    num = kIntrinsicVarsCount;
+    corrs_with_gaps.middleRows(out_ind, num) = normalized_corrections.middleRows(in_ind, num);
+    in_ind += num;
+    out_ind += num;
+
+    // zero [T0x T0y T0z] and [W0x W0y W0z] where W(axis in angle - axis representation) means identity rotation
+    num = kWVarsCount + kTVarsCount;
+    corrs_with_gaps.middleRows(out_ind, num).fill(no_adj);
+    out_ind += num;
+    // in_ind is unchanged because list of corrections with gaps has no such variables
+
+    // Frame1
+    // [fx fy u0 v0]
+    num = kIntrinsicVarsCount;
+    corrs_with_gaps.middleRows(out_ind, num) = normalized_corrections.middleRows(in_ind, num);
+    in_ind += num;
+    out_ind += num;
+
+    // set zero correction for frame1 T1y = fixed_const
+    corrs_with_gaps[out_ind + unity_comp_ind_] = no_adj; // T1x or T1y
+
+    // copy other corrections of T1 intact
+    SRK_ASSERT(unity_comp_ind_ == 0 || unity_comp_ind_ == 1);
+    corrs_with_gaps[out_ind + 1 - unity_comp_ind_] = normalized_corrections[in_ind + 0]; // T1x or T1y
+    corrs_with_gaps[out_ind + 2]                   = normalized_corrections[in_ind + 1]; // T1z
+    in_ind += kTVarsCount - 1; // count(T1x T1y T1z without T1x or T1y)=2
+    out_ind += kTVarsCount;
+
+    // copy corrections for other frames intact
+    num = corrs_with_gaps.rows() - out_ind;
+    corrs_with_gaps.middleRows(out_ind, num) = normalized_corrections.middleRows(in_ind, num);
+    in_ind += num;
+    out_ind += num;
+    SRK_ASSERT((size_t)corrs_with_gaps.size() == out_ind);
+    SRK_ASSERT((size_t)normalized_corrections.size() == in_ind);
+    SRK_ASSERT(corrs_with_gaps.allFinite());
+    bool check_back = false;
+    if (kSurikoDebug && check_back)
+    {
+        EigenDynMat conv_back = corrs_with_gaps; // copy
+
+        auto norm_pattern = normalize_pattern_; // copy
+        for (size_t i = 0; i < normalize_pattern_count_; ++i)
+            norm_pattern[i] += points_count * kPointVarsCount; // offset point variables
+
+        auto remove_rows = gsl::make_span(norm_pattern.data(), normalize_pattern_count_);
+        auto remove_cols = gsl::span<size_t>(nullptr);
+        RemoveRowsAndColsInplace(remove_rows, remove_cols, &conv_back);
+        Scalar diff_value = (normalized_corrections - conv_back).norm();
+        CHECK(diff_value < 0.1);
+    }
+}
+
+void BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
+    const EigenDynMat& deriv_second_frameframe,
+    const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
+{
+    size_t n = corrections_with_gaps->size();
+    EigenDynMat hessian(n, n);
+    FillHessian(deriv_second_pointpoint, deriv_second_frameframe, deriv_second_pointframe, hessian_factor, &hessian);
+
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> right_side(n, 1);
+    right_side = -Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>>(grad_error.data(), n, 1);
+
+    // remove rows/columns corresponding to normalized variables
+    //std::vector<size_t> remove_pat;
+    //EigenDynMat tmp_hessian = hessian;
+    //EigenDynMat tmp_right_side = right_side;
+    //for (size_t i = 0; i < normalize_pattern_count_; ++i)
+    //{
+    //    size_t rem_row_or_col_ind = normalize_pattern_[i];
+    //    tmp_hessian = removeRow(tmp_hessian, rem_row_or_col_ind);
+    //    tmp_hessian = removeCol(tmp_hessian, rem_row_or_col_ind);
+
+    //    tmp_right_side = removeCol(tmp_right_side, rem_row_or_col_ind);
+    //}
+
+    //hessian = std::move(tmp_hessian);
+    //right_side = std::move(tmp_right_side);
+
+    //
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> normalized_corrections = hessian.householderQr().solve(right_side);
+
+    bool check = true;
+    if (check)
+    {
+        EigenDynMat right_direct = hessian * normalized_corrections;
+        Scalar diff_value = (right_direct - right_side).norm();
+        CHECK(diff_value < 1) << "must";
+    }
+
+    FillCorrectionsGapsFromNormalized(normalized_corrections, corrections_with_gaps);
+}
+
+void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
+    const EigenDynMat& deriv_second_frameframe,
+    const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, 
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
+{
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
+
+    // convert 2nd derivatives Frame - Frame matrix into the square shape
+    auto fill_matG = [this, &deriv_second_frameframe, frames_count, hessian_factor](EigenDynMat* frame_frame_mat) {
+        EigenDynMat& matG = *frame_frame_mat;
+        matG.fill(0);
+        size_t out_ind = 0;
+        for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
+        {
+            const auto& ax = deriv_second_frameframe.middleRows(frame_ind * frame_vars_count_, frame_vars_count_);
+
+            MarkOptVarsOrderDependency();
+            size_t block_height;
+            if (frame_ind == 0)
+            {
+                // take [fx fy u0 v0], skip R0=Identity and T0=[0 0 0]
+                EigenDynMat block = ax.topLeftCorner<kIntrinsicVarsCount, kIntrinsicVarsCount>();
+                //RemoveRowsAndColsInplace()
+                block_height = (size_t)block.rows();
+
+                matG.block(out_ind, out_ind, block_height, block_height) = block;
+            }
+            else if (frame_ind == 1)
+            {
+                // skip (T1x or) T1y row and column
+                EigenDynMat block = ax;
+                //LOG(INFO) << "\n" << block;
+
+                //block = removeRow(block, unity_comp_ind_);
+                //block = removeCol(block, unity_comp_ind_);
+                std::array<size_t, 1> remove_rows = { unity_comp_ind_ };
+                RemoveRowsAndColsInplace(remove_rows, remove_rows, &block);
+                //LOG(INFO) << "\n" << block;
+
+                block_height = (size_t)block.rows();
+
+                matG.block(out_ind, out_ind, block_height, block_height) = block;
+            }
+            else
+            {
+                // [9x9] frame-frame matrices
+                matG.block(out_ind, out_ind, frame_vars_count_, frame_vars_count_) = ax;
+                block_height = (size_t)ax.rows();
+            }
+
+            // scale diagonal elements
+            for (size_t i = 0; i < block_height; ++i)
+                matG(out_ind + i, out_ind + i) *= 1 + hessian_factor;
+
+            out_ind += block_height;
+        }
+    };
+
+    auto get_scaled_point_hessian = [&deriv_second_pointpoint](size_t pnt_ind, Scalar hessian_factor,  Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount>* point_hessian) -> void
+    {
+        *point_hessian = deriv_second_pointpoint.middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount); // copy
+        
+        // scale diagonal elements
+        for (size_t i = 0; i < kPointVarsCount; ++i)
+            (*point_hessian)(i, i) *= 1 + hessian_factor;
+
+        SRK_ASSERT(point_hessian->allFinite()) << "Possibly to big hessian factor c = " << hessian_factor;
+    };
+
+    auto get_normalized_point_frame = [this,&deriv_second_pointframe](size_t pnt_ind, EigenDynMat* mat) -> void
+    {
+        // make a copy because normalized columns have to be removed
+        *mat = deriv_second_pointframe.middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount); // 3x9*frames_count
+
+        // delete normalized columns
+        auto remove_cols = gsl::make_span(normalize_pattern_.data(), normalize_pattern_count_);
+        auto remove_rows = gsl::span<size_t>(nullptr);
+        RemoveRowsAndColsInplace(remove_rows, remove_cols, mat);
+    };
+
+    EigenDynMat& matG = matG_; // [9*frames_count,9*frames_count]
+    fill_matG(&matG);
+
+    // calculate deltas for frame unknowns
+
+    EigenDynMat& decomp_lin_sys_left_side = decomp_lin_sys_left_side1_;
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& decomp_lin_sys_right_side = decomp_lin_sys_right_side_;
+
+    decomp_lin_sys_left_side.fill(0);
+    decomp_lin_sys_right_side.fill(0);
+
+    track_rep_->IteratePointsMarker();
+    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+    {
+        size_t pnt_ind = point_track_id;
+
+        EigenDynMat point_frame;
+        get_normalized_point_frame(pnt_ind, &point_frame);
+
+        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian;
+        get_scaled_point_hessian(pnt_ind, hessian_factor, &point_hessian);
+        
+        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv = point_hessian.inverse();
+
+        // left side
+        EigenDynMat ax1 = point_frame.transpose() * point_hessian_inv * point_frame;
+        decomp_lin_sys_left_side += ax1;
+
+        // right side
+        Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
+        EigenDynMat ax2 = point_frame.transpose() * point_hessian_inv * gradeE_point;
+        decomp_lin_sys_right_side += ax2;
+    }
+
+    decomp_lin_sys_left_side = matG - decomp_lin_sys_left_side; // G-sum(F.E.F)
+
+    size_t normalized_frame_vars_count = (size_t)decomp_lin_sys_right_side.rows();
+    Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>> frame_derivs_packed(&grad_error[points_count * kPointVarsCount], normalized_frame_vars_count);
+
+    decomp_lin_sys_right_side -= frame_derivs_packed; // sum(F.E.gradE) - Df
+
+    //
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections_frame = decomp_lin_sys_left_side.householderQr().solve(decomp_lin_sys_right_side);
+
+    // calculate deltas for point unknowns
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> normalized_corrections;
+    normalized_corrections.resize(normalized_vars_count_, 1);
+
+    track_rep_->IteratePointsMarker();
+    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+    {
+        size_t pnt_ind = point_track_id;
+        
+        EigenDynMat point_frame;
+        get_normalized_point_frame(pnt_ind, &point_frame);
+
+        Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
+
+        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian;
+        get_scaled_point_hessian(pnt_ind, hessian_factor, &point_hessian);
+
+        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv = point_hessian.inverse();
+
+        Eigen::Matrix<Scalar, kPointVarsCount, 1> corrects_one_point = - point_hessian_inv * (point_frame * corrections_frame + gradeE_point);
+        normalized_corrections.middleRows<kPointVarsCount>(pnt_ind*kPointVarsCount) = corrects_one_point;
+    }
+
+    normalized_corrections.middleRows(points_count * kPointVarsCount, corrections_frame.rows()) = corrections_frame;
+
+    FillCorrectionsGapsFromNormalized(normalized_corrections, corrections_with_gaps);
+}
+
+void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& corrections_with_gaps)
+{
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
+
+    track_rep_->IteratePointsMarker();
+    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+    {
+        size_t pnt_ind = point_track_id;
+        Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> delta_point(&corrections_with_gaps[pnt_ind * kPointVarsCount]);
+
+        suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+        if (kDebugCorrectSalientPoints)
+            salient_point.Mat() += delta_point;
+    }
+
+    MarkOptVarsOrderDependency();
+    for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
+    {
+        size_t cur_offset = points_count * kPointVarsCount + frame_ind * frame_vars_count_;
+
+        // camera intrinsics
+        gsl::span<const Scalar> delta_cam_intrinsics = gsl::make_span(&corrections_with_gaps[cur_offset], kIntrinsicVarsCount);
+        Eigen::Matrix<Scalar, 3, 3> K = (*intrinsic_cam_mats_)[frame_ind];
+        if (kDebugCorrectCamIntrinsics)
+        {
+            K(0, 0) += delta_cam_intrinsics[0]; // fx
+            K(1, 1) += delta_cam_intrinsics[1]; // fy
+            K(0, 2) += delta_cam_intrinsics[2]; // u0
+            K(1, 2) += delta_cam_intrinsics[3]; // v0
+        }
+        cur_offset += kIntrinsicVarsCount;
+
+        // Rotation-Translation
+        SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
+        SE3Transform direct_orient_cam = SE3Inv(inverse_orient_cam);
+        
+        gsl::span<const Scalar> direct_deltaT = gsl::make_span(&corrections_with_gaps[cur_offset], kTVarsCount);
+        if (kDebugCorrectTranslations)
+        {
+            direct_orient_cam.T[0] += direct_deltaT[0];
+            direct_orient_cam.T[1] += direct_deltaT[1];
+            direct_orient_cam.T[2] += direct_deltaT[2];
+        }
+        cur_offset += kTVarsCount;
+
+        //gsl::span<const Scalar> deltaW = gsl::make_span(&corrections[cur_offset], kWVarsCount);
+        Eigen::Map<const Eigen::Matrix<Scalar, kWVarsCount, 1>> direct_deltaW(&corrections_with_gaps[cur_offset]);
+        Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> new_directR;
+        IncrementRotMat(direct_orient_cam.R, direct_deltaW, &new_directR);
+
+        if (kDebugCorrectRotations)
+        {
+            direct_orient_cam.R = new_directR;
+        }
+
+        if (kDebugCorrectTranslations || kDebugCorrectRotations)
+            inverse_orient_cam = SE3Inv(direct_orient_cam);
+        cur_offset += kWVarsCount;
+    }
 }
 }

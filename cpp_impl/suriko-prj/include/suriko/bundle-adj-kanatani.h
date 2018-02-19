@@ -15,7 +15,7 @@ namespace suriko
 //template <typename Scalar> class SceneNormalizer;
 
 auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
-                                   Scalar t1y_dist, int unity_comp_ind, bool* success);
+                                   Scalar t1y_dist, size_t unity_comp_ind, bool* success);
 
 /// Performs normalization of world points , so that (R0,T0) is the identity rotation plus zero translation and T1y=1.
     /// Changes the and camera positions/orientations so that
@@ -31,9 +31,9 @@ class SceneNormalizer
     Scalar world_scale_ = 0; // world, scaled with this multiplier, is transformed into normalized world
 
     friend auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
-                                              Scalar t1y_norm, int unity_comp_ind, bool* success);
+                                              Scalar t1y_norm, size_t unity_comp_ind, bool* success);
 
-    SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, int unity_comp_ind);
+    SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, size_t unity_comp_ind);
 
     enum class NormalizeAction
     {
@@ -62,7 +62,7 @@ public:
 /// Normalizes the salient points and orientations of the camera so that R0=Identity, T0=zeros(3), T1[unity_comp_ind]=t1y_dist.
 /// Usually unity_comp_ind=1 (that is, y-component of T1) and t1y_dist=1 (unity).
 auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
-        Scalar t1y_dist, int unity_comp_ind, bool* success);
+        Scalar t1y_dist, size_t unity_comp_ind, bool* success);
 
 bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams, Scalar t1y, int unity_comp_ind,
     std::string* err_msg = nullptr);
@@ -99,11 +99,13 @@ private:
     std::vector<SE3Transform>* inverse_orient_cams_ = nullptr;
     const CornerTrackRepository* track_rep_ = nullptr;
     const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat_ = nullptr;
-    const std::vector<Eigen::Matrix<Scalar, 3, 3>> * intrinsic_cam_mats_ = nullptr;
+    std::vector<Eigen::Matrix<Scalar, 3, 3>> * intrinsic_cam_mats_ = nullptr;
     SceneNormalizer scene_normalizer_;
     
     Scalar t1y_ = 1.0; // const, y-component of the first camera shift, usually T1y==1
-    int unity_comp_ind_ = 1; // 0 for X, 1 for Y; index of T1 to be set to unity
+    size_t unity_comp_ind_ = 1; // 0 for X, 1 for Y; index of T1 to be set to unity
+    Scalar min_err_change_abs_ = 1e-8;
+    Scalar max_hessian_factor_ = 1e6; // set None to skip the check of the hessian's factor
 
     typedef Eigen::Matrix<Scalar,Eigen::Dynamic,Eigen::Dynamic> EigenDynMat;
 
@@ -112,9 +114,24 @@ private:
     EigenDynMat deriv_second_point_finite_diff;
     EigenDynMat deriv_second_frame_finite_diff;
     EigenDynMat deriv_second_pointframe_finite_diff;
+    
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections_;
+
+    // data to solve linear equations
+    EigenDynMat matG_;
+    EigenDynMat decomp_lin_sys_left_side1_;
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> decomp_lin_sys_right_side_;
 
     size_t frame_vars_count_ = 0; // number of variables to parameterize a camera orientation [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
     
+    // some corrections are fixed during normalization, thus the gaps appear :
+    // T0 = [0 0 0] R0 = Identity, T1y(or T1x) = 1 determined by @unity_comp_ind
+    // corrections plain : [point_corrections 0fx 0fy 0u0 0v0 0Tx 0Ty 0Tz 0Wx 0Wy 0Wz 1fx 1fy 1u0 1v0 1Tx 1Ty 1Tz 1Wx 1Wy 1Wz]
+    // corrections wgaps : [point_corrections 0fx 0fy 0u0 0v0                         1fx 1fy 1u0 1v0 1Tx     1Tz 1Wx 1Wy 1Wz]
+    std::array<size_t, 7> normalize_pattern_; // count({T0x,T0y,T0z,W0x,W0y,W0z,T1y})=7
+    size_t normalize_pattern_count_ = 0; // number of valid indices of variables
+    size_t normalized_vars_count_ = 0; // 3*points_count+10*frames_count-normalize_pattern_count_
+
     // True to compare close derivatives of reprojection error with finite difference approximation.
     // The computation of finite differences is slow and this value should be false in normal debug and release modes.
     // TODO: figure out how to optimize away in runtime
@@ -132,16 +149,15 @@ public:
     /// :return: True if optimization converges successfully.
     /// Stop conditions:
     /// 1) If a change of error function slows down and becomes less than self.min_err_change
-    /// NOTE: There is no sense to provide absolute threshold on error function because when noise exist, the error will
-    /// not get close to zero.
     bool ComputeInplace(FragmentMap& map,
                         std::vector<SE3Transform>& inverse_orient_cams,
                         const CornerTrackRepository& track_rep,
                         const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat = nullptr,
-                        const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats = nullptr,
-                        bool check_derivatives=false);
+                        std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats = nullptr);
 
 private:
+    void UpdateNormalizePattern();
+
     bool ComputeOnNormalizedWorld();
 
     auto GetFiniteDiffFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, Scalar finite_diff_eps) const -> Scalar;
@@ -161,7 +177,7 @@ private:
         const SE3Transform& direct_orient_cam, size_t frame_var_ind,
         Scalar finite_diff_eps) const->Scalar;
     //
-    void ComputeCloseReprErrorDerivatives(std::vector<Scalar>* grad_error,
+    void ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
         EigenDynMat* deriv_second_pointpoint,
         EigenDynMat* deriv_second_frameframe,
         EigenDynMat* deriv_second_pointframe,
@@ -180,5 +196,21 @@ private:
     Scalar SecondDerivFromPqrDerivative(const Eigen::Matrix<Scalar, 3, 1>& pqr,
         Scalar gradp_byvar1, Scalar gradq_byvar1, Scalar gradr_byvar1,
         Scalar gradp_byvar2, Scalar gradq_byvar2, Scalar gradr_byvar2) const;
+
+    void EstimateCorrectionsNaive(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
+        const EigenDynMat& deriv_second_frameframe,
+        const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
+
+    void FillHessian(const EigenDynMat& deriv_second_pointpoint,
+        const EigenDynMat& deriv_second_frameframe,
+        const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, EigenDynMat* hessian);
+
+    void FillCorrectionsGapsFromNormalized(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& normalized_corrections, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
+
+    void EstimateCorrectionsDecomposedInTwoPhases(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
+        const EigenDynMat& deriv_second_frameframe,
+        const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
+
+    void ApplyCorrections(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& corrections_with_gaps);
 };
 }

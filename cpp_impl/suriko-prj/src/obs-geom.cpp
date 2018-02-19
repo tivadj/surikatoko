@@ -57,10 +57,19 @@ void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &v
     assert(point_track_id < salient_points.size());
     salient_points[point_track_id] = value;
 }
+
 const suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id) const
 {
     CHECK(point_track_id < salient_points.size());
-    const auto& sal_pnt = salient_points[point_track_id];
+    const std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id];
+    SRK_ASSERT(sal_pnt.has_value());
+    return sal_pnt.value();
+}
+
+suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id)
+{
+    CHECK(point_track_id < salient_points.size());
+    std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id];
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
