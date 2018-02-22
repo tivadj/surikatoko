@@ -955,7 +955,7 @@ class BundleAdjustmentKanatani:
                     gradW_vec2 = (pqr[0] / pqr[2] - corner_pix[0] / f0) * (pqr[2] * gradp_by_wcomps - pqr[0] * gradr_by_wcomps) + \
                                 (pqr[1] / pqr[2] - corner_pix[1] / f0) * (pqr[2] * gradq_by_wcomps - pqr[1] * gradr_by_wcomps)
                     gradW_vec2 *= 2 / pqr[2] ** 2
-                    gradE2_onlyW[grad_frame_offset+3:grad_frame_offset+6] += gradW_vec2
+                    gradE2_onlyW[out_frame_ind:out_frame_ind+3] += gradW_vec2
 
                 out_frame_ind += 3  # pass [Rwx,Rwy,Rwz] gradients
 

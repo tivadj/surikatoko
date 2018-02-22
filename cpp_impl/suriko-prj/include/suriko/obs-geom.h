@@ -152,8 +152,9 @@ auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_nu
 /// where K=matrix of intrinsic parameters
 /// where R,T = euclidian motion from camera to world coordinates
 /// source: "Bundle adjustment for 3-d reconstruction" Appendix A, Kanatani Sugaya 2010
+[[nodiscard]]
 auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_post_cond = true)
--> std::tuple<Scalar, Eigen::Matrix<Scalar, 3, 3>, SE3Transform>;
+-> std::tuple<bool, Scalar, Eigen::Matrix<Scalar, 3, 3>, SE3Transform>;
 
 /// Finds the 3D coordinate of a world point from a list of corresponding 2D pixels in multiple images.
 /// The orientation of the camera for each shot is specified in the list of projection matrices.

@@ -250,8 +250,10 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
 
             scale, K, (R,t) = DecomposeProjMat(proj_mat)
             if same_focal_length_xy:
-                favg = K[0,0] + K[1,1]
+                favg = (K[0,0] + K[1,1])/2
                 K[0,0] = K[1,1] = favg
+
+            K[0, 1] = 0
 
             if K_first is None: # all K from each proj mat are identical, because all shots are made with the same camera
                 K_first = K
@@ -364,7 +366,7 @@ class BundleAdjustmentKanataniTests(unittest.TestCase):
         salient_points_adj = salient_points.copy()
         camera_poses_adj = camera_poses.copy()
 
-        variable_intrinsics = False
+        variable_intrinsics = True
         if variable_intrinsics:
             # individual K for each frame
             cam_mat_pixel_from_meter = None

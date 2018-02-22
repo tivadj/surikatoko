@@ -4,6 +4,7 @@
 #include <fstream>
 #include <utility>
 #include <cassert>
+#include <cmath>
 #include <tuple>
 //#include <filesystem>
 //#include <experimental/filesystem>
@@ -15,6 +16,8 @@
 #include "suriko/bundle-adj-kanatani.h"
 #include "suriko/obs-geom.h"
 #include "suriko/mat-serialization.h"
+#include "suriko/approx-alg.h"
+
 namespace suriko_demos
 {
 using namespace std;
@@ -78,7 +81,10 @@ int DinoDemo(int argc, char* argv[])
 
     ptrdiff_t min_frames_per_point = -1; // set -1 to ignore
     ptrdiff_t max_points_count = -1; // set -1 to ignore
-    bool zero_cam_intrinsic_mat_01 = true;
+    bool zero_cam_intrinsic_mat_01 = false; // sets K[0,1]=1
+    bool equalize_fxfy = false; // makes fx=fy
+    bool average_f0 = true; // sets f0 as average f0 from all frames
+    bool unity_f0 = true; // sets K[2,2]=1
 
     auto proj_mats_file_path = (test_data_path / "oxfvisgeom/dinosaur/dinoPs_as_mat108x4.txt").normalize();
 
@@ -127,23 +133,46 @@ int DinoDemo(int argc, char* argv[])
     vector<SE3Transform> inverse_orient_cam_per_frame;
     vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mat_per_frame; // K
 
+    Scalar sum_f0 = 0;
     for (size_t frame_ind = 0; frame_ind < orig_frames_count; ++frame_ind)
     {
         Eigen::Map<Eigen::Matrix<Scalar, 3, 4, Eigen::RowMajor>> proj_mat_row_major(P_data_by_row.data() + frame_ind * 12, 3, 4);
         Eigen::Matrix<Scalar, 3, 4> proj_mat = proj_mat_row_major;
         proj_mat_per_frame.push_back(proj_mat);
 
+        bool op_decomp;
         Scalar scale_factor;
         Eigen::Matrix<Scalar, 3, 3> K;
         SE3Transform direct_orient_cam;
-        std::tie(scale_factor, K, direct_orient_cam) = DecomposeProjMat(proj_mat);
+        std::tie(op_decomp, scale_factor, K, direct_orient_cam) = DecomposeProjMat(proj_mat);
+        CHECK(op_decomp) << "Can't decompose projection matrix for frame_ind=" << frame_ind << ", P=" << proj_mat;
+        SRK_ASSERT(IsClose(1, K(2, 2)));
+
+        if (!unity_f0)
+            K *= std::abs(scale_factor);
 
         if (zero_cam_intrinsic_mat_01)
             K(0, 1) = 0;
+        if (equalize_fxfy)
+        {
+            Scalar favg = (K(0, 0) + K(1, 1)) / 2; // (fx+fy)/2
+            K(0, 0) = favg;
+            K(1, 1) = favg;
+        }
+        sum_f0 += K(2, 2);
         intrinsic_cam_mat_per_frame.push_back(K);
 
         SE3Transform inverse_orient_cam = SE3Inv(direct_orient_cam);
         inverse_orient_cam_per_frame.push_back(inverse_orient_cam);
+    }
+
+    Scalar f0 = 1;
+    if (average_f0)
+    {
+        size_t frames_count = intrinsic_cam_mat_per_frame.size();
+        f0 = sum_f0 / frames_count;
+        for (auto& K : intrinsic_cam_mat_per_frame)
+            K(2,2) = f0;
     }
 
     // triangulate 3D points
@@ -164,15 +193,12 @@ int DinoDemo(int argc, char* argv[])
             one_pnt_corner_per_frame.push_back(corner.value());
             one_pnt_proj_mat_per_frame.push_back(proj_mat_per_frame[frame_ind]);
         }
-        Scalar f0 = 1;
-        Point3 x3D = Triangulate3DPointByLeastSquares(one_pnt_corner_per_frame, one_pnt_proj_mat_per_frame, f0);
+        constexpr Scalar homog_2D_z = 1;
+        Point3 x3D = Triangulate3DPointByLeastSquares(one_pnt_corner_per_frame, one_pnt_proj_mat_per_frame, homog_2D_z);
         map.AddSalientPoint(pnt_track_id, x3D);
     }
 
-    auto err_initial = BundleAdjustmentKanatani::ReprojError(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
-    LOG(INFO) <<"err_initial=" <<err_initial <<endl;
-
-    bool debug_reproj_err = false;
+    static bool debug_reproj_err = false;
     if (debug_reproj_err)
     {
         for (size_t point_track_id : subset_point_track_ids) {
@@ -186,16 +212,19 @@ int DinoDemo(int argc, char* argv[])
                 if (!corner.has_value())
                     continue;
 
+                // homogeneous component for corner is constant = 1
                 const auto& cor = corner.value();
+                constexpr Scalar homog_2D_z = 1;
 
                 const auto &P = proj_mat_per_frame[frame_ind];
                 auto x2D_homog = P * x3D_homog;
+                VLOG_IF(4, IsClose(0, x2D_homog[2])) << "point at infinity point_track_id=" << point_track_id << " x2D_homog=" << x2D_homog;
+
                 auto pix_x = x2D_homog[0] / x2D_homog[2];
                 auto pix_y = x2D_homog[1] / x2D_homog[2];
-                auto err = (cor.Mat() - Eigen::Matrix<Scalar,2,1>(pix_x, pix_y)).norm();
+                auto err_pix = (cor.Mat() / homog_2D_z - Eigen::Matrix<Scalar,2,1>(pix_x, pix_y)).norm();
                 
-                if (err > 1)
-                    LOG(INFO) << "repr err=" <<err <<" for point_track_id=" << point_track_id <<endl;
+                LOG_IF(INFO, err_pix > 5) << "repr err=" <<err_pix <<" for point_track_id=" << point_track_id;
             }
         }
     }
@@ -203,7 +232,7 @@ int DinoDemo(int argc, char* argv[])
     BundleAdjustmentKanatani ba;
 
     LOG(INFO) << "start bundle adjustment..." <<endl;
-    op = ba.ComputeInplace(map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
+    op = ba.ComputeInplace(f0, map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
 
     LOG(INFO) << "bundle adjustment finished with result: " <<op << endl;
     return 0;

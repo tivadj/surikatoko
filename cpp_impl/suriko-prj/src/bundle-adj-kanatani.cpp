@@ -19,6 +19,7 @@ namespace suriko
 {
 
 namespace {
+    constexpr auto kTVarsCount = BundleAdjustmentKanatani::kTVarsCount;
     constexpr auto kWVarsCount = BundleAdjustmentKanatani::kWVarsCount;
 
     constexpr bool kDebugCorrectSalientPoints = true; // true to optimize salient points
@@ -104,7 +105,7 @@ SceneNormalizer::SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* in
     normalized_t1y_dist_(t1y),
     unity_comp_ind_(unity_comp_ind)
 {
-    CHECK(t1y == 0 || t1y == 1 && "Only T1x and T1y is implemented");
+    CHECK(unity_comp_ind >= 0 && unity_comp_ind < kTVarsCount) << "Can normalize only one of [T1x, T1y, Tz] components";
 }
 
 auto SceneNormalizer::Opposite(SceneNormalizer::NormalizeAction action) {
@@ -140,8 +141,8 @@ SE3Transform SceneNormalizer::NormalizeOrRevertRT(const SE3Transform& inverse_or
         auto back_rt = NormalizeOrRevertRT(result, inverse_orient_cam0, world_scale, Opposite(action), false);
         Scalar diffR = (Rk - back_rt.R).norm();
         Scalar diffT = (Tk - back_rt.T).norm();
-        assert(IsClose(0, diffR, 1e-3) && "Error in normalization or reverting of R");
-        assert(IsClose(0, diffT, 1e-3) && "Error in normalization or reverting of T");
+        SRK_ASSERT(IsClose(0, diffR, 1e-3)) << "Error in normalization or reverting of R";
+        SRK_ASSERT(IsClose(0, diffT, 1e-3)) << "Error in normalization or reverting of T";
     }
     return result;
 }
@@ -164,7 +165,7 @@ suriko::Point3 SceneNormalizer::NormalizeOrRevertPoint(const suriko::Point3& x3D
     {
         auto back_pnt = NormalizeOrRevertPoint(result, inverse_orient_cam0, world_scale, Opposite(action), false);
         Scalar diff = (back_pnt.Mat() - x3D.Mat()).norm();
-        assert(IsClose(0, diff, 1e-3) && "Error in normalization or reverting");
+        SRK_ASSERT(IsClose(0, diff, 1e-3)) << "Error in normalization or reverting";
     }
     return result;
 }
@@ -211,7 +212,7 @@ bool SceneNormalizer::NormalizeWorldInplaceInternal()
     {
         std::string err_msg;
         bool is_norm = CheckWorldIsNormalized(*inverse_orient_cams_, normalized_t1y_dist_, unity_comp_ind_, &err_msg);
-        assert(is_norm);
+        SRK_ASSERT(is_norm);
     }
     return true;
 }
@@ -251,9 +252,9 @@ auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_
     return scene_normalizer;
 }
 
-bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams, Scalar t1y, int unity_comp_ind, std::string* err_msg)
+bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams, Scalar t1y, size_t unity_comp_ind, std::string* err_msg)
 {
-    assert(inverse_orient_cams.size() >= 2);
+    SRK_ASSERT(inverse_orient_cams.size() >= 2);
 
     // the first frame is the identity
     const auto& rt0 = inverse_orient_cams[0];
@@ -357,20 +358,24 @@ public:
 
 /// Internal routine to compute the bandle adjustment's reprojection error
 /// with ability to overlap variables for specific salient point and/or camera orientation.
-Scalar ReprojErrorWithOverlap(const FragmentMap& map,
-                                const std::vector<SE3Transform>& inverse_orient_cams,
-                                const CornerTrackRepository& track_rep,
-                                const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
-                                const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
-                                const SalientPointPatch* point_patch,
-                                const FramePatch* frame_patch)
+Scalar ReprojErrorWithOverlap(Scalar f0,
+    const FragmentMap& map,
+    const std::vector<SE3Transform>& inverse_orient_cams,
+    const CornerTrackRepository& track_rep,
+    const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
+    const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
+    const SalientPointPatch* point_patch,
+    const FramePatch* frame_patch,
+    size_t* seen_points_count = nullptr)
 {
+    CHECK(!IsClose(0, f0)) << "f0 != 0";
     CHECK(intrinsic_cam_mats != nullptr);
 
     size_t points_count = map.PointTrackCount();
     CHECK(points_count == track_rep.CornerTracks.size() && "Each 3D point must be tracked");
 
     Scalar err_sum = 0;
+    size_t seen_points_cnt = 0;
 
     size_t frames_count = inverse_orient_cams.size();
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
@@ -387,6 +392,8 @@ Scalar ReprojErrorWithOverlap(const FragmentMap& map,
             if (frame_patch->K().has_value())
                 pK = &frame_patch->K().value();
         }
+
+        SRK_ASSERT(IsClose(f0, (*pK)(2, 2))) << "f0!=K[2,2]";
 
         for (const CornerTrack& point_track : track_rep.CornerTracks)
         {
@@ -415,17 +422,20 @@ Scalar ReprojErrorWithOverlap(const FragmentMap& map,
             Scalar x = x3D_pix[0] / x3D_pix[2];
             Scalar y = x3D_pix[1] / x3D_pix[2];
 
-            Scalar one_err = Sqr(x - corner_pix[0]) + Sqr(y - corner_pix[1]);
+            Scalar one_err = Sqr(x - corner_pix[0] / f0) + Sqr(y - corner_pix[1] / f0);
             SRK_ASSERT(std::isfinite(one_err));
 
             err_sum += one_err;
+            seen_points_cnt += 1;
         }
     }
     SRK_ASSERT(std::isfinite(err_sum));
+    if (seen_points_count != nullptr)
+        *seen_points_count = seen_points_cnt;
     return err_sum;
 }
 
-void BundleAdjustmentKanatani::UpdateNormalizePattern()
+void BundleAdjustmentKanatani::InitializeNormalizedVarIndices()
 {
     MarkOptVarsOrderDependency();
 
@@ -435,113 +445,171 @@ void BundleAdjustmentKanatani::UpdateNormalizePattern()
     // R0 = Identity, T0 = [0, 0, 0], T1y = 1
     // Frame 0
     off += kIntrinsicVarsCount;
-    normalize_pattern_[out_ind++] = off + 0; // T0x
-    normalize_pattern_[out_ind++] = off + 1; // T0y
-    normalize_pattern_[out_ind++] = off + 2; // T0z
-    normalize_pattern_[out_ind++] = off + 3; // W0x
-    normalize_pattern_[out_ind++] = off + 4; // W0y
-    normalize_pattern_[out_ind++] = off + 5; // W0z
+    normalized_var_indices_[out_ind++] = off + 0; // T0x
+    normalized_var_indices_[out_ind++] = off + 1; // T0y
+    normalized_var_indices_[out_ind++] = off + 2; // T0z
+    normalized_var_indices_[out_ind++] = off + 3; // W0x
+    normalized_var_indices_[out_ind++] = off + 4; // W0y
+    normalized_var_indices_[out_ind++] = off + 5; // W0z
     off += kTVarsCount + kWVarsCount;
 
     // Frame 1
     off += kIntrinsicVarsCount;
-    normalize_pattern_[out_ind++] = off + unity_comp_ind_; // (T1x or) T1y
+    normalized_var_indices_[out_ind++] = off + unity_t1_comp_ind_; // (T1x or) T1y (or T1z)
 
-    normalize_pattern_count_ = out_ind;
-    SRK_ASSERT(normalize_pattern_count_ <= normalize_pattern_.size());
+    normalized_var_indices_count_ = out_ind;
+    SRK_ASSERT(normalized_var_indices_count_ <= normalized_var_indices_.size());
 }
 
-Scalar BundleAdjustmentKanatani::ReprojError(const FragmentMap& map,
+void BundleAdjustmentKanatani::EnsureMemoryAllocated()
+{
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
+
+    gradE_finite_diff.resize(points_count * kPointVarsCount + frames_count * vars_count_per_frame_);
+    // [3*points_count+10*frames_count]
+    deriv_second_point_finite_diff.resize(points_count * kPointVarsCount, kPointVarsCount); // [3*points_count,3]
+    deriv_second_frame_finite_diff.resize(frames_count * vars_count_per_frame_, vars_count_per_frame_); // [10*frames_count,10]
+    deriv_second_pointframe_finite_diff.resize(points_count * kPointVarsCount, frames_count * vars_count_per_frame_); // [3*points_count,10*frames_count]
+    corrections_.resize(points_count * kPointVarsCount + vars_count_per_frame_ * frames_count, 1); // corrections of vars
+
+    size_t normalized_frame_vars_count = vars_count_per_frame_ * frames_count - normalized_var_indices_count_;
+    decomp_lin_sys_left_side1_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
+    decomp_lin_sys_right_side_.resize(normalized_frame_vars_count, 1);
+    matG_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
+}
+
+Scalar BundleAdjustmentKanatani::ReprojError(Scalar f0, const FragmentMap& map,
                                                 const std::vector<SE3Transform>& inverse_orient_cams,
                                                 const CornerTrackRepository& track_rep,
                                                 const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
-                                                const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats)
+                                                const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
+                                                size_t* seen_points_count)
 {
     SalientPointPatch* point_patch = nullptr;
     FramePatch* frame_patch = nullptr;
-    return ReprojErrorWithOverlap(map, inverse_orient_cams, track_rep, shared_intrinsic_cam_mat, intrinsic_cam_mats,
-                                    point_patch, frame_patch);
+    return ReprojErrorWithOverlap(f0, map, inverse_orient_cams, track_rep, shared_intrinsic_cam_mat, intrinsic_cam_mats,
+                                    point_patch, frame_patch, seen_points_count);
 }
 
-bool BundleAdjustmentKanatani::ComputeInplace(FragmentMap& map,
+Scalar BundleAdjustmentKanatani::ReprojErrorPerPixel(size_t seen_points_count, Scalar reproj_err)
+{
+    // BA3DRKanSug2010, formula 33
+    size_t points_count = map_->PointTrackCount();
+    size_t frames_count = inverse_orient_cams_->size();
+
+    size_t vars_count = points_count * kPointVarsCount + frames_count * vars_count_per_frame_ - normalized_var_indices_count_;
+    SRK_ASSERT(2 * seen_points_count > vars_count) << "Error when normalizing reprojection error";
+
+    size_t den = 2 * seen_points_count - vars_count;
+    return f0_ * std::sqrt(reproj_err / den);
+}
+
+
+bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
                                                 std::vector<SE3Transform>& inverse_orient_cams,
                                                 const CornerTrackRepository& track_rep,
                                                 const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
                                                 std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats)
 {
+    CHECK(unity_t1_comp_ind_ >= 0 && unity_t1_comp_ind_ < kTVarsCount) << "Can normalize only one of [T1x, T1y, Tz] components";
+    this->f0_ = f0;
+    if (kSurikoDebug)
+    {
+        if (intrinsic_cam_mats != nullptr)
+        {
+            for (size_t i = 0; i < intrinsic_cam_mats->size(); ++i)
+            {
+                const auto& K = (*intrinsic_cam_mats)[i];
+                SRK_ASSERT(IsClose(f0, K(2, 2))) << "f0 != K[2,2]";
+            }
+        }
+    }
+
     this->map_ = &map;
     this->inverse_orient_cams_ = &inverse_orient_cams;
     this->track_rep_ = &track_rep;
     this->shared_intrinsic_cam_mat_ = shared_intrinsic_cam_mat;
     this->intrinsic_cam_mats_ = intrinsic_cam_mats;
 
-    // An optimization problem (bundle adjustment) is indeterminant as is, so the boundary condition is introduced:
-    // R0=Identity, T0=zeros(3), t2y=1
-    bool normalize_op = false;
-    scene_normalizer_ = NormalizeSceneInplace(&map, &inverse_orient_cams, t1y_, unity_comp_ind_, &normalize_op);
-    if (!normalize_op)
-        return false;
-
     //
-    frame_vars_count_ = kIntrinsicVarsCount + kTVarsCount + kWVarsCount;
-    SRK_ASSERT(frame_vars_count_ <= kMaxFrameVarsCount);
-    
-    UpdateNormalizePattern();
+    vars_count_per_frame_ = kIntrinsicVarsCount + kTVarsCount + kWVarsCount;
+    SRK_ASSERT(vars_count_per_frame_ <= kMaxFrameVarsCount);
 
-    // allocate space
+    InitializeNormalizedVarIndices();
+
     size_t points_count = map_->PointTrackCount();
     size_t frames_count = inverse_orient_cams_->size();
 
-    gradE_finite_diff.resize(points_count * kPointVarsCount + frames_count * frame_vars_count_);
-    // [3*points_count+10*frames_count]
-    deriv_second_point_finite_diff.resize(points_count * kPointVarsCount, kPointVarsCount); // [3*points_count,3]
-    deriv_second_frame_finite_diff.resize(frames_count * frame_vars_count_, frame_vars_count_); // [10*frames_count,10]
-    deriv_second_pointframe_finite_diff.resize(points_count * kPointVarsCount, frames_count * frame_vars_count_); // [3*points_count,10*frames_count]
-    corrections_.resize(points_count * kPointVarsCount + frame_vars_count_ * frames_count, 1); // corrections of vars
-    
-    size_t normalized_frame_vars_count = frame_vars_count_ * frames_count - normalize_pattern_count_;
-    decomp_lin_sys_left_side1_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
-    decomp_lin_sys_right_side_.resize(normalized_frame_vars_count, 1);
-    matG_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
-    normalized_vars_count_ = kPointVarsCount * points_count + frame_vars_count_ * frames_count - normalize_pattern_count_;
+    vars_count_after_noralization_ = kPointVarsCount * points_count + vars_count_per_frame_ * frames_count - normalized_var_indices_count_;
+    VLOG(4) << "Number of unknowns: " << vars_count_after_noralization_;
 
-    bool result = ComputeOnNormalizedWorld();
+    // Normalization
+    Scalar err_value_before_normalization = 0;
+    Scalar err_value_after_normalization = 0;
+    if (kSurikoDebug)
+        err_value_before_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+
+    // An optimization problem (bundle adjustment) is indeterminant as is, so the boundary condition is introduced:
+    // R0=Identity, T0=zeros(3), t2y=1
+    // call it before memory allocation as this operation may fail
+    bool normalize_op = false;
+    scene_normalizer_ = NormalizeSceneInplace(&map, &inverse_orient_cams, unity_t1_comp_value_, unity_t1_comp_ind_, &normalize_op);
+    if (!normalize_op)
+        return false;
+
+    if (kSurikoDebug)
+    {
+        err_value_after_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+        SRK_ASSERT(IsClose(err_value_before_normalization, err_value_after_normalization)) << "Reprojection error must not change during normalization.";
+    }
+
+    EnsureMemoryAllocated();
+
+    bool is_optimized = ComputeOnNormalizedWorld();
 
     if (kSurikoDebug)
     {
         // check world is still normalized after optimization
         std::string err_msg;
-        if (!CheckWorldIsNormalized(inverse_orient_cams, t1y_, unity_comp_ind_, &err_msg))
+        if (!CheckWorldIsNormalized(inverse_orient_cams, unity_t1_comp_value_, unity_t1_comp_ind_, &err_msg))
         {
             CHECK(false) <<err_msg;
         }
     }
     scene_normalizer_.RevertNormalization();
 
-    return result;
+    return is_optimized;
 }
 
 bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
 {
-    Scalar err_value_initial = ReprojError(*map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-    Scalar err_value = err_value_initial;
-
+    size_t seen_points_count = 0;
+    Scalar err_value_initial = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_, &seen_points_count);
+    
     // NOTE: we don't check absolute error here, because corrupted with noise data may have arbitrary large reproj err
+
+    Scalar err_value_initial_norm = ReprojErrorPerPixel(seen_points_count, err_value_initial);
+
+    VLOG(4) << "Seen points: " << seen_points_count;
 
     size_t it = 1;
     Scalar hessian_factor = 0.0001; // hessian's diagonal multiplier
-    VLOG(4) << "initial reproj_err=" << err_value_initial << " hessian_factor=" << hessian_factor;
+    VLOG(4) << "initial reproj_err=" << err_value_initial << " pix (or " << err_value_initial_norm << " pix/point) hessian_factor=" << hessian_factor;
+
+    Scalar err_value = err_value_initial;
 
     while(true)
     {
         constexpr Scalar finite_diff_eps_debug = 1e-5;
-        ComputeCloseFormReprErrorDerivatives(&gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff, finite_diff_eps_debug);
-
+        bool derivs_found = ComputeCloseFormReprErrorDerivatives(&gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff, finite_diff_eps_debug);
+        if (!derivs_found)
+            return false; // point's hessian can't be inverted
 
         enum class TargFunDecreaseResult { Decreased, HessianOverflow };
 
         // tries to decrease target optimization function by varying hessian's diagonal factor
-        auto try_decrease_targ_fun = [this](Scalar entry_err_value, Scalar* hessian_factor, Scalar* err_value_new) -> TargFunDecreaseResult
+        auto try_decrease_targ_fun = [this, seen_points_count](Scalar entry_err_value, Scalar* hessian_factor, Scalar* err_value_new) -> TargFunDecreaseResult
         {
             // backup current state(world points and camera orientations)
             FragmentMap map_copy = *map_;
@@ -557,15 +625,19 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
                 // 4. the plane vector of corrections is used to adjust the optimization variables
 
                 bool impl = true;
+                bool suc;
                 if (impl)
-                    EstimateCorrectionsDecomposedInTwoPhases(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
+                    suc = EstimateCorrectionsDecomposedInTwoPhases(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
                 else
-                    EstimateCorrectionsNaive(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
+                    suc = EstimateCorrectionsNaive(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
+                if (!suc)
+                    return TargFunDecreaseResult::HessianOverflow;
 
                 ApplyCorrections(corrections_);
 
-                *err_value_new = ReprojError(*map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-                VLOG(4) << "try_hessian: got reproj_err=" << *err_value_new << " for hessian_factor=" << *hessian_factor;
+                *err_value_new = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+                Scalar err_value_new_norm = ReprojErrorPerPixel(seen_points_count, *err_value_new);
+                VLOG(4) << "try_hessian: got reproj_err=" << *err_value_new << "pix (or " << err_value_new_norm << " pix/point) for hessian_factor=" << *hessian_factor;
                 
                 Scalar err_value_change = *err_value_new - entry_err_value;
                 bool target_fun_decreased = err_value_change < 0;
@@ -580,7 +652,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
 
                 *hessian_factor *= 10; // prefer more the Steepest descent
 
-                if (*hessian_factor >  max_hessian_factor_)
+                if (max_hessian_factor_.has_value() && *hessian_factor >  max_hessian_factor_)
                 {
                     // prevent overflow for too big factors
                     return TargFunDecreaseResult::HessianOverflow;
@@ -600,7 +672,8 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
         Scalar err_value_change = err_value_new - err_value;
         SRK_ASSERT(err_value_change < 0) << "Target error function's value must decrease";
 
-        if (std::abs(err_value_change) < min_err_change_abs_)
+        Scalar err_abs = seen_points_count * Sqr(min_reproj_err_change_pix_per_point_) / Sqr(f0_);
+        if (std::abs(err_value_change) < err_abs)
             return true; // success, reached target level of minimization of reprojection error
 
         err_value = err_value_new;
@@ -618,14 +691,14 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivPoint(size_t point_
     pnt3D_left[var1] -= finite_diff_eps;
     SalientPointPatch point_patch_left(point_track_id, pnt3D_left);
 
-    Scalar x1_err_sum = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_,
+    Scalar x1_err_sum = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_,
                                                 intrinsic_cam_mats_, &point_patch_left, nullptr);
 
     suriko::Point3 pnt3D_right = pnt3D_world; // copy
     pnt3D_right[var1] += finite_diff_eps;
     SalientPointPatch point_patch_right(point_track_id, pnt3D_right);
 
-    Scalar x2_err_sum = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_,
+    Scalar x2_err_sum = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_,
                                                 intrinsic_cam_mats_, &point_patch_right, nullptr);
     return (x2_err_sum - x1_err_sum) / (2 * finite_diff_eps);
 }
@@ -639,25 +712,25 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointPoint(size_t 
     pnt3D_tmp[var1] += finite_diff_eps;
     pnt3D_tmp[var2] += finite_diff_eps;
     SalientPointPatch point_patch1(point_track_id, pnt3D_tmp);
-    Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, nullptr);
+    Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, nullptr);
 
     pnt3D_tmp = pnt3D_world; // copy
     pnt3D_tmp[var1] += finite_diff_eps;
     pnt3D_tmp[var2] += -finite_diff_eps;
     SalientPointPatch point_patch2(point_track_id, pnt3D_tmp);
-    Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch2, nullptr);
+    Scalar e2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch2, nullptr);
 
     pnt3D_tmp = pnt3D_world; // copy
     pnt3D_tmp[var1] += -finite_diff_eps;
     pnt3D_tmp[var2] += finite_diff_eps;
     SalientPointPatch point_patch3(point_track_id, pnt3D_tmp);
-    Scalar e3 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch3, nullptr);
+    Scalar e3 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch3, nullptr);
 
     pnt3D_tmp = pnt3D_world; // copy
     pnt3D_tmp[var1] += -finite_diff_eps;
     pnt3D_tmp[var2] += -finite_diff_eps;
     SalientPointPatch point_patch4(point_track_id, pnt3D_tmp);
-    Scalar e4 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch4, nullptr);
+    Scalar e4 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch4, nullptr);
 
     Scalar value = (e1 - e2 - e3 + e4) / (4 * finite_diff_eps * finite_diff_eps);
     return value;
@@ -669,13 +742,13 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivFocalLengthFxFy(siz
     K_left(fxfy_ind, fxfy_ind) -= finite_diff_eps;
     FramePatch patch_left(frame_ind, K_left);
 
-    Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_left);
+    Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_left);
 
     auto K_right = K; // copy
     K_right(fxfy_ind, fxfy_ind) += finite_diff_eps;
     FramePatch patch_right(frame_ind, K_right);
 
-    Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_right);
+    Scalar e2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_right);
     Scalar value = (e2 - e1) / (2 * finite_diff_eps);
     return value;
 }
@@ -686,13 +759,13 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivPrincipalPoint(size
     K_left(u0v0_ind, 2) -= finite_diff_eps;
     FramePatch patch_left(frame_ind, K_left);
 
-    Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_left);
+    Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_left);
 
     auto K_right = K; // copy
     K_right(u0v0_ind, 2) += finite_diff_eps;
     FramePatch patch_right(frame_ind, K_right);
 
-    Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_right);
+    Scalar e2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_right);
     Scalar value = (e2 - e1) / (2 * finite_diff_eps);
     return value;
 }
@@ -707,14 +780,14 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivTranslationDirect(
     SE3Transform invertse_rt_left = SE3Inv(direct_rt_left);
     FramePatch patch_left(frame_ind, invertse_rt_left);
 
-    Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_left);
+    Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_left);
 
     SE3Transform direct_rt_right = direct_orient_cam; // copy
     direct_rt_right.T[tind] += finite_diff_eps;
     SE3Transform invertse_rt_right = SE3Inv(direct_rt_right);
     FramePatch patch_right(frame_ind, invertse_rt_right);
 
-    Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_right);
+    Scalar e2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch_right);
     Scalar value = (e2 - e1) / (2 * finite_diff_eps);
     return value;
 }
@@ -732,7 +805,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivRotation(size_t fra
     SE3Transform invertse_rt1 = SE3Inv(direct_rt1);
     FramePatch patch1(frame_ind, invertse_rt1);
 
-    Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch1);
+    Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch1);
 
     //
     direct_w_delta.fill(0);
@@ -743,7 +816,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivRotation(size_t fra
     SE3Transform invertse_rt2 = SE3Inv(direct_rt2);
     FramePatch patch2(frame_ind, invertse_rt2);
 
-    Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch2);
+    Scalar e2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch2);
     Scalar value = (e2 - e1) / (2 * finite_diff_eps);
     return value;
 }
@@ -763,7 +836,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivFrameFrame(size_t 
     SE3Transform inverse_orient_cam = SE3Inv(direct_rt);
     FramePatch frame_patch_right_right(frame_ind, K, inverse_orient_cam);
 
-    Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_right_right);
+    Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_right_right);
 
     // var1 + eps, var2 - eps
     frame_vars_delta.fill(0);
@@ -775,7 +848,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivFrameFrame(size_t 
     inverse_orient_cam = SE3Inv(direct_rt);
     FramePatch frame_patch_right_left(frame_ind, K, inverse_orient_cam);
 
-    Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_right_left);
+    Scalar e2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_right_left);
 
     // var1 - eps, var2 + eps
     frame_vars_delta.fill(0);
@@ -786,7 +859,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivFrameFrame(size_t 
     AddDeltaToFrameInplace(frame_vars_delta, &K, &direct_rt);
     inverse_orient_cam = SE3Inv(direct_rt);
     FramePatch frame_patch_left_right(frame_ind, K, inverse_orient_cam);
-    Scalar e3 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_left_right);
+    Scalar e3 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_left_right);
 
     // var1 - eps, var2 - eps
     frame_vars_delta.fill(0);
@@ -797,7 +870,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivFrameFrame(size_t 
     AddDeltaToFrameInplace(frame_vars_delta, &K, &direct_rt);
     inverse_orient_cam = SE3Inv(direct_rt);
     FramePatch frame_patch_left_left(frame_ind, K, inverse_orient_cam);
-    Scalar e4 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_left_left);
+    Scalar e4 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &frame_patch_left_left);
 
     // second order central finite difference formula
     // https://en.wikipedia.org/wiki/Finite_difference
@@ -837,19 +910,19 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointFrame(
     FramePatch frame_patch2tmp(frame_ind, K2, inverse_orient_cam1);
 
     // var1 + eps, var2 + eps
-    Scalar e1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch2, &frame_patch2);
+    Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch2, &frame_patch2);
 
     // var1 + eps, var2 - eps
-    Scalar e2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch2, &frame_patch1);
+    Scalar e2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch2, &frame_patch1);
 
     // var1 - eps, var2 + eps
-    Scalar e3 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2);
+    Scalar e3 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2);
 
     // var1 - eps, var2 - eps
-    Scalar e4 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch1);
+    Scalar e4 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch1);
     
-    Scalar etmp1 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2);
-    Scalar etmp2 = ReprojErrorWithOverlap(*map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2tmp);
+    Scalar etmp1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2);
+    Scalar etmp2 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &point_patch1, &frame_patch2tmp);
 
     // second order central finite difference formula
     // https://en.wikipedia.org/wiki/Finite_difference
@@ -857,7 +930,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointFrame(
     return value;
 }
 
-void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
+bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
     EigenDynMat* deriv_second_pointpoint,
     EigenDynMat* deriv_second_frameframe,
     EigenDynMat* deriv_second_pointframe, Scalar finite_diff_eps)
@@ -901,8 +974,6 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
             const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
 
-            Scalar f0 = K(2, 2);
-
             suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
             Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
             const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
@@ -916,7 +987,7 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             // 1st derivative Point
             for (size_t xyz_ind = 0; xyz_ind < kPointVarsCount; ++xyz_ind)
             {
-                Scalar ax = FirstDerivFromPqrDerivative(f0, pqr, corner_pix, point_pqr_deriv(xyz_ind, 0), point_pqr_deriv(xyz_ind, 1), point_pqr_deriv(xyz_ind, 2));
+                Scalar ax = FirstDerivFromPqrDerivative(f0_, pqr, corner_pix, point_pqr_deriv(xyz_ind, 0), point_pqr_deriv(xyz_ind, 1), point_pqr_deriv(xyz_ind, 2));
                 grad_point[xyz_ind] += ax;
             }
 
@@ -947,7 +1018,11 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             bool is_inverted = false;
             Scalar det = 0;
             point_hessian.computeInverseAndDetWithCheck(point_hessian_inv, det, is_inverted);
-            CHECK(is_inverted) << "3x3 matrix of second derivatives of points is not invertible, point_track_id=" << point_track_id << " det=" << det << " mat=\n" << point_hessian;
+            if (!is_inverted)
+            {
+                LOG(INFO) << "3x3 matrix of second derivatives of points is not invertible, point_track_id=" << point_track_id << " det=" << det << " mat=\n" << point_hessian;
+                return false;
+            }
 
             if (debug_reproj_error_first_derivatives_) // slow, check if requested
             {
@@ -982,10 +1057,9 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
     {
         const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
         const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
-        Scalar f0 = K(2, 2);
 
-        size_t grad_cur_frame_offset = grad_frames_section_offset + frame_ind * frame_vars_count_;
-        gsl::span<Scalar> grad_frame = gsl::make_span(&(*grad_error)[grad_cur_frame_offset], frame_vars_count_);
+        size_t grad_cur_frame_offset = grad_frames_section_offset + frame_ind * vars_count_per_frame_;
+        gsl::span<Scalar> grad_frame = gsl::make_span(&(*grad_error)[grad_cur_frame_offset], vars_count_per_frame_);
 
         track_rep_->IteratePointsMarker();
         for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
@@ -1009,33 +1083,33 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount> frame_pqr_deriv;
             size_t actual_frame_vars_count = 0;
             ComputeFramePqrDerivatives(K, inverse_orient_cam, salient_point, corner_pix, &frame_pqr_deriv, &actual_frame_vars_count);
-            SRK_ASSERT(frame_vars_count_ == actual_frame_vars_count) << "all " << frame_vars_count_ << " pqr derivatives must be set, but only " << actual_frame_vars_count << " were set";
+            SRK_ASSERT(vars_count_per_frame_ == actual_frame_vars_count) << "all " << vars_count_per_frame_ << " pqr derivatives must be set, but only " << actual_frame_vars_count << " were set";
 
             // 1st derivative of error with respect to all frame variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
-            for (size_t frame_var_ind = 0; frame_var_ind < frame_vars_count_; ++frame_var_ind)
+            for (size_t frame_var_ind = 0; frame_var_ind < vars_count_per_frame_; ++frame_var_ind)
             {
                 Scalar dp_by_var = frame_pqr_deriv(frame_var_ind, kPCompInd);
                 Scalar dq_by_var = frame_pqr_deriv(frame_var_ind, kQCompInd);
                 Scalar dr_by_var = frame_pqr_deriv(frame_var_ind, kRCompInd);
-                Scalar s = FirstDerivFromPqrDerivative(f0, pqr, corner_pix, dp_by_var, dq_by_var, dr_by_var);
+                Scalar s = FirstDerivFromPqrDerivative(f0_, pqr, corner_pix, dp_by_var, dq_by_var, dr_by_var);
                 grad_frame[frame_var_ind] += s;
             }
 
             // 2nd derivative of reprojection error with respect to Frame - Frame variables
-            for (size_t var1 = 0; var1 < frame_vars_count_; ++var1)
+            for (size_t var1 = 0; var1 < vars_count_per_frame_; ++var1)
             {
                 Scalar dp_by_var1 = frame_pqr_deriv(var1, kPCompInd);
                 Scalar dq_by_var1 = frame_pqr_deriv(var1, kQCompInd);
                 Scalar dr_by_var1 = frame_pqr_deriv(var1, kRCompInd);
                 
-                for (size_t var2 = 0; var2 < frame_vars_count_; ++var2)
+                for (size_t var2 = 0; var2 < vars_count_per_frame_; ++var2)
                 {
                     Scalar dp_by_var2 = frame_pqr_deriv(var2, kPCompInd);
                     Scalar dq_by_var2 = frame_pqr_deriv(var2, kQCompInd);
                     Scalar dr_by_var2 = frame_pqr_deriv(var2, kRCompInd);
 
                     Scalar s = SecondDerivFromPqrDerivative(pqr, dp_by_var1, dq_by_var1, dr_by_var1, dp_by_var2, dq_by_var2, dr_by_var2);
-                    (*deriv_second_frameframe)(frame_ind * frame_vars_count_ + var1, var2) += s;
+                    (*deriv_second_frameframe)(frame_ind * vars_count_per_frame_ + var1, var2) += s;
                 }
             }
 
@@ -1052,7 +1126,7 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                 Scalar gradq_by_var1 = point_pqr_deriv(point_var_ind, kQCompInd);
                 Scalar gradr_by_var1 = point_pqr_deriv(point_var_ind, kRCompInd);
 
-                for (size_t frame_var_ind = 0; frame_var_ind < frame_vars_count_; ++frame_var_ind)
+                for (size_t frame_var_ind = 0; frame_var_ind < vars_count_per_frame_; ++frame_var_ind)
                 {
                     Scalar gradp_by_var2 = frame_pqr_deriv(frame_var_ind, kPCompInd);
                     Scalar gradq_by_var2 = frame_pqr_deriv(frame_var_ind, kQCompInd);
@@ -1060,7 +1134,7 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
 
                     Scalar s = SecondDerivFromPqrDerivative(pqr, gradp_by_var1, gradq_by_var1, gradr_by_var1, gradp_by_var2, gradq_by_var2, gradr_by_var2);
                     size_t pnt_ind = point_track_id;
-                    (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var_ind, frame_ind * frame_vars_count_ + frame_var_ind) += s;
+                    (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var_ind, frame_ind * vars_count_per_frame_ + frame_var_ind) += s;
                 }
             }
         }
@@ -1072,13 +1146,13 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             if (debug_reproj_error_first_derivatives_) // slow, check if requested
             {
                 // 1st derivative with respect to Point variables
-                for (size_t var1 = 0; var1 < frame_vars_count_; ++var1)
+                for (size_t var1 = 0; var1 < vars_count_per_frame_; ++var1)
                 {
                     Scalar close_deriv = grad_frame[var1];
 
                     auto frame_finite_diff_deriv_fun = [this, frame_ind, &K, &direct_orient_cam, finite_diff_eps](size_t fram_var_ind) -> Scalar
                     {
-                        SRK_ASSERT(fram_var_ind < frame_vars_count_);
+                        SRK_ASSERT(fram_var_ind < vars_count_per_frame_);
 
                         size_t inside_frame_ind = fram_var_ind;
                         if (inside_frame_ind < kFxFyCount)
@@ -1104,10 +1178,10 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             if (debug_reproj_error_derivatives_frameframe_) // slow, check if requested
             {
                 // 2nd derivative with respect to Frame - Frame variables
-                for (size_t var1 = 0; var1 < frame_vars_count_; ++var1)
-                    for (size_t var2 = 0; var2 < frame_vars_count_; ++var2)
+                for (size_t var1 = 0; var1 < vars_count_per_frame_; ++var1)
+                    for (size_t var2 = 0; var2 < vars_count_per_frame_; ++var2)
                     {
-                        Scalar close_deriv = (*deriv_second_frameframe)(frame_ind * frame_vars_count_ + var1, var2);
+                        Scalar close_deriv = (*deriv_second_frameframe)(frame_ind * vars_count_per_frame_ + var1, var2);
 
                         Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivFrameFrame(frame_ind, K, direct_orient_cam, var1, var2, finite_diff_eps);
                         if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
@@ -1132,10 +1206,10 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
 
                 // 2nd derivative with respect to Point - Frame variables
                 for (size_t point_var = 0; debug_reproj_error_derivatives_pointframe_ && point_var < kPointVarsCount; ++point_var)
-                    for (size_t frame_var = 0; frame_var < frame_vars_count_; ++frame_var)
+                    for (size_t frame_var = 0; frame_var < vars_count_per_frame_; ++frame_var)
                     {
                         size_t pnt_ind = point_track_id;
-                        Scalar close_deriv = (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var, frame_ind * frame_vars_count_ + frame_var);
+                        Scalar close_deriv = (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var, frame_ind * vars_count_per_frame_ + frame_var);
 
                         Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivPointFrame(point_track_id, salient_point, point_var, frame_ind, K, direct_orient_cam, frame_var, finite_diff_eps);
                         if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
@@ -1144,6 +1218,7 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             }
         }
     }
+    return true;
 }
 
 void BundleAdjustmentKanatani::ComputePointPqrDerivatives(const Eigen::Matrix<Scalar,3,4>& P, Eigen::Matrix<Scalar, kPointVarsCount, PqrCount>* point_pqr_deriv) const
@@ -1161,7 +1236,6 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
     Scalar fy = K(1, 1);
     Scalar u0 = K(0, 2);
     Scalar v0 = K(1, 2);
-    Scalar f0 = K(2, 2);
 
     suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
     Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
@@ -1173,26 +1247,26 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
     // Pqr derivatives with respect to camera intrinsic variables [fx fy u0 v0]
     // fx
     Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount>& pqr_deriv = *frame_pqr_deriv;
-    pqr_deriv(inside_frame, kPCompInd) = (1 / fx) * pqr[0] - u0 / (f0 * fx) * pqr[2];
+    pqr_deriv(inside_frame, kPCompInd) = (1 / fx) * pqr[0] - u0 / (f0_ * fx) * pqr[2];
     pqr_deriv(inside_frame, kQCompInd) = 0;
     pqr_deriv(inside_frame, kRCompInd) = 0;
     inside_frame += 1;
 
     // fy
     pqr_deriv(inside_frame, kPCompInd) = 0;
-    pqr_deriv(inside_frame, kQCompInd) = (1 / fy) * pqr[1] - v0 / (f0 * fy) * pqr[2];
+    pqr_deriv(inside_frame, kQCompInd) = (1 / fy) * pqr[1] - v0 / (f0_ * fy) * pqr[2];
     pqr_deriv(inside_frame, kRCompInd) = 0;
     inside_frame += 1;
 
     // u0
-    pqr_deriv(inside_frame, kPCompInd) = (1 / f0) * pqr[2];
+    pqr_deriv(inside_frame, kPCompInd) = (1 / f0_) * pqr[2];
     pqr_deriv(inside_frame, kQCompInd) = 0;
     pqr_deriv(inside_frame, kRCompInd) = 0;
     inside_frame += 1;
 
     // v0
     pqr_deriv(inside_frame, kPCompInd) = 0;
-    pqr_deriv(inside_frame, kQCompInd) = (1 / f0) * pqr[2];
+    pqr_deriv(inside_frame, kQCompInd) = (1 / f0_) * pqr[2];
     pqr_deriv(inside_frame, kRCompInd) = 0;
     inside_frame += 1;
 
@@ -1202,7 +1276,7 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
     Eigen::Matrix<Scalar, kTVarsCount, PqrCount> tvars_pqr_deriv;
     tvars_pqr_deriv.col(0) = -(fx * direct_orient_cam.R.col(0) + u0 * direct_orient_cam.R.col(2)); // dp / d(Tx, Ty, Tz)
     tvars_pqr_deriv.col(1) = -(fy * direct_orient_cam.R.col(1) + v0 * direct_orient_cam.R.col(2)); // dq / d(Tx, Ty, Tz)
-    tvars_pqr_deriv.col(2) = -(f0 * direct_orient_cam.R.col(2)); // dr / d(Tx, Ty, Tz)
+    tvars_pqr_deriv.col(2) = -(f0_ * direct_orient_cam.R.col(2)); // dr / d(Tx, Ty, Tz)
 
     pqr_deriv.middleRows<kTVarsCount>(inside_frame) = tvars_pqr_deriv;
     inside_frame += kTVarsCount;
@@ -1210,7 +1284,7 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
     // 1st derivative of error with respect to direct W (axis angle representation of rotation)
     Eigen::Matrix<Scalar, kWVarsCount, 1> rot1 = fx * direct_orient_cam.R.col(0) + u0 * direct_orient_cam.R.col(2);
     Eigen::Matrix<Scalar, kWVarsCount, 1> rot2 = fy * direct_orient_cam.R.col(1) + v0 * direct_orient_cam.R.col(2);
-    Eigen::Matrix<Scalar, kWVarsCount, 1> rot3 = f0 * direct_orient_cam.R.col(2);
+    Eigen::Matrix<Scalar, kWVarsCount, 1> rot3 = static_cast<Scalar>(f0_) * direct_orient_cam.R.col(2);
 
     Eigen::Matrix<Scalar, kPointVarsCount, 1> t_to_salient_point = salient_point.Mat() - direct_orient_cam.T;
 
@@ -1256,7 +1330,7 @@ void BundleAdjustmentKanatani::FillHessian(const EigenDynMat& deriv_second_point
     size_t frames_count = inverse_orient_cams_->size();
     
     SRK_ASSERT(hessian->rows() == hessian->rows()) << "Provide square matrix";
-    SRK_ASSERT((size_t)hessian->rows() == points_count * kPointVarsCount + frames_count * frame_vars_count_);
+    SRK_ASSERT((size_t)hessian->rows() == points_count * kPointVarsCount + frames_count * vars_count_per_frame_);
 
     hessian->fill(0);
 
@@ -1269,18 +1343,18 @@ void BundleAdjustmentKanatani::FillHessian(const EigenDynMat& deriv_second_point
         // [3x3] point-point matrices on the diagonal
         hessian->block<kPointVarsCount, kPointVarsCount>(vert_offset, vert_offset) = deriv_second_pointpoint.middleRows<kPointVarsCount>(vert_offset);
 
-        const auto& point_frame = deriv_second_pointframe.block(vert_offset, 0, kPointVarsCount, frames_count * frame_vars_count_); // [3x9*frames_count]
-        hessian->block(vert_offset, points_count * kPointVarsCount, kPointVarsCount, frames_count * frame_vars_count_) = point_frame;
-        hessian->block(points_count * kPointVarsCount, vert_offset, frames_count * frame_vars_count_, kPointVarsCount) = point_frame.transpose();
+        const auto& point_frame = deriv_second_pointframe.block(vert_offset, 0, kPointVarsCount, frames_count * vars_count_per_frame_); // [3x9*frames_count]
+        hessian->block(vert_offset, points_count * kPointVarsCount, kPointVarsCount, frames_count * vars_count_per_frame_) = point_frame;
+        hessian->block(points_count * kPointVarsCount, vert_offset, frames_count * vars_count_per_frame_, kPointVarsCount) = point_frame.transpose();
     }
 
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
-        size_t vert_offset = frame_ind * frame_vars_count_;
+        size_t vert_offset = frame_ind * vars_count_per_frame_;
         size_t cur_frame_offset = points_count * kPointVarsCount + vert_offset;
 
         // [9x9] frame-frame matrices
-        hessian->block(cur_frame_offset, cur_frame_offset, frame_vars_count_, frame_vars_count_) = deriv_second_frameframe.middleRows(vert_offset, frame_vars_count_);
+        hessian->block(cur_frame_offset, cur_frame_offset, vars_count_per_frame_, vars_count_per_frame_) = deriv_second_frameframe.middleRows(vert_offset, vars_count_per_frame_);
     }
     
     // scale diagonal elements
@@ -1332,14 +1406,21 @@ void BundleAdjustmentKanatani::FillCorrectionsGapsFromNormalized(const Eigen::Ma
     in_ind += num;
     out_ind += num;
 
-    // set zero correction for frame1 T1y = fixed_const
-    corrs_with_gaps[out_ind + unity_comp_ind_] = no_adj; // T1x or T1y
-
     // copy other corrections of T1 intact
-    SRK_ASSERT(unity_comp_ind_ == 0 || unity_comp_ind_ == 1);
-    corrs_with_gaps[out_ind + 1 - unity_comp_ind_] = normalized_corrections[in_ind + 0]; // T1x or T1y
-    corrs_with_gaps[out_ind + 2]                   = normalized_corrections[in_ind + 1]; // T1z
-    in_ind += kTVarsCount - 1; // count(T1x T1y T1z without T1x or T1y)=2
+    SRK_ASSERT(unity_t1_comp_ind_ >= 0 && unity_t1_comp_ind_ < kTVarsCount);
+    for (size_t i = 0; i < kTVarsCount; ++i)
+    {
+        if (i == unity_t1_comp_ind_)
+        {
+            // set zero correction for frame1 T1y = fixed_const
+            corrs_with_gaps[out_ind + unity_t1_comp_ind_] = no_adj; // T1x or T1y or T1z
+        }
+        else
+        {
+            corrs_with_gaps[out_ind + i] = normalized_corrections[in_ind]; // set {T1x,T1y,T1z} minus element T1[unity_comp_ind]
+            in_ind += 1;
+        }
+    }
     out_ind += kTVarsCount;
 
     // copy corrections for other frames intact
@@ -1355,11 +1436,11 @@ void BundleAdjustmentKanatani::FillCorrectionsGapsFromNormalized(const Eigen::Ma
     {
         EigenDynMat conv_back = corrs_with_gaps; // copy
 
-        auto norm_pattern = normalize_pattern_; // copy
-        for (size_t i = 0; i < normalize_pattern_count_; ++i)
+        auto norm_pattern = normalized_var_indices_; // copy
+        for (size_t i = 0; i < normalized_var_indices_count_; ++i)
             norm_pattern[i] += points_count * kPointVarsCount; // offset point variables
 
-        auto remove_rows = gsl::make_span(norm_pattern.data(), normalize_pattern_count_);
+        auto remove_rows = gsl::make_span(norm_pattern.data(), normalized_var_indices_count_);
         auto remove_cols = gsl::span<size_t>(nullptr);
         RemoveRowsAndColsInplace(remove_rows, remove_cols, &conv_back);
         Scalar diff_value = (normalized_corrections - conv_back).norm();
@@ -1367,7 +1448,7 @@ void BundleAdjustmentKanatani::FillCorrectionsGapsFromNormalized(const Eigen::Ma
     }
 }
 
-void BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
+bool BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
     const EigenDynMat& deriv_second_frameframe,
     const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
 {
@@ -1406,9 +1487,10 @@ void BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar
     }
 
     FillCorrectionsGapsFromNormalized(normalized_corrections, corrections_with_gaps);
+    return true;
 }
 
-void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
+bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
     const EigenDynMat& deriv_second_frameframe,
     const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, 
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
@@ -1423,7 +1505,7 @@ void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         size_t out_ind = 0;
         for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
         {
-            const auto& ax = deriv_second_frameframe.middleRows(frame_ind * frame_vars_count_, frame_vars_count_);
+            const auto& ax = deriv_second_frameframe.middleRows(frame_ind * vars_count_per_frame_, vars_count_per_frame_);
 
             MarkOptVarsOrderDependency();
             size_t block_height;
@@ -1444,7 +1526,7 @@ void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
 
                 //block = removeRow(block, unity_comp_ind_);
                 //block = removeCol(block, unity_comp_ind_);
-                std::array<size_t, 1> remove_rows = { unity_comp_ind_ };
+                std::array<size_t, 1> remove_rows = { unity_t1_comp_ind_ };
                 RemoveRowsAndColsInplace(remove_rows, remove_rows, &block);
                 //LOG(INFO) << "\n" << block;
 
@@ -1455,7 +1537,7 @@ void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
             else
             {
                 // [9x9] frame-frame matrices
-                matG.block(out_ind, out_ind, frame_vars_count_, frame_vars_count_) = ax;
+                matG.block(out_ind, out_ind, vars_count_per_frame_, vars_count_per_frame_) = ax;
                 block_height = (size_t)ax.rows();
             }
 
@@ -1484,7 +1566,7 @@ void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         *mat = deriv_second_pointframe.middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount); // 3x9*frames_count
 
         // delete normalized columns
-        auto remove_cols = gsl::make_span(normalize_pattern_.data(), normalize_pattern_count_);
+        auto remove_cols = gsl::make_span(normalized_var_indices_.data(), normalized_var_indices_count_);
         auto remove_rows = gsl::span<size_t>(nullptr);
         RemoveRowsAndColsInplace(remove_rows, remove_cols, mat);
     };
@@ -1532,10 +1614,12 @@ void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
 
     //
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections_frame = decomp_lin_sys_left_side.householderQr().solve(decomp_lin_sys_right_side);
+    if (!corrections_frame.allFinite())
+        return false;
 
     // calculate deltas for point unknowns
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> normalized_corrections;
-    normalized_corrections.resize(normalized_vars_count_, 1);
+    normalized_corrections.resize(vars_count_after_noralization_, 1);
 
     track_rep_->IteratePointsMarker();
     for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
@@ -1553,12 +1637,15 @@ void BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv = point_hessian.inverse();
 
         Eigen::Matrix<Scalar, kPointVarsCount, 1> corrects_one_point = - point_hessian_inv * (point_frame * corrections_frame + gradeE_point);
+        if (!corrects_one_point.allFinite())
+            return false;
         normalized_corrections.middleRows<kPointVarsCount>(pnt_ind*kPointVarsCount) = corrects_one_point;
     }
 
     normalized_corrections.middleRows(points_count * kPointVarsCount, corrections_frame.rows()) = corrections_frame;
 
     FillCorrectionsGapsFromNormalized(normalized_corrections, corrections_with_gaps);
+    return true;
 }
 
 void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& corrections_with_gaps)
@@ -1580,7 +1667,7 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
     MarkOptVarsOrderDependency();
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
-        size_t cur_offset = points_count * kPointVarsCount + frame_ind * frame_vars_count_;
+        size_t cur_offset = points_count * kPointVarsCount + frame_ind * vars_count_per_frame_;
 
         // camera intrinsics
         gsl::span<const Scalar> delta_cam_intrinsics = gsl::make_span(&corrections_with_gaps[cur_offset], kIntrinsicVarsCount);

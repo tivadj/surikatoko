@@ -1,7 +1,6 @@
 #include <string>
 #include <cmath> // std::sqrt
 #include <algorithm> // std::clamp
-#include <iostream> // std::cerr
 #include <glog/logging.h>
 #include <Eigen/Cholesky>
 #include "suriko/approx-alg.h"
@@ -54,7 +53,7 @@ void FragmentMap::AddSalientPoint(size_t point_track_id, const std::optional<sur
 }
 void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &value)
 {
-    assert(point_track_id < salient_points.size());
+    SRK_ASSERT(point_track_id < salient_points.size());
     salient_points[point_track_id] = value;
 }
 
@@ -253,7 +252,7 @@ auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_nu
 }
 
 auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_post_cond)
--> std::tuple<Scalar, Eigen::Matrix<Scalar, 3, 3>, SE3Transform>
+-> std::tuple<bool, Scalar, Eigen::Matrix<Scalar, 3, 3>, SE3Transform>
 {
     using namespace Eigen;
     typedef Matrix<Scalar,3,3> Mat33;
@@ -280,7 +279,14 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 
     // QQt is inverted to allow further use Cholesky decomposition to find K
     Mat33 QQt_inv = QQt.inverse();
-    LLT<Mat33> llt(QQt_inv); // Cholesky decomposition
+
+    // Cholesky decomposition
+    LLT<Mat33> llt(QQt_inv);
+    if (llt.info() == Eigen::NumericalIssue)
+    {
+        VLOG(4) << "got negative matrix";
+        return std::make_tuple(false, Scalar{}, Eigen::Matrix<Scalar, 3, 3>{}, SE3Transform{});
+    }
     Mat33 C = llt.matrixL();
 
     // we need upper triangular matrix, but Eigen::LLT returns lower triangular
@@ -291,14 +297,15 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
     if (check_post_cond)
     {
         std::string err_msg;
-        if (!IsSpecialOrthogonal(R, &err_msg))
-            std::cerr <<err_msg <<std::endl;
+        bool op = IsSpecialOrthogonal(R, &err_msg);
+        CHECK(op) <<err_msg <<std::endl;
     }
 
     // find intrinsic parameters K
     Mat33 C_inv = C.inverse();
     Scalar c_last = C_inv(2, 2);
-    //assert not np.isclose(0, c_last), "division by zero, c_last={}".format(c_last)
+    SRK_ASSERT(!IsClose(0, c_last)) << "det(P)<3";
+
     Mat33 K = C_inv * (1/c_last);
 
     Scalar scale_factor = P_sign * c_last;
@@ -309,11 +316,11 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
         rt34 <<Mat33::Identity(), -t;
         Eigen::Matrix<Scalar, 3, 4> P_back = scale_factor * K * R.transpose() * rt34;
         auto diff = (proj_mat - P_back).norm();
-        assert(diff < 1e-2 && "Failed to decompose P[3x4]->R,T,K"); // (diff={})
+        SRK_ASSERT(diff < 1e-2) << "Failed to decompose P[3x4]->R,T,K" << "diff=" << diff;
     }
 
     SE3Transform direct_orient_cam(R,t);
-    return std::make_tuple(scale_factor, K, direct_orient_cam);
+    return std::make_tuple(true, scale_factor, K, direct_orient_cam);
 }
 
 auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D, const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0) -> suriko::Point3
@@ -334,13 +341,14 @@ auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D, c
         auto x = x2D[0];
         auto y = x2D[1];
         const auto &P = proj_mat_list[frame_ind];
-        A(frame_ind * 2 + 0, 0) = x * P(2, 0) - f0 * P(0, 0);
-        A(frame_ind * 2 + 0, 1) = x * P(2, 1) - f0 * P(0, 1);
-        A(frame_ind * 2 + 0, 2) = x * P(2, 2) - f0 * P(0, 2);
+        A(frame_ind * 2, 0) = x * P(2, 0) - f0 * P(0, 0);
+        A(frame_ind * 2, 1) = x * P(2, 1) - f0 * P(0, 1);
+        A(frame_ind * 2, 2) = x * P(2, 2) - f0 * P(0, 2);
         A(frame_ind * 2 + 1, 0) = y * P(2, 0) - f0 * P(1, 0);
         A(frame_ind * 2 + 1, 1) = y * P(2, 1) - f0 * P(1, 1);
         A(frame_ind * 2 + 1, 2) = y * P(2, 2) - f0 * P(1, 2);
-        B(frame_ind * 2 + 0) = -(x * P(2, 3) - f0 * P(0, 3));
+
+        B(frame_ind * 2) = -(x * P(2, 3) - f0 * P(0, 3));
         B(frame_ind * 2 + 1) = -(y * P(2, 3) - f0 * P(1, 3));
     }
 
@@ -353,13 +361,11 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = householder_qr.solve(B);
 #endif
 
-    bool debug = false;
+    static bool debug = false;
     if (debug) {
         const Eigen::Matrix<Scalar,Eigen::Dynamic,1> diff_vec = A * sol - B;
         Scalar diff = diff_vec.norm();
-        if (diff > 0.1) {
-            std::cout << "warn: big diff=" << diff << " frames_count=" << frames_count << std::endl;
-        }
+        LOG_IF(INFO, diff > 5) << "warn: big diff=" << diff << " frames_count=" << frames_count;
     }
     suriko::Point3 x3D(sol(0), sol(1), sol(2));
     return x3D;
