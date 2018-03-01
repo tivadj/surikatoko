@@ -68,6 +68,7 @@ static bool ValidateDirectoryExists(const char *flagname, const std::string &val
 
 DEFINE_string(testdata, "NOTFOUND", "Abs/rel path to testdata directory");
 DEFINE_validator(testdata, &ValidateDirectoryExists);
+DEFINE_double(allowed_repr_err, 1e-5, "Reprojection error change threshold (in pix)");
 
 int DinoDemo(int argc, char* argv[])
 {
@@ -181,7 +182,7 @@ int DinoDemo(int argc, char* argv[])
     FragmentMap map;
     for (size_t pnt_track_id : subset_point_track_ids)
     {
-        const auto& corner_track = track_rep.GetPointTrackById(pnt_track_id);
+        const CornerTrack& corner_track = track_rep.GetPointTrackById(pnt_track_id);
 
         one_pnt_corner_per_frame.clear();
         one_pnt_proj_mat_per_frame.clear();
@@ -230,11 +231,14 @@ int DinoDemo(int argc, char* argv[])
     }
 
     BundleAdjustmentKanatani ba;
+    BundleAdjustmentKanataniTermCriteria term_crit;
+    if (FLAGS_allowed_repr_err > 0)
+        term_crit.AllowedReprojErrRelativeChange(FLAGS_allowed_repr_err);
 
     LOG(INFO) << "start bundle adjustment..." <<endl;
-    op = ba.ComputeInplace(f0, map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame);
+    op = ba.ComputeInplace(f0, map, inverse_orient_cam_per_frame, track_rep, nullptr, &intrinsic_cam_mat_per_frame, term_crit);
 
-    LOG(INFO) << "bundle adjustment finished with result: " <<op << endl;
+    LOG(INFO) << "bundle adjustment finished with result: " << op << " (" << ba.OptimizationStatusString() << ")" << endl;
     return 0;
 }
 }

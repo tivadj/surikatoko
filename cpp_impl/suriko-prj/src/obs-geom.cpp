@@ -42,25 +42,42 @@ auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_worl
     return SE3Compose(a_from_world, SE3Inv(b_from_world));
 }
 
-
-void FragmentMap::AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &value)
+void FragmentMap::AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &coord)
 {
     if (point_track_id >= salient_points.size())
         salient_points.resize(point_track_id+1);
-    if (value.has_value())
-        SetSalientPoint(point_track_id, value.value());
-    point_track_count += 1;
+    if (coord.has_value())
+        SetSalientPoint(point_track_id, coord.value());
+    salient_points_count += 1;
 }
-void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &value)
+size_t FragmentMap::AddSalientPointNew(const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId)
+{
+    size_t new_fragment_id = salient_points.size();
+    salient_points.resize(salient_points.size() + 1);
+    
+    SetSalientPointNew(new_fragment_id, coord, syntheticVirtualPointId);
+    salient_points_count += 1;
+    return new_fragment_id;
+}
+void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord)
 {
     SRK_ASSERT(point_track_id < salient_points.size());
-    salient_points[point_track_id] = value;
+    SalientPointFragment& frag = salient_points[point_track_id];
+    frag.Coord = coord;
+}
+
+void FragmentMap::SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId)
+{
+    SRK_ASSERT(fragment_id < salient_points.size());
+    SalientPointFragment& frag = salient_points[fragment_id];
+    frag.SyntheticVirtualPointId = syntheticVirtualPointId;
+    frag.Coord = coord;
 }
 
 const suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id) const
 {
     CHECK(point_track_id < salient_points.size());
-    const std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id];
+    const std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id].Coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
@@ -68,7 +85,7 @@ const suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id) const
 suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id)
 {
     CHECK(point_track_id < salient_points.size());
-    std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id];
+    std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id].Coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
@@ -369,5 +386,54 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
     }
     suriko::Point3 x3D(sol(0), sol(1), sol(2));
     return x3D;
+}
+
+namespace internals
+{
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, const Eigen::Matrix<Scalar, 3, 1>* translation)
+{
+    Eigen::Matrix<Scalar, 4, 4> result{};
+    Eigen::Matrix<Scalar, 3, 3> identity3 = Eigen::Matrix<Scalar, 3, 3>::Identity();
+    if (rot_mat == nullptr)
+        rot_mat = &identity3;
+        
+    Eigen::Matrix<Scalar, 3, 1> zero_translation(0, 0, 0);
+    if (translation == nullptr)
+        translation = &zero_translation;
+
+    result.topLeftCorner(3, 3) = *rot_mat;
+    result.topRightCorner(3, 1) = *translation;
+    result(3, 3) = 1;
+    return result;
+}
+
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, const Eigen::Matrix<Scalar, 3, 1>& translation)
+{
+    return SE3Mat(&rot_mat, &translation);
+}
+
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat)
+{
+    return SE3Mat(&rot_mat, nullptr);
+}
+
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 1>& translation)
+{
+    return SE3Mat(nullptr, &translation);
+}
+
+Eigen::Matrix<Scalar, 3, 3> RotMat(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang)
+{
+    Eigen::Matrix<Scalar, 3, 3> result;
+    if (!RotMatFromUnityDirAndAngle(unity_dir, ang, &result))
+        result = Eigen::Matrix<Scalar, 3, 3>::Identity();
+    return result;
+}
+
+Eigen::Matrix<Scalar, 3, 3> RotMat(Scalar unity_dir_x, Scalar unity_dir_y, Scalar unity_dir_z, Scalar ang)
+{
+    Eigen::Matrix<Scalar, 3, 1> unity_dir(unity_dir_x, unity_dir_y, unity_dir_z);
+    return RotMat(unity_dir, ang);
+}
 }
 }

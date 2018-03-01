@@ -14,18 +14,49 @@ message(STATUS "PLATFORM_SHORT_NAME=${PLATFORM_SHORT_NAME}") #
 #include_directories(${suriko-engine_INCLUDE_DIRS})
 #message(STATUS "suriko-engine_INCLUDE_DIRS=${suriko-engine_INCLUDE_DIRS}") #
 
-add_executable(demos
-        main.cpp
-        demo-bundle-adj-dinosaur.cpp)
 
-target_link_libraries(demos suriko-engine)
-target_include_directories(demos PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
+macro(AddDepsM dem)
+    target_link_libraries(${dem} suriko-engine)
+    target_include_directories(${dem} PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
 
-target_include_directories(demos PRIVATE ${Boost_INCLUDE_DIRS})
-target_link_libraries(demos ${Boost_LIBRARIES})
-#target_link_libraries(demos Boost::filesystem)
+    target_include_directories(${dem} PRIVATE ${Boost_INCLUDE_DIRS})
+    target_link_libraries(${dem} ${Boost_LIBRARIES})
+    #target_link_libraries(dem Boost::filesystem)
 
-#target_include_directories(demos PRIVATE ${EIGEN3_INCLUDE_DIR})
-target_link_libraries (demos Eigen3::Eigen)
-target_link_libraries (demos gflags)
-target_link_libraries (demos glog::glog)
+    #target_include_directories(dem PRIVATE ${EIGEN3_INCLUDE_DIR})
+    target_link_libraries (${dem} Eigen3::Eigen)
+    target_link_libraries (${dem} gflags)
+    target_link_libraries (${dem} glog::glog)
+endmacro()
+
+function(AddDepsF dem)
+    if (MSVC)
+        target_compile_definitions(${dem} PRIVATE _USE_MATH_DEFINES) # allow M_PI in "cmath.h"
+    endif()
+
+    target_link_libraries(${dem} suriko-engine)
+    target_include_directories(${dem} PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
+
+    target_include_directories(${dem} PRIVATE ${Boost_INCLUDE_DIRS})
+    target_link_libraries(${dem} ${Boost_LIBRARIES})
+    #target_link_libraries(dem Boost::filesystem)
+
+    #target_include_directories(dem PRIVATE ${EIGEN3_INCLUDE_DIR})
+    target_link_libraries (${dem} Eigen3::Eigen)
+    target_link_libraries (${dem} gflags)
+    target_link_libraries (${dem} glog::glog)
+endfunction()
+
+set (test-helpers 
+    stat-helpers.h
+    stat-helpers.cpp
+    )
+
+add_executable(demo-dino main.cpp demo-bundle-adj-dinosaur.cpp)
+#AddDepsM(demo-dino)
+AddDepsF(demo-dino)
+
+add_executable(demo-circle-grid demo-bundle-adj-circle-grid.cpp ${test-helpers})
+AddDepsF(demo-circle-grid)
+target_include_directories(demo-circle-grid PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(demo-circle-grid ${OpenCV_LIBS})

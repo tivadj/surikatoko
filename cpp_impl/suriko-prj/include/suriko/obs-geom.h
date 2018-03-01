@@ -67,20 +67,31 @@ auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3
 auto SE3Compose(const SE3Transform& rt1, const SE3Transform& rt2) -> suriko::SE3Transform;
 auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_world) -> suriko::SE3Transform;
 
+/// The 3D point inside the map.
+struct SalientPointFragment
+{
+    std::optional<size_t> SyntheticVirtualPointId;
+    std::optional<suriko::Point3> Coord;
+};
+
 /// The space with salient 3D points.
 class FragmentMap
 {
-	size_t point_track_count = 0;
-    std::vector<std::optional<suriko::Point3>> salient_points;
+    size_t salient_points_count = 0;
+    std::vector<SalientPointFragment> salient_points;
 public:
-    void AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &value);
+    void AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &coord);
+    size_t AddSalientPointNew(const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
 
-    void SetSalientPoint(size_t point_track_id, const suriko::Point3 &value);
+    void SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord);
+    void SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
 
     const suriko::Point3& GetSalientPoint(size_t point_track_id) const;
           suriko::Point3& GetSalientPoint(size_t point_track_id);
 
-    size_t PointTrackCount() const { return point_track_count; }
+    size_t SalientPointsCount() const { return salient_points_count; }
+    const std::vector<SalientPointFragment>& SalientPoints() const { return salient_points; }
+          std::vector<SalientPointFragment>& SalientPoints()       { return salient_points; }
 };
 
 class CornerTrack
@@ -161,4 +172,16 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
                                  const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0)
     -> suriko::Point3;
+
+namespace internals
+{
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, const Eigen::Matrix<Scalar, 3, 1>* translation);
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, const Eigen::Matrix<Scalar, 3, 1>& translation);
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat);
+Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 1>& translation);
+
+/// Generates rotation matrix from direction and angle to rotate. For zero angle it returns the identity matrix.
+Eigen::Matrix<Scalar, 3, 3> RotMat(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang);
+Eigen::Matrix<Scalar, 3, 3> RotMat(Scalar unity_dir_x, Scalar unity_dir_y, Scalar unity_dir_z, Scalar ang);
+}
 }

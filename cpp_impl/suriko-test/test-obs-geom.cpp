@@ -22,9 +22,9 @@ TEST_F(ObsGeomTest, SkewSymmetricMatConstruction)
 	Eigen::Matrix<Scalar, 3, 3> skew_mat;
 	SkewSymmetricMat(v, &skew_mat);
 
-	EXPECT_FLOAT_EQ(0, skew_mat(0,0));
-	EXPECT_FLOAT_EQ(-3, skew_mat(0,1));
-	EXPECT_FLOAT_EQ(3, skew_mat(1,0));
+    EXPECT_FLOAT_EQ(Scalar{ 0 }, skew_mat(0, 0));
+    EXPECT_FLOAT_EQ(Scalar{ -3 }, skew_mat(0, 1));
+    EXPECT_FLOAT_EQ(Scalar{ 3 }, skew_mat(1, 0));
 }
 
 TEST_F(ObsGeomTest, RotMatFromAxisAngle)

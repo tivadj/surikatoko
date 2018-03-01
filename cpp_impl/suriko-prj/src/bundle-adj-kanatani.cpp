@@ -4,7 +4,6 @@
 #include <vector>
 #include <optional>
 #include <cmath> // std::isnan
-#include <iostream>
 #include <gsl/span>
 #include <gsl/gsl_assert>
 #include <glog/logging.h>
@@ -19,31 +18,49 @@ namespace suriko
 {
 
 namespace {
-    constexpr auto kTVarsCount = BundleAdjustmentKanatani::kTVarsCount;
-    constexpr auto kWVarsCount = BundleAdjustmentKanatani::kWVarsCount;
+constexpr Scalar kNan = std::numeric_limits<Scalar>::quiet_NaN();
+constexpr auto kTVarsCount = BundleAdjustmentKanatani::kTVarsCount;
+constexpr auto kWVarsCount = BundleAdjustmentKanatani::kWVarsCount;
 
-    constexpr bool kDebugCorrectSalientPoints = true; // true to optimize salient points
-    constexpr bool kDebugCorrectCamIntrinsics = true;
-    constexpr bool kDebugCorrectTranslations = true;
-    constexpr bool kDebugCorrectRotations = true;
+constexpr bool kDebugCorrectSalientPoints = true; // true to optimize salient points
+constexpr bool kDebugCorrectCamIntrinsics = true;
+constexpr bool kDebugCorrectTranslations = true;
+constexpr bool kDebugCorrectRotations = true;
 
-    /// Declares code dependency on the order of variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
-    void MarkOptVarsOrderDependency() {}
+/// Declares code dependency on the order of variables [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
+void MarkOptVarsOrderDependency() {}
 
-    /// Axis angle can't be recovered for identity R matrix. This situation may occur when at some point the
-    /// camera orientation coincide with the orientation at the first time point of the first frame. Such camera orientation
-    /// may be inferred from the neighbour camera orientations.
-    void MarkUndeterminedCameraOrientationAxisAngle() {}
+/// Axis angle can't be recovered for identity R matrix. This situation may occur when at some point the
+/// camera orientation coincide with the orientation at the first time point of the first frame. Such camera orientation
+/// may be inferred from the neighbour camera orientations.
+void MarkUndeterminedCameraOrientationAxisAngle() {}
+
+/// Flags to enable interactive debugging of some pathes in code.
+enum class DebugPath
+{
+    // True to compare close derivatives of reprojection error with finite difference approximation.
+    // The computation of finite differences is slow and this value should be false in normal debug and release modes.
+    ReprojErrorFirstDerivatives = 0,
+    ReprojErrorDerivativesPointPoint = 1,
+    ReprojErrorDerivativesFrameFrame = 2,
+    ReprojErrorDerivativesPointFrame = 3,
+    Last=4
+};
+bool Enable(DebugPath var_ind)
+{
+    static std::array<bool, (int)DebugPath::Last> debug_vars; // change it manually in debug-time
+    return debug_vars[(int)var_ind];
 }
-
+}
 
 /// Apply infinitesimal correction w to rotation matrix.
 void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, const Eigen::Matrix<Scalar, kWVarsCount, 1>& w_delta,
     Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>* Rnew)
 {
-    constexpr int impl = 2;
-    if (impl == 1)
+    constexpr int updateR_impl = 2;
+    if (updateR_impl == 1)
     {
+        // TODO: constructs non-orthogonal matrices
         // Rnew = (I + hat(w))*R where hat(w) is [3x3] and w is 3-element axis angle
         Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_w_delta_hat;
         SkewSymmetricMat(w_delta, &direct_w_delta_hat);
@@ -61,7 +78,7 @@ void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, c
         }
         else
         {
-            // Rodrigues formula failed. Keep R unchanged.
+            // Rodrigues formula fails when vector of changes is zero. Keep R unchanged.
             *Rnew = R;
         }
     }
@@ -191,7 +208,7 @@ bool SceneNormalizer::NormalizeWorldInplaceInternal()
     prenorm_rt0_ = rt0; // copy
 
     // update salient points
-    auto point_track_count = map_->PointTrackCount();
+    auto point_track_count = map_->SalientPointsCount();
     for (size_t pnt_track_id = 0; pnt_track_id < point_track_count; ++pnt_track_id)
     {
         suriko::Point3 salient_point = map_->GetSalientPoint(pnt_track_id);
@@ -223,7 +240,7 @@ void SceneNormalizer::RevertNormalization()
     // the initial (pre-normalization) state
 
     // update salient points
-    auto point_track_count = map_->PointTrackCount();
+    auto point_track_count = map_->SalientPointsCount();
     for (size_t pnt_track_id = 0; pnt_track_id < point_track_count; ++pnt_track_id)
     {
         suriko::Point3 salient_point = map_->GetSalientPoint(pnt_track_id);
@@ -295,7 +312,7 @@ bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams
     return true;
 }
 
-/// Represents overlapping parameters for some world 3D point.
+    /// Represents overlapping parameters for some world 3D point.
 class SalientPointPatch
 {
     size_t point_track_id_;
@@ -371,7 +388,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
     CHECK(!IsClose(0, f0)) << "f0 != 0";
     CHECK(intrinsic_cam_mats != nullptr);
 
-    size_t points_count = map.PointTrackCount();
+    size_t points_count = map.SalientPointsCount();
     CHECK(points_count == track_rep.CornerTracks.size() && "Each 3D point must be tracked");
 
     Scalar err_sum = 0;
@@ -435,6 +452,57 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
     return err_sum;
 }
 
+//void BundleAdjustmentKanataniTermCriteria::AllowedReprojErrAbs(std::optional<Scalar> value)
+//{
+//    allowed_reproj_err_abs_ = value;
+//}
+//
+//std::optional<Scalar> BundleAdjustmentKanataniTermCriteria::AllowedReprojErrAbs() const
+//{
+//    return allowed_reproj_err_abs_;
+//}
+//
+//void BundleAdjustmentKanataniTermCriteria::AllowedReprojErrAbsPerPixel(std::optional<Scalar> value)
+//{
+//    allowed_reproj_err_abs_per_pixel_ = value;
+//}
+//
+//std::optional<Scalar> BundleAdjustmentKanataniTermCriteria::AllowedReprojErrAbsPerPixel() const
+//{
+//    return allowed_reproj_err_abs_per_pixel_;
+//}
+
+void BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChange(std::optional<Scalar> value)
+{
+    CHECK(!allowed_reproj_err_rel_change_per_pixel_.has_value()) << "Reprojection error per pixel is already set (clear it before setting abs value)";
+    allowed_reproj_err_rel_change_ = value;
+}
+
+std::optional<Scalar> BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChange() const
+{
+    return allowed_reproj_err_rel_change_;
+}
+
+void BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChangePerPixel(std::optional<Scalar> value)
+{
+    CHECK(!allowed_reproj_err_rel_change_.has_value()) << "Absolute reprojection error is already set (clear it before setting per pixel value)";
+    allowed_reproj_err_rel_change_per_pixel_ = value;
+}
+
+std::optional<Scalar> BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChangePerPixel() const
+{
+    return allowed_reproj_err_rel_change_per_pixel_;
+}
+
+void BundleAdjustmentKanataniTermCriteria::MaxHessianFactor(std::optional<Scalar> max_hessian_factor)
+{
+    max_hessian_factor_ = max_hessian_factor;
+}
+std::optional<Scalar> BundleAdjustmentKanataniTermCriteria::MaxHessianFactor() const
+{
+    return max_hessian_factor_;
+}
+
 void BundleAdjustmentKanatani::InitializeNormalizedVarIndices()
 {
     MarkOptVarsOrderDependency();
@@ -461,16 +529,23 @@ void BundleAdjustmentKanatani::InitializeNormalizedVarIndices()
     SRK_ASSERT(normalized_var_indices_count_ <= normalized_var_indices_.size());
 }
 
+void BundleAdjustmentKanatani::FillNormalizedVarIndicesWithOffset(size_t offset, gsl::span<size_t> var_indices)
+{
+    // by default all normalization indices of variables are calculated from zero frame
+    for (size_t i = 0; i < normalized_var_indices_count_; ++i)
+        var_indices[i] = normalized_var_indices_[i] + offset;
+}
+
 void BundleAdjustmentKanatani::EnsureMemoryAllocated()
 {
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
 
-    gradE_finite_diff.resize(points_count * kPointVarsCount + frames_count * vars_count_per_frame_);
+    gradE_.resize(points_count * kPointVarsCount + frames_count * vars_count_per_frame_);
     // [3*points_count+10*frames_count]
-    deriv_second_point_finite_diff.resize(points_count * kPointVarsCount, kPointVarsCount); // [3*points_count,3]
-    deriv_second_frame_finite_diff.resize(frames_count * vars_count_per_frame_, vars_count_per_frame_); // [10*frames_count,10]
-    deriv_second_pointframe_finite_diff.resize(points_count * kPointVarsCount, frames_count * vars_count_per_frame_); // [3*points_count,10*frames_count]
+    deriv_second_pointpoint_.resize(points_count * kPointVarsCount, kPointVarsCount); // [3*points_count,3]
+    deriv_second_frameframe_.resize(frames_count * vars_count_per_frame_, vars_count_per_frame_); // [10*frames_count,10]
+    deriv_second_pointframe_.resize(points_count * kPointVarsCount, frames_count * vars_count_per_frame_); // [3*points_count,10*frames_count]
     corrections_.resize(points_count * kPointVarsCount + vars_count_per_frame_ * frames_count, 1); // corrections of vars
 
     size_t normalized_frame_vars_count = vars_count_per_frame_ * frames_count - normalized_var_indices_count_;
@@ -492,10 +567,10 @@ Scalar BundleAdjustmentKanatani::ReprojError(Scalar f0, const FragmentMap& map,
                                     point_patch, frame_patch, seen_points_count);
 }
 
-Scalar BundleAdjustmentKanatani::ReprojErrorPerPixel(size_t seen_points_count, Scalar reproj_err)
+Scalar BundleAdjustmentKanatani::ReprojErrorPerPixelFromGlobal(size_t seen_points_count, Scalar reproj_err) const
 {
     // BA3DRKanSug2010, formula 33
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
 
     size_t vars_count = points_count * kPointVarsCount + frames_count * vars_count_per_frame_ - normalized_var_indices_count_;
@@ -505,13 +580,26 @@ Scalar BundleAdjustmentKanatani::ReprojErrorPerPixel(size_t seen_points_count, S
     return f0_ * std::sqrt(reproj_err / den);
 }
 
+Scalar BundleAdjustmentKanatani::GlobalReprojErrorFromPerPixel(size_t seen_points_count, Scalar reproj_err) const
+{
+    // BA3DRKanSug2010, formula 33
+    ptrdiff_t den = 2 * seen_points_count - (ptrdiff_t)NormalizedVarsCount();
+    SRK_ASSERT(den > 0) << "Error when normalizing reprojection error";
+
+    return f0_ * std::sqrt(reproj_err / den);
+}
 
 bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
-                                                std::vector<SE3Transform>& inverse_orient_cams,
-                                                const CornerTrackRepository& track_rep,
-                                                const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
-                                                std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats)
+    std::vector<SE3Transform>& inverse_orient_cams,
+    const CornerTrackRepository& track_rep,
+    const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
+    std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
+    const BundleAdjustmentKanataniTermCriteria& term_crit)
 {
+    constexpr bool update_all_vars = kDebugCorrectSalientPoints && kDebugCorrectCamIntrinsics && kDebugCorrectTranslations && kDebugCorrectRotations;
+    if (!update_all_vars)
+        LOG(INFO) << "NOTE: Debug mode: not all variables are updated";
+
     CHECK(unity_t1_comp_ind_ >= 0 && unity_t1_comp_ind_ < kTVarsCount) << "Can normalize only one of [T1x, T1y, Tz] components";
     this->f0_ = f0;
     if (kSurikoDebug)
@@ -538,11 +626,12 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
 
     InitializeNormalizedVarIndices();
 
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
 
-    vars_count_after_noralization_ = kPointVarsCount * points_count + vars_count_per_frame_ * frames_count - normalized_var_indices_count_;
-    VLOG(4) << "Number of unknowns: " << vars_count_after_noralization_;
+    VLOG(4) << "Number of variables: " << NormalizedVarsCount();
+
+    optimization_stop_reason_.clear();
 
     // Normalization
     Scalar err_value_before_normalization = 0;
@@ -566,7 +655,7 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
 
     EnsureMemoryAllocated();
 
-    bool is_optimized = ComputeOnNormalizedWorld();
+    bool is_optimized = ComputeOnNormalizedWorld(term_crit);
 
     if (kSurikoDebug)
     {
@@ -579,37 +668,62 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
     }
     scene_normalizer_.RevertNormalization();
 
+    // reset cached fields
+    if (kSurikoDebug)
+    {
+        this->map_ = nullptr;
+        this->inverse_orient_cams_ = nullptr;
+        this->track_rep_ = nullptr;
+        this->shared_intrinsic_cam_mat_ = nullptr;
+        this->intrinsic_cam_mats_ = nullptr;
+    }
     return is_optimized;
 }
 
-bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
+bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKanataniTermCriteria& term_crit)
 {
-    size_t seen_points_count = 0;
-    Scalar err_value_initial = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_, &seen_points_count);
-    
-    // NOTE: we don't check absolute error here, because corrupted with noise data may have arbitrary large reproj err
+    size_t it = 1;
+    Scalar hessian_factor = 0.0001; // hessian's diagonal multiplier
 
-    Scalar err_value_initial_norm = ReprojErrorPerPixel(seen_points_count, err_value_initial);
+    size_t seen_points_count = 0;
+    Scalar err_initial = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_, &seen_points_count);
+    Scalar err_per_point_initial = ReprojErrorPerPixelFromGlobal(seen_points_count, err_initial);
 
     VLOG(4) << "Seen points: " << seen_points_count;
 
-    size_t it = 1;
-    Scalar hessian_factor = 0.0001; // hessian's diagonal multiplier
-    VLOG(4) << "initial reproj_err=" << err_value_initial << " pix (or " << err_value_initial_norm << " pix/point) hessian_factor=" << hessian_factor;
+    std::optional<Scalar> err_thresh = term_crit.AllowedReprojErrRelativeChange();
+    if (!err_thresh.has_value() && term_crit.AllowedReprojErrRelativeChangePerPixel().has_value())
+    {
+        err_thresh = GlobalReprojErrorFromPerPixel(seen_points_count, term_crit.AllowedReprojErrRelativeChangePerPixel().value());
+    }
+    VLOG(4) << "Reproj err change goal=" << err_thresh.value_or(-1) << " pix";
+    VLOG(4) << "Initial reproj_err=" << err_initial << " pix (or " << err_per_point_initial << " pix/point) hessian_factor=" << hessian_factor;
 
-    Scalar err_value = err_value_initial;
+    // reprojection error is zero on exact data
+    // reprojection error is arbitrary large on corrupted with noise data
+    //std::optional<Scalar> err_abs = term_crit.AllowedReprojErrAbs();
+    //if (!err_abs.has_value() && term_crit.AllowedReprojErrAbsPerPixel().has_value())
+    //{
+    //    err_abs = GlobalReprojErrorFromPerPixel(seen_points_count, term_crit.AllowedReprojErrAbsPerPixel().value());
+    //}
+    if (err_thresh.has_value() && err_initial < err_thresh.value())
+    {
+        optimization_stop_reason_ = "abs err threshold";
+        return true;
+    }
 
+    Scalar err_value = err_initial;
     while(true)
     {
         constexpr Scalar finite_diff_eps_debug = 1e-5;
-        bool derivs_found = ComputeCloseFormReprErrorDerivatives(&gradE_finite_diff, &deriv_second_point_finite_diff, &deriv_second_frame_finite_diff, &deriv_second_pointframe_finite_diff, finite_diff_eps_debug);
+        bool derivs_found = ComputeCloseFormReprErrorDerivatives(&gradE_, &deriv_second_pointpoint_, &deriv_second_frameframe_, &deriv_second_pointframe_, finite_diff_eps_debug);
         if (!derivs_found)
             return false; // point's hessian can't be inverted
 
-        enum class TargFunDecreaseResult { Decreased, HessianOverflow };
+        enum class TargFunDecreaseResult { Success, FailedHessianOverflow, FailedButConverged };
 
         // tries to decrease target optimization function by varying hessian's diagonal factor
-        auto try_decrease_targ_fun = [this, seen_points_count](Scalar entry_err_value, Scalar* hessian_factor, Scalar* err_value_new) -> TargFunDecreaseResult
+        auto try_decrease_targ_fun = [this, seen_points_count, err_thresh, &term_crit](Scalar entry_err_value, Scalar* hessian_factor, Scalar* err_new, Scalar* err_new_per_point) -> TargFunDecreaseResult
         {
             // backup current state(world points and camera orientations)
             FragmentMap map_copy = *map_;
@@ -617,6 +731,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
             std::vector<SE3Transform> inverse_orient_cam_copy = *inverse_orient_cams_;
 
             // loop to find a hessian factor which decreases the target optimization function
+            std::optional<Scalar> err_new_prev;
             while (true)
             {
                 // 1. the normalization(known R0, T0, T1y) is applied to corrections introducing gaps(plane->gaps)
@@ -624,59 +739,99 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld()
                 // 3. the gapped corrections are converted back to the plane vector(gaps->plane)
                 // 4. the plane vector of corrections is used to adjust the optimization variables
 
-                bool impl = true;
-                bool suc;
-                if (impl)
-                    suc = EstimateCorrectionsDecomposedInTwoPhases(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
-                else
-                    suc = EstimateCorrectionsNaive(gradE_finite_diff, deriv_second_point_finite_diff, deriv_second_frame_finite_diff, deriv_second_pointframe_finite_diff, *hessian_factor, &corrections_);
+                int corrections_impl = 1;
+                bool suc = false;
+                if (corrections_impl == 1)
+                    suc = EstimateCorrectionsDecomposedInTwoPhases(gradE_, deriv_second_pointpoint_, deriv_second_frameframe_, deriv_second_pointframe_, *hessian_factor, &corrections_);
+                else if (corrections_impl == 2)
+                    suc = EstimateCorrectionsNaive(gradE_, deriv_second_pointpoint_, deriv_second_frameframe_, deriv_second_pointframe_, *hessian_factor, &corrections_);
+                else if (corrections_impl == 3)
+                {
+                    //Scalar step_x = 1e-3;
+                    Scalar step_x = std::min(*hessian_factor, 1/(*hessian_factor));
+                    suc = EstimateCorrectionsSteepestDescent(gradE_, step_x, &corrections_);
+                }
                 if (!suc)
-                    return TargFunDecreaseResult::HessianOverflow;
+                    return TargFunDecreaseResult::FailedHessianOverflow;
 
                 ApplyCorrections(corrections_);
 
-                *err_value_new = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-                Scalar err_value_new_norm = ReprojErrorPerPixel(seen_points_count, *err_value_new);
-                VLOG(4) << "try_hessian: got reproj_err=" << *err_value_new << "pix (or " << err_value_new_norm << " pix/point) for hessian_factor=" << *hessian_factor;
+                *err_new = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+                *err_new_per_point = ReprojErrorPerPixelFromGlobal(seen_points_count, *err_new);
+                VLOG(5) << "try_hessian: got reproj_err=" << *err_new << "pix (or " << *err_new_per_point << " pix/point) for hessian_factor=" << *hessian_factor;
                 
-                Scalar err_value_change = *err_value_new - entry_err_value;
+                Scalar err_value_change = *err_new - entry_err_value;
                 bool target_fun_decreased = err_value_change < 0;
                 if (target_fun_decreased)
-                    return TargFunDecreaseResult::Decreased;
+                    return TargFunDecreaseResult::Success;
 
-                // at this point, the value of target minimization function increases, try again with different hessian factor
-                // restore saved state
+                // failed to decrease the function
+                // restore saved state before return
                 *map_ = map_copy;
                 *intrinsic_cam_mats_ = intrinsic_cam_mats_copy;
                 *inverse_orient_cams_ = inverse_orient_cam_copy;
 
+                if (err_new_prev.has_value() && err_thresh.has_value())
+                {
+                    Scalar change = *err_new - err_new_prev.value();
+                    if (std::abs(change) < err_thresh.value())
+                    {
+                        VLOG(5) << "stopping because err_change<err_thresh, err_change=" << change << ", err_thresh=" << err_thresh.value() << " pix";
+
+                        // reprojectin error is not decreased but converges to some limit value
+                        return TargFunDecreaseResult::FailedButConverged;
+                    }
+                }
+
+                // try again with different hessian factor
                 *hessian_factor *= 10; // prefer more the Steepest descent
 
-                if (max_hessian_factor_.has_value() && *hessian_factor >  max_hessian_factor_)
+                if (term_crit.MaxHessianFactor().has_value() && *hessian_factor >  term_crit.MaxHessianFactor().value())
                 {
                     // prevent overflow for too big factors
-                    return TargFunDecreaseResult::HessianOverflow;
+                    return TargFunDecreaseResult::FailedHessianOverflow;
                 }
+
+                err_new_prev = *err_new;
             }
             AssertFalse();
         };
 
-        Scalar err_value_new = std::numeric_limits<Scalar>::quiet_NaN();
-        TargFunDecreaseResult decrease_result = try_decrease_targ_fun(err_value, &hessian_factor, &err_value_new);
+        Scalar err_new = std::numeric_limits<Scalar>::quiet_NaN();
+        Scalar err_new_per_point = std::numeric_limits<Scalar>::quiet_NaN();
+        TargFunDecreaseResult decrease_result = try_decrease_targ_fun(err_value, &hessian_factor, &err_new, &err_new_per_point);
 
-        VLOG(4) << "it=" << it << " reproj_err=" << err_value_new << " hessian_factor=" << hessian_factor;
+        if (decrease_result != TargFunDecreaseResult::Success)
+        {
+            if (VLOG_IS_ON(4))
+            {
+                Scalar err = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+                Scalar err_per_point = ReprojErrorPerPixelFromGlobal(seen_points_count, err);
+                VLOG(4) << "reproj_err=" << err << " pix (or " << err_per_point << " pix/point) hessian_factor=" << hessian_factor;
+            }
 
-        if (decrease_result == TargFunDecreaseResult::HessianOverflow)
+            if (decrease_result == TargFunDecreaseResult::FailedHessianOverflow)
+                optimization_stop_reason_ = "hessian overflow";
+            else if (decrease_result == TargFunDecreaseResult::FailedButConverged)
+                optimization_stop_reason_ = "err converged to limit value";
+            else
+                SRK_ASSERT(false);
+
             return false; // failed to optimize
+        }
 
-        Scalar err_value_change = err_value_new - err_value;
+        VLOG(4) << "it=" << it << " reproj_err=" << err_new << " pix (or " << err_new_per_point << " pix/point) hessian_factor=" << hessian_factor;
+
+        Scalar err_value_change = err_new - err_value;
         SRK_ASSERT(err_value_change < 0) << "Target error function's value must decrease";
 
-        Scalar err_abs = seen_points_count * Sqr(min_reproj_err_change_pix_per_point_) / Sqr(f0_);
-        if (std::abs(err_value_change) < err_abs)
+        if (err_thresh.has_value() && std::abs(err_value_change) < err_thresh.value())
+        {
+            optimization_stop_reason_ = "small relative err change";
             return true; // success, reached target level of minimization of reprojection error
+        }
 
-        err_value = err_value_new;
+        err_value = err_new;
 
         // reprojection error is decreased, but not enough => continue
         hessian_factor /= 10; // prefer more the Gauss - Newton
@@ -936,7 +1091,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
     EigenDynMat* deriv_second_pointframe, Scalar finite_diff_eps)
 {
     Scalar rough_rtol = 0.2; // used to compare close and finite difference derivatives
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
 
     // each reproj error derivative with respect to all variables is a sum of parts => initialize with zeros
@@ -1024,7 +1179,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                 return false;
             }
 
-            if (debug_reproj_error_first_derivatives_) // slow, check if requested
+            if (Enable(DebugPath::ReprojErrorFirstDerivatives)) // slow, check if requested
             {
                 // 1st derivative Point
                 for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
@@ -1035,7 +1190,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                         VLOG(4) << "d1point[" << var1 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
                 }
             }
-            if (debug_reproj_error_derivatives_pointpoint_) // slow, check if requested
+            if (Enable(DebugPath::ReprojErrorDerivativesPointPoint)) // slow, check if requested
             {
                 // 2nd derivative Point - Point
                 for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
@@ -1143,7 +1298,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
         if (kSurikoDebug)
         {
             SE3Transform direct_orient_cam = SE3Inv(inverse_orient_cam);
-            if (debug_reproj_error_first_derivatives_) // slow, check if requested
+            if (Enable(DebugPath::ReprojErrorFirstDerivatives)) // slow, check if requested
             {
                 // 1st derivative with respect to Point variables
                 for (size_t var1 = 0; var1 < vars_count_per_frame_; ++var1)
@@ -1175,7 +1330,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                         VLOG(4) << "d1frame[" << var1 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
                 }
             }
-            if (debug_reproj_error_derivatives_frameframe_) // slow, check if requested
+            if (Enable(DebugPath::ReprojErrorDerivativesFrameFrame)) // slow, check if requested
             {
                 // 2nd derivative with respect to Frame - Frame variables
                 for (size_t var1 = 0; var1 < vars_count_per_frame_; ++var1)
@@ -1191,7 +1346,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
         }
     }
 
-    if (kSurikoDebug && debug_reproj_error_derivatives_pointframe_) // slow, check if requested
+    if (kSurikoDebug && Enable(DebugPath::ReprojErrorDerivativesPointFrame)) // slow, check if requested
     {
         for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
         {
@@ -1205,7 +1360,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                 const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
 
                 // 2nd derivative with respect to Point - Frame variables
-                for (size_t point_var = 0; debug_reproj_error_derivatives_pointframe_ && point_var < kPointVarsCount; ++point_var)
+                for (size_t point_var = 0; point_var < kPointVarsCount; ++point_var)
                     for (size_t frame_var = 0; frame_var < vars_count_per_frame_; ++frame_var)
                     {
                         size_t pnt_ind = point_track_id;
@@ -1326,7 +1481,7 @@ void BundleAdjustmentKanatani::FillHessian(const EigenDynMat& deriv_second_point
     const EigenDynMat& deriv_second_frameframe,
     const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, EigenDynMat* hessian)
 {
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
     
     SRK_ASSERT(hessian->rows() == hessian->rows()) << "Provide square matrix";
@@ -1360,23 +1515,21 @@ void BundleAdjustmentKanatani::FillHessian(const EigenDynMat& deriv_second_point
     // scale diagonal elements
     for (Eigen::Index i = 0; i < hessian->rows(); ++i)
     {
-        (*hessian)(i, i) *= (1 + hessian_factor);
+        (*hessian)(i, i) *= 1 + hessian_factor;
     }
 }
 
 void BundleAdjustmentKanatani::FillCorrectionsGapsFromNormalized(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& normalized_corrections, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
 {
-    constexpr Scalar nan = std::numeric_limits<Scalar>::quiet_NaN();
-
     auto& corrs_with_gaps = *corrections_with_gaps;
     if (kSurikoDebug)
     {
-        corrs_with_gaps.fill(nan);
+        corrs_with_gaps.fill(kNan);
     }
 
     size_t in_ind = 0;
     size_t out_ind = 0;
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
 
     // copy points corrections intact
     size_t num = points_count * kPointVarsCount;
@@ -1431,54 +1584,67 @@ void BundleAdjustmentKanatani::FillCorrectionsGapsFromNormalized(const Eigen::Ma
     SRK_ASSERT((size_t)corrs_with_gaps.size() == out_ind);
     SRK_ASSERT((size_t)normalized_corrections.size() == in_ind);
     SRK_ASSERT(corrs_with_gaps.allFinite());
-    bool check_back = false;
+    static bool check_back = false;
     if (kSurikoDebug && check_back)
     {
         EigenDynMat conv_back = corrs_with_gaps; // copy
 
         auto norm_pattern = normalized_var_indices_; // copy
-        for (size_t i = 0; i < normalized_var_indices_count_; ++i)
-            norm_pattern[i] += points_count * kPointVarsCount; // offset point variables
+        FillNormalizedVarIndicesWithOffset(points_count * kPointVarsCount, norm_pattern); // offset point variables
 
         auto remove_rows = gsl::make_span(norm_pattern.data(), normalized_var_indices_count_);
-        auto remove_cols = gsl::span<size_t>(nullptr);
-        RemoveRowsAndColsInplace(remove_rows, remove_cols, &conv_back);
+        auto empty_lines = gsl::span<size_t>(nullptr);
+        RemoveRowsAndColsInplace(remove_rows, empty_lines, &conv_back);
         Scalar diff_value = (normalized_corrections - conv_back).norm();
         CHECK(diff_value < 0.1);
     }
+}
+
+bool BundleAdjustmentKanatani::EstimateCorrectionsSteepestDescent(const std::vector<Scalar>& grad_error, Scalar step_x,
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
+{
+    SRK_ASSERT(grad_error.size() == (size_t)corrections_with_gaps->size());
+    for (size_t i=0; i<grad_error.size(); ++i)
+    {
+        //(*corrections_with_gaps)(i,0) = -grad_error[i] * step_x;
+        (*corrections_with_gaps)(i,0) = -Sign(grad_error[i]) * step_x;
+    }
+    // zero normalized variables
+    for (size_t i = 0; i<normalized_var_indices_count_; ++i)
+    {
+        size_t remove_var_ind = normalized_var_indices_[i];
+
+        (*corrections_with_gaps)(PointsCount()*kPointVarsCount + remove_var_ind, 0) = 0;
+    }
+    return true;
 }
 
 bool BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
     const EigenDynMat& deriv_second_frameframe,
     const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
 {
-    size_t n = corrections_with_gaps->size();
+    size_t n = VarsCount();
     EigenDynMat hessian(n, n);
     FillHessian(deriv_second_pointpoint, deriv_second_frameframe, deriv_second_pointframe, hessian_factor, &hessian);
 
-    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> right_side(n, 1);
+    EigenDynMat right_side;
+    right_side.resize(n, 1);
     right_side = -Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>>(grad_error.data(), n, 1);
 
-    // remove rows/columns corresponding to normalized variables
-    //std::vector<size_t> remove_pat;
-    //EigenDynMat tmp_hessian = hessian;
-    //EigenDynMat tmp_right_side = right_side;
-    //for (size_t i = 0; i < normalize_pattern_count_; ++i)
-    //{
-    //    size_t rem_row_or_col_ind = normalize_pattern_[i];
-    //    tmp_hessian = removeRow(tmp_hessian, rem_row_or_col_ind);
-    //    tmp_hessian = removeCol(tmp_hessian, rem_row_or_col_ind);
+    //
+    auto norm_pattern = normalized_var_indices_; // copy
+    FillNormalizedVarIndicesWithOffset(PointsCount() * kPointVarsCount, norm_pattern); // offset point variables
 
-    //    tmp_right_side = removeCol(tmp_right_side, rem_row_or_col_ind);
-    //}
-
-    //hessian = std::move(tmp_hessian);
-    //right_side = std::move(tmp_right_side);
+    auto remove_lines = gsl::make_span(norm_pattern.data(), normalized_var_indices_count_);
+    auto empty_lines = gsl::span<size_t>(nullptr);
+    RemoveRowsAndColsInplace(remove_lines, remove_lines, &hessian);
+    RemoveRowsAndColsInplace(remove_lines, empty_lines, &right_side);
 
     //
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> normalized_corrections = hessian.householderQr().solve(right_side);
+    SRK_ASSERT(normalized_corrections.allFinite());
 
-    bool check = true;
+    static bool check = true;
     if (check)
     {
         EigenDynMat right_direct = hessian * normalized_corrections;
@@ -1495,7 +1661,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
     const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, 
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
 {
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
 
     // convert 2nd derivatives Frame - Frame matrix into the square shape
@@ -1513,7 +1679,6 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
             {
                 // take [fx fy u0 v0], skip R0=Identity and T0=[0 0 0]
                 EigenDynMat block = ax.topLeftCorner<kIntrinsicVarsCount, kIntrinsicVarsCount>();
-                //RemoveRowsAndColsInplace()
                 block_height = (size_t)block.rows();
 
                 matG.block(out_ind, out_ind, block_height, block_height) = block;
@@ -1522,13 +1687,9 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
             {
                 // skip (T1x or) T1y row and column
                 EigenDynMat block = ax;
-                //LOG(INFO) << "\n" << block;
 
-                //block = removeRow(block, unity_comp_ind_);
-                //block = removeCol(block, unity_comp_ind_);
-                std::array<size_t, 1> remove_rows = { unity_t1_comp_ind_ };
+                std::array<size_t, 1> remove_rows = { kIntrinsicVarsCount+unity_t1_comp_ind_ };
                 RemoveRowsAndColsInplace(remove_rows, remove_rows, &block);
-                //LOG(INFO) << "\n" << block;
 
                 block_height = (size_t)block.rows();
 
@@ -1557,7 +1718,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         for (size_t i = 0; i < kPointVarsCount; ++i)
             (*point_hessian)(i, i) *= 1 + hessian_factor;
 
-        SRK_ASSERT(point_hessian->allFinite()) << "Possibly to big hessian factor c = " << hessian_factor;
+        SRK_ASSERT(point_hessian->allFinite()) << "Possibly hessian factor is too big c=" << hessian_factor;
     };
 
     auto get_normalized_point_frame = [this,&deriv_second_pointframe](size_t pnt_ind, EigenDynMat* mat) -> void
@@ -1567,14 +1728,14 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
 
         // delete normalized columns
         auto remove_cols = gsl::make_span(normalized_var_indices_.data(), normalized_var_indices_count_);
-        auto remove_rows = gsl::span<size_t>(nullptr);
-        RemoveRowsAndColsInplace(remove_rows, remove_cols, mat);
+        auto empty_lines = gsl::span<size_t>(nullptr);
+        RemoveRowsAndColsInplace(empty_lines, remove_cols, mat);
     };
 
     EigenDynMat& matG = matG_; // [9*frames_count,9*frames_count]
     fill_matG(&matG);
 
-    // calculate deltas for frame unknowns
+    // calculate deltas for frame vars
 
     EigenDynMat& decomp_lin_sys_left_side = decomp_lin_sys_left_side1_;
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& decomp_lin_sys_right_side = decomp_lin_sys_right_side_;
@@ -1605,12 +1766,16 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         decomp_lin_sys_right_side += ax2;
     }
 
-    decomp_lin_sys_left_side = matG - decomp_lin_sys_left_side; // G-sum(F.E.F)
+    // G-sum(F.E.F)
+    decomp_lin_sys_left_side = matG - decomp_lin_sys_left_side;
 
-    size_t normalized_frame_vars_count = (size_t)decomp_lin_sys_right_side.rows();
-    Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>> frame_derivs_packed(&grad_error[points_count * kPointVarsCount], normalized_frame_vars_count);
+    // normalize frame derivatives
+    Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>> frame_derivs(&grad_error[points_count * kPointVarsCount], frames_count * vars_count_per_frame_);
+    EigenDynMat normalized_frame_derivs = frame_derivs; // copy
+    RemoveRowsAndColsInplace(gsl::make_span(normalized_var_indices_.data(), normalized_var_indices_count_), gsl::span<size_t>(nullptr), &normalized_frame_derivs);
 
-    decomp_lin_sys_right_side -= frame_derivs_packed; // sum(F.E.gradE) - Df
+    //
+    decomp_lin_sys_right_side -= normalized_frame_derivs; // sum(F.E.gradE) - Df
 
     //
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections_frame = decomp_lin_sys_left_side.householderQr().solve(decomp_lin_sys_right_side);
@@ -1619,7 +1784,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
 
     // calculate deltas for point unknowns
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> normalized_corrections;
-    normalized_corrections.resize(vars_count_after_noralization_, 1);
+    normalized_corrections.resize(NormalizedVarsCount(), 1);
 
     track_rep_->IteratePointsMarker();
     for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
@@ -1644,13 +1809,42 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
 
     normalized_corrections.middleRows(points_count * kPointVarsCount, corrections_frame.rows()) = corrections_frame;
 
+    static bool check = false;
+    if (check)
+    {
+        size_t n = VarsCount();
+        EigenDynMat hessian(n, n);
+        FillHessian(deriv_second_pointpoint, deriv_second_frameframe, deriv_second_pointframe, hessian_factor, &hessian);
+
+        EigenDynMat right_side;
+        right_side.resize(n, 1);
+        right_side = -Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>>(grad_error.data(), n, 1);
+
+        auto norm_pattern = normalized_var_indices_; // copy
+        FillNormalizedVarIndicesWithOffset(PointsCount() * kPointVarsCount, norm_pattern); // offset point variables
+
+        auto remove_lines = gsl::make_span(norm_pattern.data(), normalized_var_indices_count_);
+        auto empty_lines = gsl::span<size_t>(nullptr);
+        RemoveRowsAndColsInplace(remove_lines, remove_lines, &hessian);
+        RemoveRowsAndColsInplace(remove_lines, empty_lines, &right_side);
+
+        // check: hessian * normalized_corrections_with_gaps == right_side
+        EigenDynMat right_direct = hessian * normalized_corrections;
+        Scalar diff_value = (right_direct - right_side).norm();
+        CHECK(diff_value < 1) << "expect small value but got " <<diff_value;
+    }
+
     FillCorrectionsGapsFromNormalized(normalized_corrections, corrections_with_gaps);
+
+    // note, corrections with gaps will not solve original (without removed normalized variables) linear system
+    // because normalized variables are replaced with zeros (gaps)
+    // hessian * corrections_with_gaps != right_side
     return true;
 }
 
 void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& corrections_with_gaps)
 {
-    size_t points_count = map_->PointTrackCount();
+    size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
 
     track_rep_->IteratePointsMarker();
@@ -1694,7 +1888,6 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
         }
         cur_offset += kTVarsCount;
 
-        //gsl::span<const Scalar> deltaW = gsl::make_span(&corrections[cur_offset], kWVarsCount);
         Eigen::Map<const Eigen::Matrix<Scalar, kWVarsCount, 1>> direct_deltaW(&corrections_with_gaps[cur_offset]);
         Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> new_directR;
         IncrementRotMat(direct_orient_cam.R, direct_deltaW, &new_directR);
@@ -1708,5 +1901,32 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
             inverse_orient_cam = SE3Inv(direct_orient_cam);
         cur_offset += kWVarsCount;
     }
+}
+
+size_t BundleAdjustmentKanatani::FramesCount() const
+{
+    size_t frames_count = inverse_orient_cams_->size();
+    return frames_count;
+}
+
+size_t BundleAdjustmentKanatani::PointsCount() const
+{
+    size_t points_count = map_->SalientPointsCount();
+    return points_count;
+}
+
+size_t BundleAdjustmentKanatani::VarsCount() const
+{
+    return kPointVarsCount * PointsCount() + vars_count_per_frame_ * FramesCount();
+}
+
+size_t BundleAdjustmentKanatani::NormalizedVarsCount() const
+{
+    return VarsCount() - normalized_var_indices_count_;
+}
+
+const std::string& BundleAdjustmentKanatani::OptimizationStatusString() const
+{
+    return optimization_stop_reason_;
 }
 }

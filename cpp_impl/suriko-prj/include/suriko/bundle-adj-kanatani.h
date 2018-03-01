@@ -3,8 +3,7 @@
 #include <array>
 #include <vector>
 #include <optional>
-#include <cmath> // std::isnan
-#include <iostream>
+#include <gsl/span>
 #include <Eigen/Dense>
 #include "suriko/obs-geom.h"
 
@@ -67,6 +66,37 @@ auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_
 bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams, Scalar t1y, size_t unity_comp_ind,
     std::string* err_msg = nullptr);
 
+/// Parameters to regulate bundle adjustment (Kanatani impl) algorithm.
+class BundleAdjustmentKanataniTermCriteria
+{
+    //std::optional<Scalar> allowed_reproj_err_abs_;
+    //std::optional<Scalar> allowed_reproj_err_abs_per_pixel_;
+    std::optional<Scalar> allowed_reproj_err_rel_change_;
+    std::optional<Scalar> allowed_reproj_err_rel_change_per_pixel_;
+    std::optional<Scalar> max_hessian_factor_;
+public:
+    BundleAdjustmentKanataniTermCriteria() = default; // by default the optimization is not stopped
+
+    //void AllowedReprojErrAbs(std::optional<Scalar> allowed_reproj_abs);
+    //std::optional<Scalar> AllowedReprojErrAbs() const;
+    //
+    //void AllowedReprojErrAbsPerPixel(std::optional<Scalar> allowed_reproj_err_abs_per_pixel);
+    //std::optional<Scalar> AllowedReprojErrAbsPerPixel() const;
+
+    void AllowedReprojErrRelativeChange(std::optional<Scalar> allowed_reproj_err_rel_change);
+    std::optional<Scalar> AllowedReprojErrRelativeChange() const;
+
+    // Optimize while reprojection error per pixel greater than this value.
+    // Example value = 1e-2 [pixels per point].
+    void AllowedReprojErrRelativeChangePerPixel(std::optional<Scalar> allowed_reproj_err_per_pixel);
+    std::optional<Scalar> AllowedReprojErrRelativeChangePerPixel() const;
+
+    /// Fails when hessian's factor becomes greater than this value.
+    /// Example value=1e6.
+    void MaxHessianFactor(std::optional<Scalar> max_hessian_factor);
+    std::optional<Scalar> MaxHessianFactor() const;
+};
+
 /// Performs Bundle adjustment (BA) inplace. Iteratively shifts world points and cameras position and orientation so
 /// that the reprojection error is minimized.
 /// TODO: think about it: the synthetic scene, corrupted with noise, probably will not be 'repaired' (adjusted) to zero reprojection error.
@@ -104,17 +134,14 @@ private:
     
     Scalar unity_t1_comp_value_ = 1.0; // const, y-component of the first camera shift, usually T1y==1
     size_t unity_t1_comp_ind_ = 1; // 0 for X, 1 for Y, 2 for Z; index of T1 to be set to unity
-    Scalar min_err_change_abs_ = 1e-8;
-    Scalar min_reproj_err_change_pix_per_point_ = 1e-2; // pixels per point
-    std::optional<Scalar> max_hessian_factor_; // = 1e6; // set None to skip the check of the hessian's factor
 
     typedef Eigen::Matrix<Scalar,Eigen::Dynamic,Eigen::Dynamic> EigenDynMat;
 
     // cache gradients
-    std::vector<Scalar> gradE_finite_diff;
-    EigenDynMat deriv_second_point_finite_diff;
-    EigenDynMat deriv_second_frame_finite_diff;
-    EigenDynMat deriv_second_pointframe_finite_diff;
+    std::vector<Scalar> gradE_;
+    EigenDynMat deriv_second_pointpoint_;
+    EigenDynMat deriv_second_frameframe_;
+    EigenDynMat deriv_second_pointframe_;
     
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections_;
 
@@ -130,16 +157,9 @@ private:
     // corrections plain : [point_corrections 0fx 0fy 0u0 0v0 0Tx 0Ty 0Tz 0Wx 0Wy 0Wz 1fx 1fy 1u0 1v0 1Tx 1Ty 1Tz 1Wx 1Wy 1Wz]
     // corrections wgaps : [point_corrections 0fx 0fy 0u0 0v0                         1fx 1fy 1u0 1v0 1Tx     1Tz 1Wx 1Wy 1Wz]
     std::array<size_t, 7> normalized_var_indices_; // count({T0x,T0y,T0z,W0x,W0y,W0z,T1y})=7
-    size_t normalized_var_indices_count_ = 0; // number of valid indices of variables
-    size_t vars_count_after_noralization_ = 0; // 3*points_count+10*frames_count-normalize_pattern_count_
+    size_t normalized_var_indices_count_ = 0; // number of var indices in the corresponding array
 
-    // True to compare close derivatives of reprojection error with finite difference approximation.
-    // The computation of finite differences is slow and this value should be false in normal debug and release modes.
-    // TODO: figure out how to optimize away in runtime
-    bool debug_reproj_error_first_derivatives_ = false;
-    bool debug_reproj_error_derivatives_pointpoint_ = false;
-    bool debug_reproj_error_derivatives_frameframe_ = false;
-    bool debug_reproj_error_derivatives_pointframe_ = false;
+    std::string optimization_stop_reason_;
 public:
     static Scalar ReprojError(Scalar f0, const FragmentMap& map,
                             const std::vector<SE3Transform>& inverse_orient_cams,
@@ -148,24 +168,31 @@ public:
                             const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats = nullptr,
                             size_t* seen_points_count = nullptr);
 
-    Scalar ReprojErrorPerPixel(size_t seen_points_count, Scalar reproj_err);
-
     /// :return: True if optimization converges successfully.
     /// Stop conditions:
     /// 1) If a change of error function slows down and becomes less than self.min_err_change
     bool ComputeInplace(Scalar f0, FragmentMap& map,
-                        std::vector<SE3Transform>& inverse_orient_cams,
-                        const CornerTrackRepository& track_rep,
-                        const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat = nullptr,
-                        std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats = nullptr);
+        std::vector<SE3Transform>& inverse_orient_cams,
+        const CornerTrackRepository& track_rep,
+        const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
+        std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
+        const BundleAdjustmentKanataniTermCriteria& term_crit);
+
+
+    size_t PointsCount() const;
+    size_t FramesCount() const;
+    size_t VarsCount() const;
+    size_t NormalizedVarsCount() const;
+    const std::string& OptimizationStatusString() const;
 
 private:
     /// Initializes the list of indices of variables to remove during model normalization.
     void InitializeNormalizedVarIndices();
+    void FillNormalizedVarIndicesWithOffset(size_t offset, gsl::span<size_t> var_indices);
 
     void EnsureMemoryAllocated();
 
-    bool ComputeOnNormalizedWorld();
+    bool ComputeOnNormalizedWorld(const BundleAdjustmentKanataniTermCriteria& term_crit);
 
     auto GetFiniteDiffFirstPartialDerivPoint(size_t point_track_id, const suriko::Point3& pnt3D_world, size_t var1, Scalar finite_diff_eps) const -> Scalar;
     auto GetFiniteDiffFirstPartialDerivFocalLengthFxFy(size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& K, size_t fxfy_ind, Scalar finite_diff_eps) const -> Scalar;
@@ -209,6 +236,8 @@ private:
         const EigenDynMat& deriv_second_frameframe,
         const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
 
+    bool EstimateCorrectionsSteepestDescent(const std::vector<Scalar>& grad_error, Scalar step_x, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
+
     void FillHessian(const EigenDynMat& deriv_second_pointpoint,
         const EigenDynMat& deriv_second_frameframe,
         const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, EigenDynMat* hessian);
@@ -220,5 +249,8 @@ private:
         const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
 
     void ApplyCorrections(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& corrections_with_gaps);
+
+    Scalar ReprojErrorPerPixelFromGlobal(size_t seen_points_count, Scalar reproj_err) const;
+    Scalar GlobalReprojErrorFromPerPixel(size_t seen_points_count, Scalar reproj_err) const;
 };
 }

@@ -19,6 +19,8 @@ message(STATUS "CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}")
 message(STATUS "CMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "CMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}")
 
+option(WITH_OPENCV "Enables visualization of images" OFF)
+
 # C++14 is required (because of std::make_unique)
 # C++17 is required (because of [[noreturn]])
 if (MSVC)
@@ -109,6 +111,13 @@ message(STATUS "glog::glog.INTERFACE_INCLUDE_DIRECTORIES=${glog_incl_dirs}")
 #enable_testing()
 find_package(GTest REQUIRED)
 message(STATUS "GTEST_INCLUDE_DIRS=${GTEST_INCLUDE_DIRS}")
+
+if (WITH_OPENCV)
+    find_package(OpenCV REQUIRED core highgui)
+    message(STATUS "OpenCV_INCLUDE_DIRS=${OpenCV_INCLUDE_DIRS}")
+    message(STATUS "OpenCV_LIBS=${OpenCV_LIBS}")
+    add_definitions(-DSRK_HAS_OPENCV)
+endif()
 
 add_subdirectory(suriko-prj)
 add_subdirectory(suriko-test)

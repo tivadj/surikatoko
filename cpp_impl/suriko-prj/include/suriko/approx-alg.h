@@ -14,5 +14,8 @@ bool IsClose(F1 a, F2 b,
 }
 
 template <typename F>
-auto Sqr(F x) -> F { return x*x; }
+constexpr auto Sqr(F x) -> F { return x*x; }
+
+template <typename F>
+constexpr auto Sign(F x) -> int { return x >= 0 ? 1 : -1; }
 }
