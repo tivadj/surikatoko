@@ -77,11 +77,14 @@ struct SalientPointFragment
 /// The space with salient 3D points.
 class FragmentMap
 {
+    static constexpr size_t kFragmentIdOffset = 1000'000;
     size_t salient_points_count = 0;
     std::vector<SalientPointFragment> salient_points;
+    size_t next_salient_point_id_ = kFragmentIdOffset + 1;
 public:
     void AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &coord);
     size_t AddSalientPointNew(const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
+    size_t AddSalientPointNew2(const std::optional<suriko::Point3> &coord);
 
     void SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord);
     void SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);

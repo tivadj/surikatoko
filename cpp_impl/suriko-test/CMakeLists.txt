@@ -2,7 +2,8 @@ project(suriko-test-prj)
 
 add_executable(suriko-test
         main.cpp
-        test-eigen-helpers
+        test-bundle-adj-kanatani.cpp
+        test-eigen-helpers.cpp
         test-obs-geom.cpp)
 
 # GTEST_HAS_TR1_TUPLE=0 says there is no std::tr1

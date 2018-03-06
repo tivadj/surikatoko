@@ -7,17 +7,12 @@
 #include <Eigen/Dense>
 #include "suriko/obs-geom.h"
 
+/// source: "Bundle adjustment for 3-d reconstruction" Kanatani Sugaya 2010 (BA3DRKanSug2010)
 namespace suriko
 {
-
-// forward declaration for friend
-//template <typename Scalar> class SceneNormalizer;
-
-auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
-                                   Scalar t1y_dist, size_t unity_comp_ind, bool* success);
-
 /// Performs normalization of world points , so that (R0,T0) is the identity rotation plus zero translation and T1y=1.
-    /// Changes the and camera positions/orientations so that
+/// Normalization is required to 'remove ambiguity': "the absolute scale and 3 - D position
+/// of the scene cannot be determined from images alone" (BA3DRKanSug2010).
 class SceneNormalizer
 {
     FragmentMap* map_ = nullptr;
@@ -26,10 +21,10 @@ class SceneNormalizer
     size_t unity_comp_ind_ = 1; // index of 3-element T1(x,y,z) to normalize (0 to use T1x; 1 to use T1y)
 
     // store pre-normalized state
-    SE3Transform prenorm_rt0_;
+    SE3Transform prenorm_cam0_from_world;
     Scalar world_scale_ = 0; // world, scaled with this multiplier, is transformed into normalized world
 
-    friend auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
+    friend SceneNormalizer NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
                                               Scalar t1y_norm, size_t unity_comp_ind, bool* success);
 
     SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y, size_t unity_comp_ind);
@@ -40,10 +35,10 @@ class SceneNormalizer
         Revert
     };
 
-    static auto Opposite(NormalizeAction action);
+    static NormalizeAction Opposite(NormalizeAction action);
 
-    static SE3Transform NormalizeOrRevertRT(const SE3Transform& inverse_orient_camk,
-        const SE3Transform& inverse_orient_cam0, Scalar world_scale, NormalizeAction action, bool check_back_conv=true);
+    static SE3Transform NormalizeRT(const SE3Transform& camk_from_world, const SE3Transform& cam0_from_world, Scalar world_scale);
+    static SE3Transform RevertRT(const SE3Transform& camk_from_cam1, const SE3Transform& cam0_from_world, Scalar world_scale);
 
     // TODO: back conversion check can be moved to unit testing
     static suriko::Point3 NormalizeOrRevertPoint(const suriko::Point3& x3D,
@@ -60,7 +55,7 @@ public:
 
 /// Normalizes the salient points and orientations of the camera so that R0=Identity, T0=zeros(3), T1[unity_comp_ind]=t1y_dist.
 /// Usually unity_comp_ind=1 (that is, y-component of T1) and t1y_dist=1 (unity).
-auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
+SceneNormalizer NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams,
         Scalar t1y_dist, size_t unity_comp_ind, bool* success);
 
 bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams, Scalar t1y, size_t unity_comp_ind,
@@ -72,7 +67,6 @@ class BundleAdjustmentKanataniTermCriteria
     //std::optional<Scalar> allowed_reproj_err_abs_;
     //std::optional<Scalar> allowed_reproj_err_abs_per_pixel_;
     std::optional<Scalar> allowed_reproj_err_rel_change_;
-    std::optional<Scalar> allowed_reproj_err_rel_change_per_pixel_;
     std::optional<Scalar> max_hessian_factor_;
 public:
     BundleAdjustmentKanataniTermCriteria() = default; // by default the optimization is not stopped
@@ -83,13 +77,10 @@ public:
     //void AllowedReprojErrAbsPerPixel(std::optional<Scalar> allowed_reproj_err_abs_per_pixel);
     //std::optional<Scalar> AllowedReprojErrAbsPerPixel() const;
 
+    // Optimize while reprojection error per pixel greater than this value. NULL means 'do no check for error threshold' (potentially optimize forever).
+    // Example value = 1e-2 [pixels per point].
     void AllowedReprojErrRelativeChange(std::optional<Scalar> allowed_reproj_err_rel_change);
     std::optional<Scalar> AllowedReprojErrRelativeChange() const;
-
-    // Optimize while reprojection error per pixel greater than this value.
-    // Example value = 1e-2 [pixels per point].
-    void AllowedReprojErrRelativeChangePerPixel(std::optional<Scalar> allowed_reproj_err_per_pixel);
-    std::optional<Scalar> AllowedReprojErrRelativeChangePerPixel() const;
 
     /// Fails when hessian's factor becomes greater than this value.
     /// Example value=1e6.
@@ -249,8 +240,5 @@ private:
         const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
 
     void ApplyCorrections(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& corrections_with_gaps);
-
-    Scalar ReprojErrorPerPixelFromGlobal(size_t seen_points_count, Scalar reproj_err) const;
-    Scalar GlobalReprojErrorFromPerPixel(size_t seen_points_count, Scalar reproj_err) const;
 };
 }

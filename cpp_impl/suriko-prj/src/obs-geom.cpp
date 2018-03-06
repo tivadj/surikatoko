@@ -59,6 +59,20 @@ size_t FragmentMap::AddSalientPointNew(const std::optional<suriko::Point3> &coor
     salient_points_count += 1;
     return new_fragment_id;
 }
+size_t FragmentMap::AddSalientPointNew2(const std::optional<suriko::Point3> &coord)
+{
+    size_t new_id = next_salient_point_id_++;
+    salient_points.resize(salient_points.size() + 1);
+    size_t new_ind1 = salient_points.size() - 1;
+    size_t new_ind2 = new_id - kFragmentIdOffset - 1;
+    SRK_ASSERT(new_ind1 == new_ind2);
+    
+    SalientPointFragment& frag = salient_points.back();
+    frag.SyntheticVirtualPointId = new_id;
+    frag.Coord = coord;
+    salient_points_count += 1;
+    return new_id;
+}
 void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord)
 {
     SRK_ASSERT(point_track_id < salient_points.size());
@@ -392,7 +406,7 @@ namespace internals
 {
 Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, const Eigen::Matrix<Scalar, 3, 1>* translation)
 {
-    Eigen::Matrix<Scalar, 4, 4> result{};
+    Eigen::Matrix<Scalar, 4, 4> result;
     Eigen::Matrix<Scalar, 3, 3> identity3 = Eigen::Matrix<Scalar, 3, 3>::Identity();
     if (rot_mat == nullptr)
         rot_mat = &identity3;
@@ -403,6 +417,9 @@ Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, c
 
     result.topLeftCorner(3, 3) = *rot_mat;
     result.topRightCorner(3, 1) = *translation;
+    result(3, 0) = 0;
+    result(3, 1) = 0;
+    result(3, 2) = 0;
     result(3, 3) = 1;
     return result;
 }

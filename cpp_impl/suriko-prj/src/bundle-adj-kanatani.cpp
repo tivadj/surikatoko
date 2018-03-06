@@ -8,6 +8,7 @@
 #include <gsl/gsl_assert>
 #include <glog/logging.h>
 #include <Eigen/Dense>
+#include <Eigen/SVD>
 #include "suriko/approx-alg.h"
 #include "suriko/bundle-adj-kanatani.h"
 #include "suriko/obs-geom.h"
@@ -125,7 +126,7 @@ SceneNormalizer::SceneNormalizer(FragmentMap* map, std::vector<SE3Transform>* in
     CHECK(unity_comp_ind >= 0 && unity_comp_ind < kTVarsCount) << "Can normalize only one of [T1x, T1y, Tz] components";
 }
 
-auto SceneNormalizer::Opposite(SceneNormalizer::NormalizeAction action) {
+SceneNormalizer::NormalizeAction SceneNormalizer::Opposite(SceneNormalizer::NormalizeAction action) {
     switch(action)
     {
     case NormalizeAction::Normalize:
@@ -136,35 +137,42 @@ auto SceneNormalizer::Opposite(SceneNormalizer::NormalizeAction action) {
     AssertFalse();
 }
 
-SE3Transform SceneNormalizer::NormalizeOrRevertRT(const SE3Transform& inverse_orient_camk, const SE3Transform& inverse_orient_cam0, Scalar world_scale, NormalizeAction action, bool check_back_conv)
+SE3Transform SceneNormalizer::NormalizeRT(const SE3Transform& camk_from_world, const SE3Transform& cam0_from_world, Scalar world_scale)
 {
-    const auto& Rk = inverse_orient_camk.R;
-    const auto& Tk = inverse_orient_camk.T;
+    const auto& R0w = cam0_from_world.R;
+    const auto& T0w = cam0_from_world.T;
+    const auto& Rkw = camk_from_world.R;
+    const auto& Tkw = camk_from_world.T;
 
     SE3Transform result;
-    if (action == NormalizeAction::Normalize)
+    result.R = Rkw * R0w.transpose();
+    result.T = world_scale * (Tkw - Rkw * R0w.transpose() * T0w);
+    if (kSurikoDebug)
     {
-        result.R = Rk * inverse_orient_cam0.R.transpose();
-        result.T = world_scale * (Tk - Rk * inverse_orient_cam0.R.transpose() * inverse_orient_cam0.T);
-    } else if (action == NormalizeAction::Revert)
-    {
-        result.R = Rk * inverse_orient_cam0.R;
-
-        auto Tktmp = Tk / world_scale;
-        result.T = Tktmp + Rk * inverse_orient_cam0.T;
-    }
-    if (check_back_conv)
-    {
-        auto back_rt = NormalizeOrRevertRT(result, inverse_orient_cam0, world_scale, Opposite(action), false);
-        Scalar diffR = (Rk - back_rt.R).norm();
-        Scalar diffT = (Tk - back_rt.T).norm();
+        auto back_rt = RevertRT(result, cam0_from_world, world_scale);
+        Scalar diffR = (Rkw - back_rt.R).norm();
+        Scalar diffT = (Tkw - back_rt.T).norm();
         SRK_ASSERT(IsClose(0, diffR, 1e-3)) << "Error in normalization or reverting of R";
         SRK_ASSERT(IsClose(0, diffT, 1e-3)) << "Error in normalization or reverting of T";
     }
     return result;
 }
 
-// TODO: back conversion check can be moved to unit testing
+SE3Transform SceneNormalizer::RevertRT(const SE3Transform& camk_from_cam1, const SE3Transform& cam0_from_world, Scalar world_scale)
+{
+    const auto& R0w = cam0_from_world.R;
+    const auto& T0w = cam0_from_world.T;
+    const auto& Rk1 = camk_from_cam1.R;
+    const auto& Tk1 = camk_from_cam1.T;
+
+    // (R0w,T0w) is cam0 orientation before normalization
+    SE3Transform result;
+    result.R = Rk1 * R0w;
+    result.T = Tk1 / world_scale + Rk1 * T0w;
+
+    return result;
+}
+
 suriko::Point3 SceneNormalizer::NormalizeOrRevertPoint(const suriko::Point3& x3D, const SE3Transform& inverse_orient_cam0, Scalar world_scale, NormalizeAction action, bool check_back_conv)
 {
     suriko::Point3 result(0, 0, 0);
@@ -191,39 +199,41 @@ suriko::Point3 SceneNormalizer::NormalizeOrRevertPoint(const suriko::Point3& x3D
 /// The structure is updated in-place, because a copy of salient points and orientations of a camera can be too expensive to make.
 bool SceneNormalizer::NormalizeWorldInplaceInternal()
 {
-    const SE3Transform& rt0 = (*inverse_orient_cams_)[0];
-    const SE3Transform& rt1 = (*inverse_orient_cams_)[1];
+    const SE3Transform& cam0_from_world = (*inverse_orient_cams_)[0];
+    const SE3Transform& cam1_from_world = (*inverse_orient_cams_)[1];
 
-    const auto& get0_from1 = SE3AFromB(rt0, rt1);
-    const Eigen::Matrix<Scalar, 3, 1>& initial_camera_shift = get0_from1.T;
+    const auto& cam0_from1 = SE3AFromB(cam0_from_world, cam1_from_world);
+    const Eigen::Matrix<Scalar, 3, 1>& initial_camera_shift = cam0_from1.T;
 
     // make y-component of the first camera shift a unity (formula 27) T1y==1
     Scalar initial_camera_shift_y = initial_camera_shift[unity_comp_ind_];
+    VLOG(4) << "Original cam0 to cam1 shift T01=[" << initial_camera_shift[0] << "," << initial_camera_shift[1] << "," << initial_camera_shift[2] << "]";
+
     Scalar atol = 1e-5;
     if (IsClose(0, initial_camera_shift_y, atol))
         return false; // can't normalize because of zero translation
 
-    world_scale_ = normalized_t1y_dist_ / initial_camera_shift[unity_comp_ind_];
-    // world_scale_ = 1;
-    prenorm_rt0_ = rt0; // copy
-
-    // update salient points
-    auto point_track_count = map_->SalientPointsCount();
-    for (size_t pnt_track_id = 0; pnt_track_id < point_track_count; ++pnt_track_id)
-    {
-        suriko::Point3 salient_point = map_->GetSalientPoint(pnt_track_id);
-        auto newX = NormalizeOrRevertPoint(salient_point, prenorm_rt0_, world_scale_, NormalizeAction::Normalize);
-        map_->SetSalientPoint(pnt_track_id, newX);
-    }
+    world_scale_ = normalized_t1y_dist_ / std::abs(initial_camera_shift_y);
+    prenorm_cam0_from_world = cam0_from_world; // copy
 
     // update orientations of the camera, so that the first camera becomes the center of the world
     auto frames_count = inverse_orient_cams_->size();
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
         auto rt = (*inverse_orient_cams_)[frame_ind];
-        auto new_rt = NormalizeOrRevertRT(rt, prenorm_rt0_, world_scale_, NormalizeAction::Normalize);
+        auto new_rt = NormalizeRT(rt, prenorm_cam0_from_world, world_scale_);
         (*inverse_orient_cams_)[frame_ind] = new_rt;
     }
+
+    // update salient points
+    auto point_track_count = map_->SalientPointsCount();
+    for (size_t pnt_track_id = 0; pnt_track_id < point_track_count; ++pnt_track_id)
+    {
+        suriko::Point3 salient_point = map_->GetSalientPoint(pnt_track_id);
+        auto newX = NormalizeOrRevertPoint(salient_point, prenorm_cam0_from_world, world_scale_, NormalizeAction::Normalize);
+        map_->SetSalientPoint(pnt_track_id, newX);
+    }
+
     bool check_post_cond = true;
     if (check_post_cond)
     {
@@ -244,7 +254,7 @@ void SceneNormalizer::RevertNormalization()
     for (size_t pnt_track_id = 0; pnt_track_id < point_track_count; ++pnt_track_id)
     {
         suriko::Point3 salient_point = map_->GetSalientPoint(pnt_track_id);
-        auto revertX = NormalizeOrRevertPoint(salient_point, prenorm_rt0_, world_scale_, NormalizeAction::Revert);
+        auto revertX = NormalizeOrRevertPoint(salient_point, prenorm_cam0_from_world, world_scale_, NormalizeAction::Revert);
         map_->SetSalientPoint(pnt_track_id, revertX);
     }
 
@@ -253,12 +263,12 @@ void SceneNormalizer::RevertNormalization()
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
         auto rt = (*inverse_orient_cams_)[frame_ind];
-        auto revert_rt = NormalizeOrRevertRT(rt, prenorm_rt0_, world_scale_, NormalizeAction::Revert);
+        auto revert_rt = RevertRT(rt, prenorm_cam0_from_world, world_scale_);
         (*inverse_orient_cams_)[frame_ind] = revert_rt;
     }
 }
 
-auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y_dist, size_t unity_comp_ind, bool* success)
+SceneNormalizer NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y_dist, size_t unity_comp_ind, bool* success)
 {
     *success = false;
 
@@ -271,7 +281,9 @@ auto NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_
 
 bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams, Scalar t1y, size_t unity_comp_ind, std::string* err_msg)
 {
-    SRK_ASSERT(inverse_orient_cams.size() >= 2);
+    // need at least two frames to check if cam0 to cam1 movement is normalized
+    if (inverse_orient_cams.size() < 2)
+        return false;
 
     // the first frame is the identity
     const auto& rt0 = inverse_orient_cams[0];
@@ -296,15 +308,16 @@ bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams
         }
         return false;
     }
+    
     // the second frame has translation of unity length
-    const auto& rt1 = SE3Inv(inverse_orient_cams[1]);
-    const auto& t1 = rt1.T;
+    const auto& rt0_from1 = SE3Inv(inverse_orient_cams[1]);
+    const auto& t1 = rt0_from1.T;
 
-    if (!IsClose(t1y, t1[unity_comp_ind], atol))
+    if (!IsClose(t1y, std::abs(t1[unity_comp_ind]), atol))
     {
         if (err_msg != nullptr) {
             std::stringstream buf;
-            buf << "expected T1y=1 but T1 was {}" <<t1;
+            buf << "expected T1y=1 but T1 was " << t1;
             *err_msg = buf.str();
         }
         return false;
@@ -474,24 +487,12 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
 
 void BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChange(std::optional<Scalar> value)
 {
-    CHECK(!allowed_reproj_err_rel_change_per_pixel_.has_value()) << "Reprojection error per pixel is already set (clear it before setting abs value)";
     allowed_reproj_err_rel_change_ = value;
 }
 
 std::optional<Scalar> BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChange() const
 {
     return allowed_reproj_err_rel_change_;
-}
-
-void BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChangePerPixel(std::optional<Scalar> value)
-{
-    CHECK(!allowed_reproj_err_rel_change_.has_value()) << "Absolute reprojection error is already set (clear it before setting per pixel value)";
-    allowed_reproj_err_rel_change_per_pixel_ = value;
-}
-
-std::optional<Scalar> BundleAdjustmentKanataniTermCriteria::AllowedReprojErrRelativeChangePerPixel() const
-{
-    return allowed_reproj_err_rel_change_per_pixel_;
 }
 
 void BundleAdjustmentKanataniTermCriteria::MaxHessianFactor(std::optional<Scalar> max_hessian_factor)
@@ -546,7 +547,7 @@ void BundleAdjustmentKanatani::EnsureMemoryAllocated()
     deriv_second_pointpoint_.resize(points_count * kPointVarsCount, kPointVarsCount); // [3*points_count,3]
     deriv_second_frameframe_.resize(frames_count * vars_count_per_frame_, vars_count_per_frame_); // [10*frames_count,10]
     deriv_second_pointframe_.resize(points_count * kPointVarsCount, frames_count * vars_count_per_frame_); // [3*points_count,10*frames_count]
-    corrections_.resize(points_count * kPointVarsCount + vars_count_per_frame_ * frames_count, 1); // corrections of vars
+    corrections_.resize(VarsCount(), 1); // corrections of vars
 
     size_t normalized_frame_vars_count = vars_count_per_frame_ * frames_count - normalized_var_indices_count_;
     decomp_lin_sys_left_side1_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
@@ -565,28 +566,6 @@ Scalar BundleAdjustmentKanatani::ReprojError(Scalar f0, const FragmentMap& map,
     FramePatch* frame_patch = nullptr;
     return ReprojErrorWithOverlap(f0, map, inverse_orient_cams, track_rep, shared_intrinsic_cam_mat, intrinsic_cam_mats,
                                     point_patch, frame_patch, seen_points_count);
-}
-
-Scalar BundleAdjustmentKanatani::ReprojErrorPerPixelFromGlobal(size_t seen_points_count, Scalar reproj_err) const
-{
-    // BA3DRKanSug2010, formula 33
-    size_t points_count = map_->SalientPointsCount();
-    size_t frames_count = inverse_orient_cams_->size();
-
-    size_t vars_count = points_count * kPointVarsCount + frames_count * vars_count_per_frame_ - normalized_var_indices_count_;
-    SRK_ASSERT(2 * seen_points_count > vars_count) << "Error when normalizing reprojection error";
-
-    size_t den = 2 * seen_points_count - vars_count;
-    return f0_ * std::sqrt(reproj_err / den);
-}
-
-Scalar BundleAdjustmentKanatani::GlobalReprojErrorFromPerPixel(size_t seen_points_count, Scalar reproj_err) const
-{
-    // BA3DRKanSug2010, formula 33
-    ptrdiff_t den = 2 * seen_points_count - (ptrdiff_t)NormalizedVarsCount();
-    SRK_ASSERT(den > 0) << "Error when normalizing reprojection error";
-
-    return f0_ * std::sqrt(reproj_err / den);
 }
 
 bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
@@ -687,17 +666,12 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
 
     size_t seen_points_count = 0;
     Scalar err_initial = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_, &seen_points_count);
-    Scalar err_per_point_initial = ReprojErrorPerPixelFromGlobal(seen_points_count, err_initial);
 
     VLOG(4) << "Seen points: " << seen_points_count;
 
     std::optional<Scalar> err_thresh = term_crit.AllowedReprojErrRelativeChange();
-    if (!err_thresh.has_value() && term_crit.AllowedReprojErrRelativeChangePerPixel().has_value())
-    {
-        err_thresh = GlobalReprojErrorFromPerPixel(seen_points_count, term_crit.AllowedReprojErrRelativeChangePerPixel().value());
-    }
     VLOG(4) << "Reproj err change goal=" << err_thresh.value_or(-1) << " pix";
-    VLOG(4) << "Initial reproj_err=" << err_initial << " pix (or " << err_per_point_initial << " pix/point) hessian_factor=" << hessian_factor;
+    VLOG(4) << "Initial reproj_err=" << err_initial << " pix (or " << err_initial / seen_points_count << " pix/seenpoint) hessian_factor=" << hessian_factor;
 
     // reprojection error is zero on exact data
     // reprojection error is arbitrary large on corrupted with noise data
@@ -723,7 +697,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
         enum class TargFunDecreaseResult { Success, FailedHessianOverflow, FailedButConverged };
 
         // tries to decrease target optimization function by varying hessian's diagonal factor
-        auto try_decrease_targ_fun = [this, seen_points_count, err_thresh, &term_crit](Scalar entry_err_value, Scalar* hessian_factor, Scalar* err_new, Scalar* err_new_per_point) -> TargFunDecreaseResult
+        auto try_decrease_targ_fun = [this, seen_points_count, err_thresh, &term_crit](Scalar entry_err_value, Scalar* hessian_factor, Scalar* err_new) -> TargFunDecreaseResult
         {
             // backup current state(world points and camera orientations)
             FragmentMap map_copy = *map_;
@@ -742,7 +716,20 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
                 int corrections_impl = 1;
                 bool suc = false;
                 if (corrections_impl == 1)
+                {
                     suc = EstimateCorrectionsDecomposedInTwoPhases(gradE_, deriv_second_pointpoint_, deriv_second_frameframe_, deriv_second_pointframe_, *hessian_factor, &corrections_);
+                    
+                    static bool compare_with_naive = false;
+                    if (compare_with_naive)
+                    {
+                        Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections2;
+                        corrections2.resize(corrections_.rows(), 1);
+                        bool suc_naive = EstimateCorrectionsNaive(gradE_, deriv_second_pointpoint_, deriv_second_frameframe_, deriv_second_pointframe_, *hessian_factor, &corrections2);
+                        CHECK_EQ(suc, suc_naive);
+                        Scalar diff_value = (corrections_ - corrections2).norm();
+                        CHECK(diff_value < 0.1) << "diff_value=" << diff_value;
+                    }
+                }
                 else if (corrections_impl == 2)
                     suc = EstimateCorrectionsNaive(gradE_, deriv_second_pointpoint_, deriv_second_frameframe_, deriv_second_pointframe_, *hessian_factor, &corrections_);
                 else if (corrections_impl == 3)
@@ -757,8 +744,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
                 ApplyCorrections(corrections_);
 
                 *err_new = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-                *err_new_per_point = ReprojErrorPerPixelFromGlobal(seen_points_count, *err_new);
-                VLOG(5) << "try_hessian: got reproj_err=" << *err_new << "pix (or " << *err_new_per_point << " pix/point) for hessian_factor=" << *hessian_factor;
+                VLOG(5) << "try_hessian: got reproj_err=" << *err_new << "pix (or " << *err_new / seen_points_count << " pix/seenpoint) for hessian_factor=" << *hessian_factor;
                 
                 Scalar err_value_change = *err_new - entry_err_value;
                 bool target_fun_decreased = err_value_change < 0;
@@ -797,17 +783,15 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
             AssertFalse();
         };
 
-        Scalar err_new = std::numeric_limits<Scalar>::quiet_NaN();
-        Scalar err_new_per_point = std::numeric_limits<Scalar>::quiet_NaN();
-        TargFunDecreaseResult decrease_result = try_decrease_targ_fun(err_value, &hessian_factor, &err_new, &err_new_per_point);
+        Scalar err_new = kNan;
+        TargFunDecreaseResult decrease_result = try_decrease_targ_fun(err_value, &hessian_factor, &err_new);
 
         if (decrease_result != TargFunDecreaseResult::Success)
         {
             if (VLOG_IS_ON(4))
             {
                 Scalar err = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-                Scalar err_per_point = ReprojErrorPerPixelFromGlobal(seen_points_count, err);
-                VLOG(4) << "reproj_err=" << err << " pix (or " << err_per_point << " pix/point) hessian_factor=" << hessian_factor;
+                VLOG(4) << "reproj_err=" << err << " pix (or " << err / seen_points_count << " pix/seenpoint) hessian_factor=" << hessian_factor;
             }
 
             if (decrease_result == TargFunDecreaseResult::FailedHessianOverflow)
@@ -820,7 +804,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
             return false; // failed to optimize
         }
 
-        VLOG(4) << "it=" << it << " reproj_err=" << err_new << " pix (or " << err_new_per_point << " pix/point) hessian_factor=" << hessian_factor;
+        VLOG(4) << "it=" << it << " reproj_err=" << err_new << " pix (or " << err_new / seen_points_count << " pix/seenpoint) hessian_factor=" << hessian_factor;
 
         Scalar err_value_change = err_new - err_value;
         SRK_ASSERT(err_value_change < 0) << "Target error function's value must decrease";
@@ -1627,6 +1611,23 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar
     EigenDynMat hessian(n, n);
     FillHessian(deriv_second_pointpoint, deriv_second_frameframe, deriv_second_pointframe, hessian_factor, &hessian);
 
+    static bool investigate_hessian_before = false;
+    if (investigate_hessian_before)
+    {
+        Eigen::JacobiSVD<EigenDynMat> svd1 = hessian.jacobiSvd().compute(hessian, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        EigenDynMat mU = svd1.matrixU();
+        EigenDynMat mV = svd1.matrixV();
+        EigenDynMat mSdiag = svd1.singularValues();
+
+        Eigen::DiagonalMatrix<Scalar, Eigen::Dynamic> mS;
+        mS.resize(n);
+        mS.diagonal() << mSdiag;
+
+        EigenDynMat mnew = mU * mS*mV.transpose();
+        Scalar diff_value = (hessian - mnew).norm();
+        CHECK(diff_value < 1);
+    }
+
     EigenDynMat right_side;
     right_side.resize(n, 1);
     right_side = -Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>>(grad_error.data(), n, 1);
@@ -1639,6 +1640,23 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar
     auto empty_lines = gsl::span<size_t>(nullptr);
     RemoveRowsAndColsInplace(remove_lines, remove_lines, &hessian);
     RemoveRowsAndColsInplace(remove_lines, empty_lines, &right_side);
+
+    static bool investigate_hessian_after = false;
+    if (investigate_hessian_before)
+    {
+        Eigen::JacobiSVD<EigenDynMat> svd2 = hessian.jacobiSvd().compute(hessian, Eigen::ComputeFullU | Eigen::ComputeFullV);
+        EigenDynMat mU2 = svd2.matrixU();
+        EigenDynMat mV2 = svd2.matrixV();
+        EigenDynMat mSdiag2 = svd2.singularValues();
+        Eigen::DiagonalMatrix<Scalar, Eigen::Dynamic> mS2;
+        mS2.resize(n - normalized_var_indices_count_);
+        mS2.diagonal() << mSdiag2;
+
+        EigenDynMat mnew2 = mU2 * mS2*mV2.transpose();
+        Scalar diff_value = (hessian - mnew2).norm();
+        CHECK(diff_value < 1);
+    }
+
 
     //
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> normalized_corrections = hessian.householderQr().solve(right_side);
