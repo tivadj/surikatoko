@@ -423,8 +423,6 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
                 pK = &frame_patch->K().value();
         }
 
-        SRK_ASSERT(IsClose(f0, (*pK)(2, 2))) << "f0!=K[2,2]";
-
         for (const CornerTrack& point_track : track_rep.CornerTracks)
         {
             std::optional<suriko::Point2> corner = point_track.GetCorner(frame_ind);
@@ -436,23 +434,26 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
             }
 
             suriko::Point2 corner_pix = corner.value();
+            Eigen::Matrix<Scalar, 2, 1> corner_div_f0 = corner_pix.Mat() / f0;
             suriko::Point3 x3D = map.GetSalientPoint(point_track.TrackId);
 
             // try patch
             if (point_patch != nullptr && point_track.TrackId == point_patch->PointTrackId())
                 x3D = point_patch->PatchedSalientPoint();
 
+            // the evaluation below is due to BA3DRKanSug2010 formula 4
             suriko::Point3 x3D_cam = SE3Apply(*pInverse_orient_cam, x3D);
-            suriko::Point3 x3D_pix = suriko::Point3((*pK) * x3D_cam.Mat());
+            suriko::Point3 x_img_h = suriko::Point3((*pK) * x3D_cam.Mat());
             // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
 
-            bool zero_z = IsClose(0, x3D_pix[2], 1e-5);
+            bool zero_z = IsClose(0, x_img_h[2], 1e-5);
             SRK_ASSERT(!zero_z) << "homog 2D point can't have Z=0";
 
-            Scalar x = x3D_pix[0] / x3D_pix[2];
-            Scalar y = x3D_pix[1] / x3D_pix[2];
+            Scalar x = x_img_h[0] / x_img_h[2];
+            Scalar y = x_img_h[1] / x_img_h[2];
 
-            Scalar one_err = Sqr(x - corner_pix[0] / f0) + Sqr(y - corner_pix[1] / f0);
+            // for numerical stability, the error is measured not in pixels but in pixels/f0
+            Scalar one_err = Sqr(x - corner_div_f0[0]) + Sqr(y - corner_div_f0[1]);
             SRK_ASSERT(std::isfinite(one_err));
 
             err_sum += one_err;
@@ -568,6 +569,21 @@ Scalar BundleAdjustmentKanatani::ReprojError(Scalar f0, const FragmentMap& map,
                                     point_patch, frame_patch, seen_points_count);
 }
 
+Scalar BundleAdjustmentKanatani::ReprojErrorPixPerPoint(Scalar reproj_err, size_t seen_points_count) const
+{
+    // BA3DRKanSug2010 formula 32
+    Scalar den = seen_points_count;
+
+    // In the paper, the denoninator is decreased by the degree of freedom of the focal length f, translation and rotation.
+    // TODO: not quite get this, ignore for now
+    //den -= 7;
+    //if (den < 0) return -1;
+
+    // squared root is because of repr_err=sum of squares;
+    // multiplied by f0 to convert to pixels.
+    return f0_ * std::sqrt(reproj_err / den); // pixels per point
+}
+
 bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
     std::vector<SE3Transform>& inverse_orient_cams,
     const CornerTrackRepository& track_rep,
@@ -588,7 +604,11 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
             for (size_t i = 0; i < intrinsic_cam_mats->size(); ++i)
             {
                 const auto& K = (*intrinsic_cam_mats)[i];
-                SRK_ASSERT(IsClose(f0, K(2, 2))) << "f0 != K[2,2]";
+                bool zero_K01 = IsClose(0, K(0, 1));
+                if (!zero_K01)
+                {
+                    LOG_FIRST_N(INFO, 1) << "TODO: Not implemented, error derivatives are designed assuming K[0,1]=0";
+                }
             }
         }
     }
@@ -670,8 +690,16 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
     VLOG(4) << "Seen points: " << seen_points_count;
 
     std::optional<Scalar> err_thresh = term_crit.AllowedReprojErrRelativeChange();
-    VLOG(4) << "Reproj err change goal=" << err_thresh.value_or(-1) << " pix";
-    VLOG(4) << "Initial reproj_err=" << err_initial << " pix (or " << err_initial / seen_points_count << " pix/seenpoint) hessian_factor=" << hessian_factor;
+    Scalar goal_err = -1;
+    Scalar goal_err_per_point = -1;
+    if (err_thresh.has_value())
+    {
+        goal_err = err_thresh.value();
+        goal_err_per_point = ReprojErrorPixPerPoint(goal_err, seen_points_count);
+    }
+    VLOG(4) << "Reproj err change goal=" << goal_err << " nodim (or " << goal_err_per_point << " pix/seenpoint)";
+    VLOG(4) << "Initial reproj_err=" << err_initial << " nodim (or " 
+        << ReprojErrorPixPerPoint(err_initial, seen_points_count) << " pix/seenpoint) hessian_factor=" << hessian_factor;
 
     // reprojection error is zero on exact data
     // reprojection error is arbitrary large on corrupted with noise data
@@ -744,7 +772,8 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
                 ApplyCorrections(corrections_);
 
                 *err_new = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-                VLOG(5) << "try_hessian: got reproj_err=" << *err_new << "pix (or " << *err_new / seen_points_count << " pix/seenpoint) for hessian_factor=" << *hessian_factor;
+                VLOG(5) << "try_hessian: got reproj_err=" << *err_new << " nodim (or " 
+                    << ReprojErrorPixPerPoint(*err_new, seen_points_count) << " pix/seenpoint) for hessian_factor=" << *hessian_factor;
                 
                 Scalar err_value_change = *err_new - entry_err_value;
                 bool target_fun_decreased = err_value_change < 0;
@@ -791,7 +820,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
             if (VLOG_IS_ON(4))
             {
                 Scalar err = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-                VLOG(4) << "reproj_err=" << err << " pix (or " << err / seen_points_count << " pix/seenpoint) hessian_factor=" << hessian_factor;
+                VLOG(4) << "reproj_err=" << err << " nodim (or " << ReprojErrorPixPerPoint(err, seen_points_count) << " pix/seenpoint) hessian_factor=" << hessian_factor;
             }
 
             if (decrease_result == TargFunDecreaseResult::FailedHessianOverflow)
@@ -804,7 +833,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
             return false; // failed to optimize
         }
 
-        VLOG(4) << "it=" << it << " reproj_err=" << err_new << " pix (or " << err_new / seen_points_count << " pix/seenpoint) hessian_factor=" << hessian_factor;
+        VLOG(4) << "it=" << it << " reproj_err=" << err_new << " nodim (or " << ReprojErrorPixPerPoint(err_new, seen_points_count) << " pix/seenpoint) hessian_factor=" << hessian_factor;
 
         Scalar err_value_change = err_new - err_value;
         SRK_ASSERT(err_value_change < 0) << "Target error function's value must decrease";

@@ -47,7 +47,7 @@ auto ProjectPnt(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_in
 }
 
 #if defined(SRK_HAS_OPENCV)
-void DrawAxes(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_inverse_orient, const cv::Mat& camera_image_rgb)
+void DrawAxes(Scalar f0, const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_inverse_orient, const cv::Mat& camera_image_rgb)
 {
     // show center of coordinates as red dot
     std::vector<suriko::Point3> axes_pnts = {
@@ -67,8 +67,8 @@ void DrawAxes(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_inve
     {
         Eigen::Matrix<Scalar, 3, 1> p = ProjectPnt(K, cam_inverse_orient, axes_pnts[i]);
         axes_pnts2D[i] = cv::Point2i(
-            static_cast<int>(p[0] / p[2]),
-            static_cast<int>(p[1] / p[2]));
+            static_cast<int>(p[0] / p[2] * f0),
+            static_cast<int>(p[1] / p[2] * f0));
     }
     for (size_t i = 1; i < axes_pnts.size(); ++i)
     {
@@ -78,6 +78,7 @@ void DrawAxes(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_inve
 }
 #endif
 
+DEFINE_double(f0, 600, "Numerical stability scaler, chosen so that x_pix/f0 and y_pix/f0 is close to 1. Kanatani uses f0=600");
 DEFINE_double(world_xmin, -1, "world xmin");
 DEFINE_double(world_xmax, 1, "world xmax");
 DEFINE_double(world_ymin, -1, "world ymin");
@@ -106,7 +107,7 @@ int CircleGridDemo(int argc, char* argv[])
     //
     bool corrupt_salient_points_with_noise = FLAGS_noise_x3D_hi > 0;
     bool corrupt_cam_orient_with_noise = FLAGS_noise_R_hi > 0;
-    std::vector<SE3Transform> ground_truth_RT_per_frame;
+    std::vector<SE3Transform> gt_cam_orient_cfw; // ground truth camera orientation transforming into camera from world
     std::vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mat_per_frame;
 
     WorldBounds wb{};
@@ -174,13 +175,22 @@ int CircleGridDemo(int argc, char* argv[])
         track_rep.CornerTracks.push_back(point_track);
     }
 
-    Scalar f0 = 1;
+    // Numerical stability scaler, chosen so that x_pix / f0 and y_pix / f0 is close to 1
+    Scalar f0 = FLAGS_f0;
+    LOG(INFO) << "f0=" << f0;
+    Eigen::Matrix<Scalar, 3, 3, Eigen::RowMajor> num_stab_mat;
+    num_stab_mat <<
+        1 / f0, 0, 0,
+        0, 1 / f0, 0,
+        0, 0, 1;
+
     std::array<size_t, 2> img_size = { 800, 600 };
     Eigen::Matrix<Scalar, 3, 3, Eigen::RowMajor> K;
     K <<
         880, 0, img_size[0] / 2.0,
         0, 660, img_size[1] / 2.0,
         0, 0, 1;
+    K = num_stab_mat * K;
 
     vector<Scalar> rot_angles;
     for (Scalar ang = FLAGS_ang_start; ; ang += FLAGS_ang_step)
@@ -195,19 +205,19 @@ int CircleGridDemo(int argc, char* argv[])
 
     LOG(INFO) << "frames_count=" << rot_angles.size();
 
-    GenerateCircleCameraShots(circle_center, rot_radius, ascentZ, rot_angles, &ground_truth_RT_per_frame);
+    GenerateCircleCameraShots(circle_center, rot_radius, ascentZ, rot_angles, &gt_cam_orient_cfw);
 
 #if defined(SRK_HAS_OPENCV)
     cv::Mat camera_image_rgb = cv::Mat::zeros((int)img_size[1], (int)img_size[0], CV_8UC3);
 #endif
-    for (size_t ang_ind = 0; ang_ind< ground_truth_RT_per_frame.size(); ++ang_ind)
+    for (size_t ang_ind = 0; ang_ind< gt_cam_orient_cfw.size(); ++ang_ind)
     {
-        const SE3Transform& RT = ground_truth_RT_per_frame[ang_ind];
+        const SE3Transform& RT_cfw = gt_cam_orient_cfw[ang_ind];
         intrinsic_cam_mat_per_frame.push_back(K);
 
 #if defined(SRK_HAS_OPENCV)
         camera_image_rgb.setTo(0);
-        DrawAxes(K, RT, camera_image_rgb);
+        DrawAxes(f0, K, RT_cfw, camera_image_rgb);
 #endif
         for (size_t frag_ind = 0; frag_ind < map.SalientPoints().size(); ++frag_ind)
         {
@@ -217,13 +227,14 @@ int CircleGridDemo(int argc, char* argv[])
             CornerTrack& track = track_rep.GetPointTrackById(frag_ind);
             CHECK_EQ(track.SyntheticSalientPointId, frag.SyntheticVirtualPointId.value());
 
-            auto pnt_pix = ProjectPnt(K, RT, frag.Coord.value());
-            auto pnt2_pix = suriko::Point2(pnt_pix[0] / pnt_pix[2], pnt_pix[1] / pnt_pix[2]);
-            track.AddCorner(ang_ind, pnt2_pix);
+            Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, RT_cfw, frag.Coord.value());
+            auto pnt_div_f0 = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
+            auto pnt_pix = suriko::Point2(pnt_div_f0 * f0);
+            track.AddCorner(ang_ind, pnt_pix);
 
 #if defined(SRK_HAS_OPENCV)
-            int pix_x = (int)pnt2_pix[0];
-            int pix_y = (int)pnt2_pix[1];
+            int pix_x = (int)pnt_pix[0];
+            int pix_y = (int)pnt_pix[1];
             if (pix_x >= 0 && pix_x < img_size[0] &&
                 pix_y >= 0 && pix_y < img_size[1])
                 camera_image_rgb.at<cv::Vec3b>(pix_y, pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
@@ -236,7 +247,7 @@ int CircleGridDemo(int argc, char* argv[])
 #endif
     }
 
-    std::vector<SE3Transform> inverse_orient_cam_per_frame_noise = ground_truth_RT_per_frame; // copy
+    std::vector<SE3Transform> inverse_orient_cam_per_frame_noise = gt_cam_orient_cfw; // copy
     if (corrupt_cam_orient_with_noise)
     {
         std::uniform_real_distribution<Scalar> dis(0, 1);
@@ -284,7 +295,7 @@ int CircleGridDemo(int argc, char* argv[])
         MeanStdAlgo stat_R;
         for (size_t i=0; i<inverse_orient_cam_per_frame_noise.size(); ++i)
         {
-            const SE3Transform& rt_gt = ground_truth_RT_per_frame[i];
+            const SE3Transform& rt_gt = gt_cam_orient_cfw[i];
             const SE3Transform& rt_noise = inverse_orient_cam_per_frame_noise[i];
             Scalar r_diff = (rt_gt.R - rt_noise.R).norm();
             stat_R.Next(r_diff);

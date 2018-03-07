@@ -115,7 +115,9 @@ private:
     static const size_t kMaxFrameVarsCount = 10;
 
 private:
-    Scalar f0_ = 0; // K[2,2] of all camera intrinsics matrices K
+    // Numerical stability scaler, chosen so that for image point (x_pix, y_pix), the ratios x_pix / f0 and y_pix / f0 is close to 1
+    // see BA3DRKanSug2010 formula 1. Kanatani uses f0=600 in the paper.
+    Scalar f0_ = 0;
     FragmentMap* map_ = nullptr;
     std::vector<SE3Transform>* inverse_orient_cams_ = nullptr;
     const CornerTrackRepository* track_rep_ = nullptr;
@@ -158,6 +160,8 @@ public:
                             const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat = nullptr,
                             const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats = nullptr,
                             size_t* seen_points_count = nullptr);
+    /// Computes the portion of reprojection error which falls to the share of one point.
+    Scalar ReprojErrorPixPerPoint(Scalar reproj_err, size_t seen_points_count) const;
 
     /// :return: True if optimization converges successfully.
     /// Stop conditions:
