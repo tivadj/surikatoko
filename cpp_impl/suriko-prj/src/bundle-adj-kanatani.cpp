@@ -14,6 +14,7 @@
 #include "suriko/obs-geom.h"
 #include "suriko/rt-config.h"
 #include "suriko/eigen-helpers.hpp"
+#include "suriko/lin-alg.h"
 
 namespace suriko
 {
@@ -58,17 +59,8 @@ bool Enable(DebugPath var_ind)
 void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, const Eigen::Matrix<Scalar, kWVarsCount, 1>& w_delta,
     Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>* Rnew)
 {
-    constexpr int updateR_impl = 2;
+    constexpr int updateR_impl = 1; // 1=Kanatani (default)
     if (updateR_impl == 1)
-    {
-        // TODO: constructs non-orthogonal matrices
-        // Rnew = (I + hat(w))*R where hat(w) is [3x3] and w is 3-element axis angle
-        Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_w_delta_hat;
-        SkewSymmetricMat(w_delta, &direct_w_delta_hat);
-
-        *Rnew = (Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>::Identity() + direct_w_delta_hat) * R;
-    }
-    else
     {
         // Rnew = Rodrigues(w)*R
         Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> rot_w;
@@ -82,6 +74,17 @@ void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, c
             // Rodrigues formula fails when vector of changes is zero. Keep R unchanged.
             *Rnew = R;
         }
+    }
+    else
+    {
+        // Rnew = (I + hat(w))*R where hat(w) is [3x3] and w is 3-element axis angle
+        Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_w_delta_hat;
+        SkewSymmetricMat(w_delta, &direct_w_delta_hat);
+
+        *Rnew = (Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>::Identity() + direct_w_delta_hat) * R;
+        
+        // this update constructs non-orthogonal rotation matrix R, so we have to fix it
+        OrthonormalizeGramSchmidtInplace(Rnew);
     }
     std::string msg;
     bool is_so3 = IsSpecialOrthogonal(*Rnew, &msg);
@@ -572,7 +575,7 @@ Scalar BundleAdjustmentKanatani::ReprojError(Scalar f0, const FragmentMap& map,
 Scalar BundleAdjustmentKanatani::ReprojErrorPixPerPoint(Scalar reproj_err, size_t seen_points_count) const
 {
     // BA3DRKanSug2010 formula 32
-    Scalar den = seen_points_count;
+    Scalar den = static_cast<Scalar>(seen_points_count);
 
     // In the paper, the denoninator is decreased by the degree of freedom of the focal length f, translation and rotation.
     // TODO: not quite get this, ignore for now
