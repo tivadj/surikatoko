@@ -438,7 +438,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
 
             suriko::Point2 corner_pix = corner.value();
             Eigen::Matrix<Scalar, 2, 1> corner_div_f0 = corner_pix.Mat() / f0;
-            suriko::Point3 x3D = map.GetSalientPoint(point_track.TrackId);
+            suriko::Point3 x3D = map.GetSalientPoint(point_track.TrackId); // TODO: use SalientPointId instead
 
             // try patch
             if (point_patch != nullptr && point_track.TrackId == point_patch->PointTrackId())

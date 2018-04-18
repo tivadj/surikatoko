@@ -12,6 +12,7 @@ namespace suriko
 class Point2 {
     Eigen::Matrix<Scalar,2,1> mat_;
 public:
+    Point2() = default;
     Point2(const Eigen::Matrix<Scalar, 2, 1> &m) : mat_(m) {}
 
     template <typename F0, typename F1>
@@ -22,6 +23,8 @@ public:
 
     const Eigen::Matrix<Scalar,2,1>& Mat() const { return mat_; };
           Eigen::Matrix<Scalar,2,1>& Mat()       { return mat_; };
+
+    Eigen::Matrix<Scalar, 3, 1> AsHomog() const { return Eigen::Matrix<Scalar, 3, 1> {mat_(0), mat_(1), 1}; }
 
     Scalar  operator[] (size_t i) const { return mat_(i); };
     Scalar& operator[] (size_t i)       { return mat_(i); };
@@ -77,33 +80,52 @@ struct SalientPointFragment
 /// The space with salient 3D points.
 class FragmentMap
 {
-    static constexpr size_t kFragmentIdOffset = 1000'000;
     size_t salient_points_count = 0;
     std::vector<SalientPointFragment> salient_points;
-    size_t next_salient_point_id_ = kFragmentIdOffset + 1;
+    size_t fragment_id_offset_;
+    size_t next_salient_point_id_;
 public:
+    FragmentMap(size_t fragment_id_offset = 1000'000);
+
     void AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &coord);
-    size_t AddSalientPointNew(const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
-    size_t AddSalientPointNew2(const std::optional<suriko::Point3> &coord);
+    SalientPointFragment& AddSalientPointNew3(const std::optional<suriko::Point3> &coord, size_t* salient_point_id = nullptr);
 
     void SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord);
     void SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
 
-    const suriko::Point3& GetSalientPoint(size_t point_track_id) const;
-          suriko::Point3& GetSalientPoint(size_t point_track_id);
+    const suriko::Point3& GetSalientPoint(size_t salient_point_id) const;
+          suriko::Point3& GetSalientPoint(size_t salient_point_id);
+    bool GetSalientPointByVirtualPointIdInternal(size_t salient_point_id, const SalientPointFragment** fragment);
 
     size_t SalientPointsCount() const { return salient_points_count; }
     const std::vector<SalientPointFragment>& SalientPoints() const { return salient_points; }
           std::vector<SalientPointFragment>& SalientPoints()       { return salient_points; }
+
+    void SetFragmentIdOffsetInternal(size_t fragment_id_offset);
+private:
+    size_t SalientPointIdToInd(size_t salient_point_id) const;
+};
+
+struct CornerData
+{
+    suriko::Point2 PixelCoord;
+    Eigen::Matrix<Scalar, 3, 1> ImageCoord;
 };
 
 class CornerTrack
 {
-    ptrdiff_t StartFrameInd = -1;
-    std::vector<std::optional<suriko::Point2>> CoordPerFramePixels;
 public:
     size_t TrackId;
-    size_t SyntheticSalientPointId; // only available for artificially generated scenes where world's 3D points are known
+private:
+    ptrdiff_t StartFrameInd = -1;
+    std::vector<std::optional<CornerData>> CoordPerFramePixels;
+public:
+    // note, it may be the case that salient point is not reconstructed yet (SalientPointId is null) but synthetic salient point is known.
+    std::optional<size_t> SalientPointId;
+
+    // There may be multiple frames available with registered corner, but corresponding salient point is not reconstructed yet.
+    // This is reflected with the null value.
+    std::optional<size_t> SyntheticVirtualPointId; // only available for artificially generated scenes where world's 3D points are known
 public:
     CornerTrack() = default;
 
@@ -111,8 +133,12 @@ public:
     size_t CornersCount() const;
 
     void AddCorner(size_t frame_ind, const suriko::Point2& value);
+    CornerData& AddCorner(size_t frame_ind);
 
     std::optional<suriko::Point2> GetCorner(size_t frame_ind) const;
+    std::optional<CornerData> GetCornerData(size_t frame_ind) const;
+
+    void EachCorner(std::function<void(size_t, const std::optional<CornerData>&)> on_item) const;
 private:
     void CheckConsistent();
 };
@@ -120,10 +146,14 @@ private:
 class CornerTrackRepository
 {
 public:
-	std::vector<suriko::CornerTrack> CornerTracks;
+    std::vector<suriko::CornerTrack> CornerTracks;
+
+    suriko::CornerTrack& AddCornerTrackObj();
 
     const suriko::CornerTrack& GetPointTrackById(size_t point_track_id) const;
           suriko::CornerTrack& GetPointTrackById(size_t point_track_id);
+    
+    bool GetFirstPointTrackByFragmentSyntheticId(size_t salient_point_id, suriko::CornerTrack** corner_track);
 
     void PopulatePointTrackIds(std::vector<size_t> *result);
 

@@ -60,3 +60,9 @@ add_executable(demo-circle-grid demo-bundle-adj-circle-grid.cpp ${test-helpers})
 AddDepsF(demo-circle-grid)
 target_include_directories(demo-circle-grid PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(demo-circle-grid ${OpenCV_LIBS})
+
+add_executable(demo-multi-view-factorization demo-multi-view-factorization.cpp ${test-helpers})
+AddDepsF(demo-multi-view-factorization)
+target_include_directories(demo-multi-view-factorization PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(demo-multi-view-factorization ${OpenCV_LIBS})
+

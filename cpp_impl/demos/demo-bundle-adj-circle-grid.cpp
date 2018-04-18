@@ -135,7 +135,8 @@ int CircleGridDemo(int argc, char* argv[])
         {
             Scalar val_z = std::cos((x - xmid) / xlen * M_PI);
             Scalar z = wb.ZMin + val_z * zlen;
-            map.AddSalientPointNew(Point3(x, y, z), next_synthetic_virtual_point_id);
+            SalientPointFragment& salient_point = map.AddSalientPointNew3(Point3(x, y, z));
+            salient_point.SyntheticVirtualPointId = next_synthetic_virtual_point_id;
             next_synthetic_virtual_point_id += 1;
         }
     }
@@ -171,7 +172,7 @@ int CircleGridDemo(int argc, char* argv[])
     {
         CornerTrack point_track;
         point_track.TrackId = next_point_track_id++;
-        point_track.SyntheticSalientPointId = fragment.SyntheticVirtualPointId.value();
+        point_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId.value();
         track_rep.CornerTracks.push_back(point_track);
     }
 
@@ -225,7 +226,7 @@ int CircleGridDemo(int argc, char* argv[])
             if (!frag.Coord.has_value()) continue;
 
             CornerTrack& track = track_rep.GetPointTrackById(frag_ind);
-            CHECK_EQ(track.SyntheticSalientPointId, frag.SyntheticVirtualPointId.value());
+            CHECK_EQ(track.SyntheticVirtualPointId.value(), frag.SyntheticVirtualPointId.value());
 
             Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, RT_cfw, frag.Coord.value());
             auto pnt_div_f0 = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);

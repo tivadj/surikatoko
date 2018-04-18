@@ -42,6 +42,12 @@ auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_worl
     return SE3Compose(a_from_world, SE3Inv(b_from_world));
 }
 
+FragmentMap::FragmentMap(size_t fragment_id_offset)
+    : fragment_id_offset_(fragment_id_offset),
+    next_salient_point_id_(fragment_id_offset + 1)
+{
+}
+
 void FragmentMap::AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &coord)
 {
     if (point_track_id >= salient_points.size())
@@ -50,29 +56,26 @@ void FragmentMap::AddSalientPoint(size_t point_track_id, const std::optional<sur
         SetSalientPoint(point_track_id, coord.value());
     salient_points_count += 1;
 }
-size_t FragmentMap::AddSalientPointNew(const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId)
-{
-    size_t new_fragment_id = salient_points.size();
-    salient_points.resize(salient_points.size() + 1);
-    
-    SetSalientPointNew(new_fragment_id, coord, syntheticVirtualPointId);
-    salient_points_count += 1;
-    return new_fragment_id;
-}
-size_t FragmentMap::AddSalientPointNew2(const std::optional<suriko::Point3> &coord)
+
+SalientPointFragment& FragmentMap::AddSalientPointNew3(const std::optional<suriko::Point3> &coord, size_t* salient_point_id)
 {
     size_t new_id = next_salient_point_id_++;
-    salient_points.resize(salient_points.size() + 1);
-    size_t new_ind1 = salient_points.size() - 1;
-    size_t new_ind2 = new_id - kFragmentIdOffset - 1;
+
+    size_t new_ind1 = salient_points.size();
+    size_t new_ind2 = new_id - fragment_id_offset_ - 1;
     SRK_ASSERT(new_ind1 == new_ind2);
+
+    if (salient_point_id != nullptr)
+        *salient_point_id = new_id;
+
+    salient_points.resize(salient_points.size() + 1);
     
     SalientPointFragment& frag = salient_points.back();
-    frag.SyntheticVirtualPointId = new_id;
     frag.Coord = coord;
     salient_points_count += 1;
-    return new_id;
+    return frag;
 }
+
 void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord)
 {
     SRK_ASSERT(point_track_id < salient_points.size());
@@ -88,23 +91,51 @@ void FragmentMap::SetSalientPointNew(size_t fragment_id, const std::optional<sur
     frag.Coord = coord;
 }
 
-const suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id) const
+const suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id) const
 {
-    CHECK(point_track_id < salient_points.size());
-    const std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id].Coord;
+    size_t ind = SalientPointIdToInd(salient_point_id);
+    CHECK(ind < salient_points.size());
+    const std::optional<suriko::Point3>& sal_pnt = salient_points[ind].Coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
 
-suriko::Point3& FragmentMap::GetSalientPoint(size_t point_track_id)
+suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id)
 {
-    CHECK(point_track_id < salient_points.size());
-    std::optional<suriko::Point3>& sal_pnt = salient_points[point_track_id].Coord;
+    size_t ind = SalientPointIdToInd(salient_point_id);
+    CHECK(ind < salient_points.size());
+    std::optional<suriko::Point3>& sal_pnt = salient_points[ind].Coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
+bool FragmentMap::GetSalientPointByVirtualPointIdInternal(size_t salient_point_id, const SalientPointFragment** fragment)
+{
+    *fragment = nullptr;
+    for (const SalientPointFragment& p : salient_points)
+    {
+        if (p.SyntheticVirtualPointId == salient_point_id)
+        {
+            *fragment = &p;
+            return true;
+        }
+    }
+    return false;
+}
 
-bool CornerTrack::HasCorners() const {
+void FragmentMap::SetFragmentIdOffsetInternal(size_t fragment_id_offset)
+{
+    fragment_id_offset_ = fragment_id_offset;
+    next_salient_point_id_ = fragment_id_offset + 1;
+}
+
+size_t FragmentMap::SalientPointIdToInd(size_t salient_point_id) const
+{
+    SRK_ASSERT(salient_point_id >= fragment_id_offset_ + 1);
+    return salient_point_id - fragment_id_offset_ - 1;
+}
+
+bool CornerTrack::HasCorners() const
+{
     return StartFrameInd != -1;
 }
 
@@ -117,15 +148,37 @@ void CornerTrack::AddCorner(size_t frame_ind, const suriko::Point2& value)
 {
     if (StartFrameInd == -1)
         StartFrameInd = frame_ind;
-	else
-	{
-		SRK_ASSERT(StartFrameInd >= 0);
-		CHECK((size_t)StartFrameInd <= frame_ind) << "Can insert points later than the initial (start) frame"
-			<< " StartFrameInd=" << StartFrameInd << " frame_ind=" << frame_ind;
-	}
+    else
+    {
+        SRK_ASSERT(StartFrameInd >= 0);
+        CHECK((size_t)StartFrameInd <= frame_ind) << "Can insert points later than the initial (start) frame"
+            << " StartFrameInd=" << StartFrameInd << " frame_ind=" << frame_ind;
+    }
 
-    CoordPerFramePixels.push_back(std::optional<suriko::Point2>(value));
+    CornerData corner_data;
+    corner_data.PixelCoord = value;
+    CoordPerFramePixels.push_back(std::optional<CornerData>(corner_data));
     CheckConsistent();
+}
+
+CornerData& CornerTrack::AddCorner(size_t frame_ind)
+{
+    if (StartFrameInd == -1)
+        StartFrameInd = frame_ind;
+    else
+    {
+        SRK_ASSERT(StartFrameInd >= 0);
+        CHECK((size_t)StartFrameInd <= frame_ind) << "Can insert points later than the initial (start) frame"
+            << " StartFrameInd=" << StartFrameInd << " frame_ind=" << frame_ind;
+    }
+    ptrdiff_t local_ind = frame_ind - (ptrdiff_t)StartFrameInd;
+    if (local_ind >= CoordPerFramePixels.size())
+    {
+        CornerData corner_data;
+        CoordPerFramePixels.push_back(std::optional<CornerData>(corner_data));
+        CheckConsistent();
+    }
+    return CoordPerFramePixels.back().value();
 }
 
 std::optional<suriko::Point2> CornerTrack::GetCorner(size_t frame_ind) const
@@ -135,6 +188,16 @@ std::optional<suriko::Point2> CornerTrack::GetCorner(size_t frame_ind) const
 
     if (local_ind < 0 || (size_t)local_ind >= CoordPerFramePixels.size())
         return std::optional<suriko::Point2>();
+    return CoordPerFramePixels[local_ind].value().PixelCoord;
+}
+
+std::optional<CornerData> CornerTrack::GetCornerData(size_t frame_ind) const
+{
+    CHECK(StartFrameInd != -1);
+    ptrdiff_t local_ind = frame_ind - StartFrameInd;
+
+    if (local_ind < 0 || (size_t)local_ind >= CoordPerFramePixels.size())
+        return std::optional<CornerData>();
     return CoordPerFramePixels[local_ind];
 }
 
@@ -146,11 +209,39 @@ void CornerTrack::CheckConsistent()
         SRK_ASSERT(CoordPerFramePixels.empty());
 }
 
+void CornerTrack::EachCorner(std::function<void(size_t, const std::optional<CornerData>&)> on_item) const
+{
+    SRK_ASSERT(StartFrameInd != -1);
+    for (size_t i=0; i<CoordPerFramePixels.size(); ++i)
+    {
+        on_item((size_t)StartFrameInd + i, CoordPerFramePixels[i]);
+    }
+}
 
 suriko::CornerTrack& CornerTrackRepository::GetPointTrackById(size_t point_track_id)
 {
     size_t point_track_ind = point_track_id;
     return CornerTracks[point_track_ind];
+}
+
+bool CornerTrackRepository::GetFirstPointTrackByFragmentSyntheticId(size_t salient_point_id, suriko::CornerTrack** corner_track)
+{
+    for (CornerTrack& track : CornerTracks)
+        if (track.SyntheticVirtualPointId == salient_point_id)
+        {
+            *corner_track = &track;
+            return true;
+        }
+    return false;
+}
+
+suriko::CornerTrack& CornerTrackRepository::AddCornerTrackObj()
+{
+    size_t new_track_id = CornerTracks.size();
+    CornerTrack new_track;
+    new_track.TrackId = new_track_id;
+    CornerTracks.push_back(new_track);
+    return CornerTracks.back();
 }
 
 const suriko::CornerTrack& CornerTrackRepository::GetPointTrackById(size_t point_track_id) const
@@ -159,7 +250,8 @@ const suriko::CornerTrack& CornerTrackRepository::GetPointTrackById(size_t point
     return CornerTracks[point_track_ind];
 }
 
-void CornerTrackRepository::PopulatePointTrackIds(std::vector<size_t> *result) {
+void CornerTrackRepository::PopulatePointTrackIds(std::vector<size_t> *result)
+{
     for (size_t pnt_ind=0;pnt_ind<CornerTracks.size(); ++pnt_ind)
         result->push_back(pnt_ind);
 }
@@ -168,8 +260,10 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
     Scalar rtol = 1.0e-3;
     Scalar atol = 1.0e-3;
     bool is_ident = (R.transpose() * R).isIdentity(atol);
-    if (!is_ident) {
-        if (msg != nullptr) {
+    if (!is_ident)
+    {
+        if (msg != nullptr)
+        {
             std::stringstream ss;
             ss << "failed Rt.R=I, R=\n" << R;
             *msg = ss.str();
@@ -178,8 +272,10 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
     }
     Scalar rdet = R.determinant();
     bool is_one = IsClose(1, rdet, rtol, atol);
-    if (!is_one) {
-        if (msg != nullptr) {
+    if (!is_one)
+    {
+        if (msg != nullptr)
+        {
             std::stringstream ss;
             ss << "failed det(R)=1, actual detR=" << rdet << " R=\n" << R;
             *msg = ss.str();
@@ -191,7 +287,7 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
 
 void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat)
 {
-	*skew_mat << 
+    *skew_mat << 
         0, -v[2], v[1],
         v[2], 0, -v[0],
         -v[1], v[0], 0;
@@ -199,87 +295,87 @@ void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen:
 
 auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input) -> bool
 {
-	// skip precondition checking in Release mode on user request (check_input=false)
-	if (check_input || kSurikoDebug)
-	{
-		// direction must be a unity vector
-		Scalar dir_len = unity_dir.norm();
-		if (!IsClose(1, dir_len)) return false;
+    // skip precondition checking in Release mode on user request (check_input=false)
+    if (check_input || kSurikoDebug)
+    {
+        // direction must be a unity vector
+        Scalar dir_len = unity_dir.norm();
+        if (!IsClose(1, dir_len)) return false;
 
-		// Rotating about some unity direction by zero angle is described by the identity matrix,
-		// which we can return here. But the symmetric operation of computing direction and angle from R 
-		// is not possible - the direction can't be recovered.
-		if (IsClose(0, ang)) return false;
-	}
+        // Rotating about some unity direction by zero angle is described by the identity matrix,
+        // which we can return here. But the symmetric operation of computing direction and angle from R 
+        // is not possible - the direction can't be recovered.
+        if (IsClose(0, ang)) return false;
+    }
 	
-	Scalar s = std::sin(ang);
-	Scalar c = std::cos(ang);
+    Scalar s = std::sin(ang);
+    Scalar c = std::cos(ang);
 
-	Eigen::Matrix<Scalar, 3, 3> skew1;
-	SkewSymmetricMat(unity_dir, &skew1);
+    Eigen::Matrix<Scalar, 3, 3> skew1;
+    SkewSymmetricMat(unity_dir, &skew1);
 
-	*rot_mat = Eigen::Matrix<Scalar, 3, 3>::Identity() + s * skew1 + (1 - c) * skew1 * skew1;
+    *rot_mat = Eigen::Matrix<Scalar, 3, 3>::Identity() + s * skew1 + (1 - c) * skew1 * skew1;
 
-	if (kSurikoDebug) // postcondition
-	{
-		std::string msg;
-		bool ok = IsSpecialOrthogonal(*rot_mat, &msg);
-		CHECK(ok) << msg;
-	}
-	return true;
+    if (kSurikoDebug) // postcondition
+    {
+        std::string msg;
+        bool ok = IsSpecialOrthogonal(*rot_mat, &msg);
+        CHECK(ok) << msg;
+    }
+    return true;
 }
 
 auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool
 {
-	Scalar ang = axis_angle.norm();
-	if (IsClose(0, ang)) return false;
+    Scalar ang = axis_angle.norm();
+    if (IsClose(0, ang)) return false;
 
-	Eigen::Matrix<Scalar, 3, 1> unity_dir = axis_angle / ang;
-	const bool check_input = false;
-	return RotMatFromUnityDirAndAngle(unity_dir, ang, rot_mat, check_input);
+    Eigen::Matrix<Scalar, 3, 1> unity_dir = axis_angle / ang;
+    const bool check_input = false;
+    return RotMatFromUnityDirAndAngle(unity_dir, ang, rot_mat, check_input);
 }
 
 auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input) -> bool
 {
-	// skip precondition checking in Release mode on user request (check_input=false)
-	if (check_input || kSurikoDebug)
-	{
-		std::string msg;
-		bool ok = IsSpecialOrthogonal(rot_mat, &msg);
-		CHECK(ok) << msg;
-	}
-	Scalar cos_ang = 0.5*(rot_mat.trace() - 1);
-	cos_ang = std::clamp<Scalar>(cos_ang, -1, 1); // the cosine may be slightly off due to rounding errors
+    // skip precondition checking in Release mode on user request (check_input=false)
+    if (check_input || kSurikoDebug)
+    {
+        std::string msg;
+        bool ok = IsSpecialOrthogonal(rot_mat, &msg);
+        CHECK(ok) << msg;
+    }
+    Scalar cos_ang = 0.5*(rot_mat.trace() - 1);
+    cos_ang = std::clamp<Scalar>(cos_ang, -1, 1); // the cosine may be slightly off due to rounding errors
 
-	Scalar sin_ang = std::sqrt(1.0 - cos_ang * cos_ang);
-	Scalar atol = 1e-3;
-	if (IsClose(0, sin_ang, 0, atol))
-		return false;
+    Scalar sin_ang = std::sqrt(1.0 - cos_ang * cos_ang);
+    Scalar atol = 1e-3;
+    if (IsClose(0, sin_ang, 0, atol))
+        return false;
 
-	auto& udir = *unity_dir;
-	udir[0] = rot_mat(2, 1) - rot_mat(1, 2);
-	udir[1] = rot_mat(0, 2) - rot_mat(2, 0);
-	udir[2] = rot_mat(1, 0) - rot_mat(0, 1);
-	udir *= 0.5 / sin_ang;
+    auto& udir = *unity_dir;
+    udir[0] = rot_mat(2, 1) - rot_mat(1, 2);
+    udir[1] = rot_mat(0, 2) - rot_mat(2, 0);
+    udir[2] = rot_mat(1, 0) - rot_mat(0, 1);
+    udir *= 0.5 / sin_ang;
 
-	// direction vector is already close to unity, but due to rounding errors it diverges
-	// TODO: check where the rounding error appears
-	Scalar dirlen = udir.norm();
-	udir *= 1 / dirlen;
+    // direction vector is already close to unity, but due to rounding errors it diverges
+    // TODO: check where the rounding error appears
+    Scalar dirlen = udir.norm();
+    udir *= 1 / dirlen;
 
-	*ang = std::acos(cos_ang);
-	return true;
+    *ang = std::acos(cos_ang);
+    return true;
 }
 
 auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> dir) -> bool
 {
-	Eigen::Matrix<Scalar, 3, 1> unity_dir;
-	Scalar ang;
-	bool op = LogSO3(rot_mat, &unity_dir, &ang);
-	if (!op) return false;
+    Eigen::Matrix<Scalar, 3, 1> unity_dir;
+    Scalar ang;
+    bool op = LogSO3(rot_mat, &unity_dir, &ang);
+    if (!op) return false;
 
-	*dir = unity_dir * ang;
-	return true;
+    *dir = unity_dir * ang;
+    return true;
 }
 
 auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_post_cond)
@@ -295,7 +391,8 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
     // ensure that R will have positive determinant
     int P_sign = 1;
     Scalar Q_det = Q.determinant();
-    if (Q_det < 0) {
+    if (Q_det < 0)
+    {
         P_sign = -1;
         Q *= -1;
         q *= -1;
@@ -367,7 +464,8 @@ auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D, c
     Eigen::Matrix<Scalar,Eigen::Dynamic,Eigen::Dynamic> A(frames_count * 2, 3);
     Eigen::Matrix<Scalar,Eigen::Dynamic,1> B(frames_count * 2);
 
-    for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind) {
+    for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
+    {
         const auto &x2D = xs2D[frame_ind];
         auto x = x2D[0];
         auto y = x2D[1];
@@ -393,7 +491,8 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
 #endif
 
     static bool debug = false;
-    if (debug) {
+    if (debug)
+    {
         const Eigen::Matrix<Scalar,Eigen::Dynamic,1> diff_vec = A * sol - B;
         Scalar diff = diff_vec.norm();
         LOG_IF(INFO, diff > 5) << "warn: big diff=" << diff << " frames_count=" << frames_count;
@@ -404,53 +503,53 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
 
 namespace internals
 {
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, const Eigen::Matrix<Scalar, 3, 1>* translation)
-{
-    Eigen::Matrix<Scalar, 4, 4> result;
-    Eigen::Matrix<Scalar, 3, 3> identity3 = Eigen::Matrix<Scalar, 3, 3>::Identity();
-    if (rot_mat == nullptr)
-        rot_mat = &identity3;
+    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, const Eigen::Matrix<Scalar, 3, 1>* translation)
+    {
+        Eigen::Matrix<Scalar, 4, 4> result;
+        Eigen::Matrix<Scalar, 3, 3> identity3 = Eigen::Matrix<Scalar, 3, 3>::Identity();
+        if (rot_mat == nullptr)
+            rot_mat = &identity3;
         
-    Eigen::Matrix<Scalar, 3, 1> zero_translation(0, 0, 0);
-    if (translation == nullptr)
-        translation = &zero_translation;
+        Eigen::Matrix<Scalar, 3, 1> zero_translation(0, 0, 0);
+        if (translation == nullptr)
+            translation = &zero_translation;
 
-    result.topLeftCorner(3, 3) = *rot_mat;
-    result.topRightCorner(3, 1) = *translation;
-    result(3, 0) = 0;
-    result(3, 1) = 0;
-    result(3, 2) = 0;
-    result(3, 3) = 1;
-    return result;
-}
+        result.topLeftCorner(3, 3) = *rot_mat;
+        result.topRightCorner(3, 1) = *translation;
+        result(3, 0) = 0;
+        result(3, 1) = 0;
+        result(3, 2) = 0;
+        result(3, 3) = 1;
+        return result;
+    }
 
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, const Eigen::Matrix<Scalar, 3, 1>& translation)
-{
-    return SE3Mat(&rot_mat, &translation);
-}
+    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, const Eigen::Matrix<Scalar, 3, 1>& translation)
+    {
+        return SE3Mat(&rot_mat, &translation);
+    }
 
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat)
-{
-    return SE3Mat(&rot_mat, nullptr);
-}
+    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat)
+    {
+        return SE3Mat(&rot_mat, nullptr);
+    }
 
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 1>& translation)
-{
-    return SE3Mat(nullptr, &translation);
-}
+    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 1>& translation)
+    {
+        return SE3Mat(nullptr, &translation);
+    }
 
-Eigen::Matrix<Scalar, 3, 3> RotMat(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang)
-{
-    Eigen::Matrix<Scalar, 3, 3> result;
-    if (!RotMatFromUnityDirAndAngle(unity_dir, ang, &result))
-        result = Eigen::Matrix<Scalar, 3, 3>::Identity();
-    return result;
-}
+    Eigen::Matrix<Scalar, 3, 3> RotMat(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang)
+    {
+        Eigen::Matrix<Scalar, 3, 3> result;
+        if (!RotMatFromUnityDirAndAngle(unity_dir, ang, &result))
+            result = Eigen::Matrix<Scalar, 3, 3>::Identity();
+        return result;
+    }
 
-Eigen::Matrix<Scalar, 3, 3> RotMat(Scalar unity_dir_x, Scalar unity_dir_y, Scalar unity_dir_z, Scalar ang)
-{
-    Eigen::Matrix<Scalar, 3, 1> unity_dir(unity_dir_x, unity_dir_y, unity_dir_z);
-    return RotMat(unity_dir, ang);
-}
+    Eigen::Matrix<Scalar, 3, 3> RotMat(Scalar unity_dir_x, Scalar unity_dir_y, Scalar unity_dir_z, Scalar ang)
+    {
+        Eigen::Matrix<Scalar, 3, 1> unity_dir(unity_dir_x, unity_dir_y, unity_dir_z);
+        return RotMat(unity_dir, ang);
+    }
 }
 }

@@ -51,7 +51,7 @@ void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff
         if (min_frames_per_point != -1 && track.CornersCount() < (size_t)min_frames_per_point)
             continue;
 
-        track.SyntheticSalientPointId = 10000 + pnt_ind;
+        track.SyntheticVirtualPointId = 10000 + pnt_ind;
         track.TrackId = next_track_id++;
         track_rep->CornerTracks.push_back(track);
     }
