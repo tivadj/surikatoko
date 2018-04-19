@@ -30,11 +30,11 @@ TEST_F(BAKanataniTest, NormalizationSimple)
         suriko::Point3(0, -1, 0), // K
     };
     FragmentMap map;
-    map.AddSalientPointNew3(pnts3D[0]);
-    map.AddSalientPointNew3(pnts3D[1]);
-    map.AddSalientPointNew3(pnts3D[2]);
-    map.AddSalientPointNew3(pnts3D[3]);
-    map.AddSalientPointNew3(pnts3D[4]);
+    map.AddSalientPoint(pnts3D[0]);
+    map.AddSalientPoint(pnts3D[1]);
+    map.AddSalientPoint(pnts3D[2]);
+    map.AddSalientPoint(pnts3D[3]);
+    map.AddSalientPoint(pnts3D[4]);
 
     suriko::Point3 circle_center(0, 0, 0);
     Scalar circle_radius = 1;

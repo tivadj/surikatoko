@@ -48,54 +48,51 @@ FragmentMap::FragmentMap(size_t fragment_id_offset)
 {
 }
 
-void FragmentMap::AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &coord)
-{
-    if (point_track_id >= salient_points.size())
-        salient_points.resize(point_track_id+1);
-    if (coord.has_value())
-        SetSalientPoint(point_track_id, coord.value());
-    salient_points_count += 1;
-}
-
-SalientPointFragment& FragmentMap::AddSalientPointNew3(const std::optional<suriko::Point3> &coord, size_t* salient_point_id)
+SalientPointFragment& FragmentMap::AddSalientPoint(const std::optional<suriko::Point3> &coord, size_t* salient_point_id)
 {
     size_t new_id = next_salient_point_id_++;
 
-    size_t new_ind1 = salient_points.size();
+    size_t new_ind1 = salient_points_.size();
     size_t new_ind2 = new_id - fragment_id_offset_ - 1;
     SRK_ASSERT(new_ind1 == new_ind2);
 
     if (salient_point_id != nullptr)
         *salient_point_id = new_id;
 
-    salient_points.resize(salient_points.size() + 1);
+    salient_points_.resize(salient_points_.size() + 1);
     
-    SalientPointFragment& frag = salient_points.back();
+    SalientPointFragment& frag = salient_points_.back();
     frag.Coord = coord;
-    salient_points_count += 1;
     return frag;
 }
 
 void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord)
 {
-    SRK_ASSERT(point_track_id < salient_points.size());
-    SalientPointFragment& frag = salient_points[point_track_id];
+    SRK_ASSERT(point_track_id < salient_points_.size());
+    SalientPointFragment& frag = salient_points_[point_track_id];
     frag.Coord = coord;
 }
 
 void FragmentMap::SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId)
 {
-    SRK_ASSERT(fragment_id < salient_points.size());
-    SalientPointFragment& frag = salient_points[fragment_id];
+    SRK_ASSERT(fragment_id < salient_points_.size());
+    SalientPointFragment& frag = salient_points_[fragment_id];
     frag.SyntheticVirtualPointId = syntheticVirtualPointId;
     frag.Coord = coord;
+}
+
+const SalientPointFragment& FragmentMap::GetSalientPointNew(size_t salient_point_id) const
+{
+    size_t ind = SalientPointIdToInd(salient_point_id);
+    CHECK(ind < salient_points_.size());
+    return salient_points_[ind];
 }
 
 const suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id) const
 {
     size_t ind = SalientPointIdToInd(salient_point_id);
-    CHECK(ind < salient_points.size());
-    const std::optional<suriko::Point3>& sal_pnt = salient_points[ind].Coord;
+    CHECK(ind < salient_points_.size());
+    const std::optional<suriko::Point3>& sal_pnt = salient_points_[ind].Coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
@@ -103,15 +100,15 @@ const suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id) cons
 suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id)
 {
     size_t ind = SalientPointIdToInd(salient_point_id);
-    CHECK(ind < salient_points.size());
-    std::optional<suriko::Point3>& sal_pnt = salient_points[ind].Coord;
+    CHECK(ind < salient_points_.size());
+    std::optional<suriko::Point3>& sal_pnt = salient_points_[ind].Coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
 bool FragmentMap::GetSalientPointByVirtualPointIdInternal(size_t salient_point_id, const SalientPointFragment** fragment)
 {
     *fragment = nullptr;
-    for (const SalientPointFragment& p : salient_points)
+    for (const SalientPointFragment& p : salient_points_)
     {
         if (p.SyntheticVirtualPointId == salient_point_id)
         {
@@ -132,6 +129,20 @@ size_t FragmentMap::SalientPointIdToInd(size_t salient_point_id) const
 {
     SRK_ASSERT(salient_point_id >= fragment_id_offset_ + 1);
     return salient_point_id - fragment_id_offset_ - 1;
+}
+
+size_t FragmentMap::SalientPointIndToId(size_t salient_point_ind) const
+{
+    return salient_point_ind + fragment_id_offset_ + 1;
+}
+
+void FragmentMap::GetSalientPointsIds(std::vector<size_t>* salient_points_ids)
+{
+    for (size_t i=0; i<salient_points_.size(); ++i)
+    {
+        size_t salient_point_id = SalientPointIndToId(i);
+        salient_points_ids->push_back(salient_point_id);
+    }
 }
 
 bool CornerTrack::HasCorners() const

@@ -229,12 +229,11 @@ bool SceneNormalizer::NormalizeWorldInplaceInternal()
     }
 
     // update salient points
-    auto point_track_count = map_->SalientPointsCount();
-    for (size_t pnt_track_id = 0; pnt_track_id < point_track_count; ++pnt_track_id)
+    for (SalientPointFragment& sal_pnt : map_->SalientPoints())
     {
-        suriko::Point3 salient_point = map_->GetSalientPoint(pnt_track_id);
+        suriko::Point3 salient_point = sal_pnt.Coord.value();
         auto newX = NormalizeOrRevertPoint(salient_point, prenorm_cam0_from_world, world_scale_, NormalizeAction::Normalize);
-        map_->SetSalientPoint(pnt_track_id, newX);
+        sal_pnt.Coord = newX;
     }
 
     bool check_post_cond = true;
@@ -438,7 +437,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
 
             suriko::Point2 corner_pix = corner.value();
             Eigen::Matrix<Scalar, 2, 1> corner_div_f0 = corner_pix.Mat() / f0;
-            suriko::Point3 x3D = map.GetSalientPoint(point_track.TrackId); // TODO: use SalientPointId instead
+            suriko::Point3 x3D = map.GetSalientPoint(point_track.SalientPointId.value());
 
             // try patch
             if (point_patch != nullptr && point_track.TrackId == point_patch->PointTrackId())
@@ -1126,7 +1125,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
     {
         const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
 
-        const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+        const suriko::Point3& salient_point = map_->GetSalientPoint(point_track.SalientPointId.value());
 
         size_t pnt_ind = point_track_id;
         gsl::span<Scalar> grad_point = gsl::make_span(&(*grad_error)[pnt_ind * kPointVarsCount], kPointVarsCount);
@@ -1245,7 +1244,7 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             
             const suriko::Point2& corner_pix = corner_pix_opt.value();
 
-            const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+            const suriko::Point3& salient_point = map_->GetSalientPoint(point_track.SalientPointId.value());
 
             suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
             Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
@@ -1903,7 +1902,8 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
         size_t pnt_ind = point_track_id;
         Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> delta_point(&corrections_with_gaps[pnt_ind * kPointVarsCount]);
 
-        suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
+        const CornerTrack& corner_track = track_rep_->GetPointTrackById(point_track_id);
+        suriko::Point3& salient_point = map_->GetSalientPoint(corner_track.SalientPointId.value());
         if (kDebugCorrectSalientPoints)
             salient_point.Mat() += delta_point;
     }

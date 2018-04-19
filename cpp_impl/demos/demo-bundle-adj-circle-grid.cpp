@@ -135,7 +135,7 @@ int CircleGridDemo(int argc, char* argv[])
         {
             Scalar val_z = std::cos((x - xmid) / xlen * M_PI);
             Scalar z = wb.ZMin + val_z * zlen;
-            SalientPointFragment& salient_point = map.AddSalientPointNew3(Point3(x, y, z));
+            SalientPointFragment& salient_point = map.AddSalientPoint(Point3(x, y, z));
             salient_point.SyntheticVirtualPointId = next_synthetic_virtual_point_id;
             next_synthetic_virtual_point_id += 1;
         }
@@ -166,14 +166,18 @@ int CircleGridDemo(int argc, char* argv[])
     LOG(INFO) << "points_count=" << map_noise.SalientPointsCount();
 
     // lets track each salient point
-    size_t next_point_track_id = 0;
     CornerTrackRepository track_rep;
-    for (const SalientPointFragment& fragment : map_noise.SalientPoints())
+    
+    std::vector<size_t> salient_points_ids;
+    map_noise.GetSalientPointsIds(&salient_points_ids);
+
+    for (size_t sal_pnt_id : salient_points_ids)
     {
-        CornerTrack point_track;
-        point_track.TrackId = next_point_track_id++;
-        point_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId.value();
-        track_rep.CornerTracks.push_back(point_track);
+        const SalientPointFragment& sal_pnt = map_noise.GetSalientPointNew(sal_pnt_id);
+
+        CornerTrack& point_track = track_rep.AddCornerTrackObj();
+        point_track.SalientPointId = sal_pnt_id;
+        point_track.SyntheticVirtualPointId = sal_pnt.SyntheticVirtualPointId;
     }
 
     // Numerical stability scaler, chosen so that x_pix / f0 and y_pix / f0 is close to 1
@@ -286,9 +290,13 @@ int CircleGridDemo(int argc, char* argv[])
     auto calc_and_print_stats = [&]()
     {
         MeanStdAlgo stat_pnt;
-        for (size_t i = 0; i < map.SalientPointsCount(); ++i)
+        for (const SalientPointFragment& sal_pnt :  map.SalientPoints())
         {
-            Scalar pnt_diff = (map.GetSalientPoint(i).Mat() - map_noise.GetSalientPoint(i).Mat()).norm();
+            const SalientPointFragment* sal_pnt_noise = nullptr;
+            bool op = map_noise.GetSalientPointByVirtualPointIdInternal(sal_pnt.SyntheticVirtualPointId.value(), &sal_pnt_noise);
+            SRK_ASSERT(op);
+
+            Scalar pnt_diff = (sal_pnt.Coord.value().Mat() - sal_pnt_noise->Coord.value().Mat()).norm();
             stat_pnt.Next(pnt_diff);
         }
         LOG(INFO) << "avg_pnt_diff=" << stat_pnt.Mean() << " std_pnt_diff=" << stat_pnt.Std();

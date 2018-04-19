@@ -273,7 +273,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
 
             Scalar val_z = std::cos((x_act - xmid) / xlen * M_PI);
             Scalar z = wb.ZMin + val_z * zlen;
-            SalientPointFragment& frag = entire_map.AddSalientPointNew3(Point3(x_act, y_act, z));
+            SalientPointFragment& frag = entire_map.AddSalientPoint(Point3(x_act, y_act, z));
             frag.SyntheticVirtualPointId = next_virtual_point_id++;
         }
     }
@@ -391,7 +391,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
                 {
                     // add new salient points
                     size_t salient_point_id = 0;
-                    SalientPointFragment& new_frag = mvf.map_.AddSalientPointNew3(fragment.Coord, &salient_point_id);
+                    SalientPointFragment& new_frag = mvf.map_.AddSalientPoint(fragment.Coord, &salient_point_id);
                     new_frag.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId; // force id of subset fragment to be identical to fragment id from entire map
 
                     new_points_per_frame_count += 1;

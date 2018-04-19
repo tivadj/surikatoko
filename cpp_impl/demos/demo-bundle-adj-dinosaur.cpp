@@ -182,7 +182,7 @@ int DinoDemo(int argc, char* argv[])
     FragmentMap map;
     for (size_t pnt_track_id : subset_point_track_ids)
     {
-        const CornerTrack& corner_track = track_rep.GetPointTrackById(pnt_track_id);
+        CornerTrack& corner_track = track_rep.GetPointTrackById(pnt_track_id);
 
         one_pnt_corner_per_frame.clear();
         one_pnt_proj_mat_per_frame.clear();
@@ -195,7 +195,12 @@ int DinoDemo(int argc, char* argv[])
             one_pnt_proj_mat_per_frame.push_back(proj_mat_per_frame_f0scaled[frame_ind]);
         }
         Point3 x3D = Triangulate3DPointByLeastSquares(one_pnt_corner_per_frame, one_pnt_proj_mat_per_frame, f0);
-        map.AddSalientPoint(pnt_track_id, x3D);
+
+        size_t salient_point_id = 0;
+        SalientPointFragment& sal_pnt = map.AddSalientPoint(x3D, &salient_point_id);
+        sal_pnt.SyntheticVirtualPointId = corner_track.SyntheticVirtualPointId;
+
+        corner_track.SalientPointId = salient_point_id;
     }
 
     static bool debug_reproj_err = false;

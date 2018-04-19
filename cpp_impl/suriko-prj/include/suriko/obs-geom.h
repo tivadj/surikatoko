@@ -80,30 +80,33 @@ struct SalientPointFragment
 /// The space with salient 3D points.
 class FragmentMap
 {
-    size_t salient_points_count = 0;
-    std::vector<SalientPointFragment> salient_points;
+    std::vector<SalientPointFragment> salient_points_;
     size_t fragment_id_offset_;
     size_t next_salient_point_id_;
 public:
     FragmentMap(size_t fragment_id_offset = 1000'000);
 
-    void AddSalientPoint(size_t point_track_id, const std::optional<suriko::Point3> &coord);
-    SalientPointFragment& AddSalientPointNew3(const std::optional<suriko::Point3> &coord, size_t* salient_point_id = nullptr);
+    SalientPointFragment& AddSalientPoint(const std::optional<suriko::Point3> &coord, size_t* salient_point_id = nullptr);
 
     void SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord);
     void SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
 
+    const SalientPointFragment& GetSalientPointNew(size_t salient_point_id) const;
+
     const suriko::Point3& GetSalientPoint(size_t salient_point_id) const;
           suriko::Point3& GetSalientPoint(size_t salient_point_id);
+
     bool GetSalientPointByVirtualPointIdInternal(size_t salient_point_id, const SalientPointFragment** fragment);
 
-    size_t SalientPointsCount() const { return salient_points_count; }
-    const std::vector<SalientPointFragment>& SalientPoints() const { return salient_points; }
-          std::vector<SalientPointFragment>& SalientPoints()       { return salient_points; }
+    size_t SalientPointsCount() const { return salient_points_.size(); }
+    const std::vector<SalientPointFragment>& SalientPoints() const { return salient_points_; }
+          std::vector<SalientPointFragment>& SalientPoints()       { return salient_points_; }
+    void GetSalientPointsIds(std::vector<size_t>* salient_points_ids);
 
     void SetFragmentIdOffsetInternal(size_t fragment_id_offset);
 private:
     size_t SalientPointIdToInd(size_t salient_point_id) const;
+    size_t SalientPointIndToId(size_t salient_point_ind) const;
 };
 
 struct CornerData
