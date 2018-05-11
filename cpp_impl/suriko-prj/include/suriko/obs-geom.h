@@ -74,7 +74,7 @@ auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_worl
 struct SalientPointFragment
 {
     std::optional<size_t> SyntheticVirtualPointId;
-    std::optional<suriko::Point3> Coord;
+    std::optional<suriko::Point3> Coord; // TODO: when it is null?
 };
 
 /// The space with salient 3D points.
@@ -123,11 +123,12 @@ private:
     ptrdiff_t StartFrameInd = -1;
     std::vector<std::optional<CornerData>> CoordPerFramePixels;
 public:
-    // note, it may be the case that salient point is not reconstructed yet (SalientPointId is null) but synthetic salient point is known.
+    // Represents the reference to corresponding 3D salient point.
+    // The value is null when the track of corners exist and the corresponding salient point is not reconstructed yet.
     std::optional<size_t> SalientPointId;
 
-    // There may be multiple frames available with registered corner, but corresponding salient point is not reconstructed yet.
-    // This is reflected with the null value.
+    // Represents the user generated id of a salient point in synthetic worlds.
+    // The value may be used to match salient points. The non null value indicates that synthetic data is processed.
     std::optional<size_t> SyntheticVirtualPointId; // only available for artificially generated scenes where world's 3D points are known
 public:
     CornerTrack() = default;

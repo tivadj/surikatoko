@@ -50,6 +50,8 @@ endfunction()
 set (test-helpers 
     stat-helpers.h
     stat-helpers.cpp
+    visualize-helpers.h
+    visualize-helpers.cpp
     )
 
 add_executable(demo-dino main.cpp demo-bundle-adj-dinosaur.cpp)
@@ -65,4 +67,7 @@ add_executable(demo-multi-view-factorization demo-multi-view-factorization.cpp $
 AddDepsF(demo-multi-view-factorization)
 target_include_directories(demo-multi-view-factorization PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(demo-multi-view-factorization ${OpenCV_LIBS})
+target_include_directories(demo-multi-view-factorization PRIVATE ${Pangolin_INCLUDE_DIRS})
+target_link_libraries(demo-multi-view-factorization ${Pangolin_LIBRARIES})
+
 

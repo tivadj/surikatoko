@@ -27,6 +27,8 @@
 #include <opencv2/highgui.hpp> // cv::imshow
 #endif
 
+#include "visualize-helpers.h"
+
 namespace suriko_demos
 {
 using namespace std;
@@ -45,38 +47,6 @@ auto ProjectPnt(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_in
     Eigen::Matrix<Scalar, 3, 1> pnt_pix = K * pnt_img;
     return pnt_pix;
 }
-
-#if defined(SRK_HAS_OPENCV)
-void DrawAxes(Scalar f0, const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_inverse_orient, const cv::Mat& camera_image_rgb)
-{
-    // show center of coordinates as red dot
-    std::vector<suriko::Point3> axes_pnts = {
-        suriko::Point3(0, 0, 0),
-        suriko::Point3(1, 0, 0),
-        suriko::Point3(0, 1, 0),
-        suriko::Point3(0, 0, 1)
-    };
-    std::vector<cv::Scalar> axes_colors = {
-        CV_RGB(255, 255, 255),
-        CV_RGB(255,   0,   0),
-        CV_RGB(0, 255,   0),
-        CV_RGB(0,   0, 255)
-    };
-    std::vector<cv::Point2i> axes_pnts2D(axes_pnts.size());
-    for (size_t i = 0; i < axes_pnts.size(); ++i)
-    {
-        Eigen::Matrix<Scalar, 3, 1> p = ProjectPnt(K, cam_inverse_orient, axes_pnts[i]);
-        axes_pnts2D[i] = cv::Point2i(
-            static_cast<int>(p[0] / p[2] * f0),
-            static_cast<int>(p[1] / p[2] * f0));
-    }
-    for (size_t i = 1; i < axes_pnts.size(); ++i)
-    {
-        cv::line(camera_image_rgb, axes_pnts2D[0], axes_pnts2D[i], axes_colors[i]); // OX, OZ, OZ segments
-        //cv::circle(camera_image_rgb, axes_pnts2D[i], 3, axes_colors[i]);
-    }
-}
-#endif
 
 DEFINE_double(f0, 600, "Numerical stability scaler, chosen so that x_pix/f0 and y_pix/f0 is close to 1. Kanatani uses f0=600");
 DEFINE_double(world_xmin, -1, "world xmin");
@@ -222,7 +192,11 @@ int CircleGridDemo(int argc, char* argv[])
 
 #if defined(SRK_HAS_OPENCV)
         camera_image_rgb.setTo(0);
-        DrawAxes(f0, K, RT_cfw, camera_image_rgb);
+        auto project_fun = [&K, &RT_cfw](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+        {
+            return ProjectPnt(K, RT_cfw, sal_pnt);
+        };
+        Draw2DProjectedAxes(f0, project_fun, &camera_image_rgb);
 #endif
         for (size_t frag_ind = 0; frag_ind < map.SalientPoints().size(); ++frag_ind)
         {

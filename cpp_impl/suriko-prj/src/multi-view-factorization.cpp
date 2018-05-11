@@ -119,6 +119,8 @@ bool MultiViewIterativeFactorizer::FindRelativeMotionMultiPoints(size_t anchor_f
     r_and_t_ok.block(9, 0, 3, 1) = Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>>(this->tmp_cam_new_from_anchor_.T.data());
 
     // estimage camera position[R, T] given distances to all 3D points pj in frame1
+    // NOTE: this algo (candidate RT via SVD + projection on SO3) is unreliable because it creates solution which may be far from ground truth
+
     //Eigen::Matrix<Scalar, Eigen::Dynamic, 12> A;
     //A.resize(points_count * 3, Eigen::NoChange);
     Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> A; // thin svd is available for matrices with dynamic columns
@@ -162,18 +164,29 @@ bool MultiViewIterativeFactorizer::FindRelativeMotionMultiPoints(size_t anchor_f
         CHECK(true);
     }
 
+    // ground truth
+    Scalar svd_gt_diff = (A * r_and_t_ok).norm();
+
+    // thin svd
     Eigen::JacobiSVD<decltype(A)> A_svd = A.jacobiSvd().compute(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
     Eigen::Matrix<Scalar, 12, 1> r_and_t = A_svd.matrixV().rightCols<1>();
 
-    Scalar d = (A * r_and_t).norm();
+    Scalar svd_thin_diff = (A * r_and_t).norm();
 
+    // full svd
     Eigen::JacobiSVD<decltype(A)> A_svdF = A.jacobiSvd().compute(A, Eigen::ComputeFullU | Eigen::ComputeFullV);
     Eigen::Matrix<Scalar, 12, 1> r_and_tF = A_svdF.matrixV().rightCols<1>();
 
-    Scalar dF = (A * r_and_tF).norm();
+    Scalar svd_full_diff = (A * r_and_tF).norm();
 
     Eigen::Map<Eigen::Matrix<Scalar, 3, 3>, Eigen::ColMajor> R_noisy(r_and_t.data());
     Eigen::Map<Eigen::Matrix<Scalar, 3, 1>> T_noisy(&r_and_t[9]);
+
+    // compare how bad/good is noisy R
+    Eigen::Matrix<Scalar, 3, 3> Rtmp = R_noisy;
+    Eigen::Matrix<Scalar, 3, 1> Ttmp = T_noisy;
+    Eigen::Matrix<Scalar, 3, 3> r22 = Rtmp * Rtmp.transpose();
+    Scalar det = Rtmp.determinant();
 
     bool op = ProjectOntoSO3(SE3Transform(R_noisy, T_noisy), cam_frame_from_anchor);
     return op;
@@ -181,7 +194,7 @@ bool MultiViewIterativeFactorizer::FindRelativeMotionMultiPoints(size_t anchor_f
 
 SE3Transform MultiViewIterativeFactorizer::GetFrameRelativeRTFromAnchor(size_t anchor_frame_ind, size_t target_frame_ind, const std::vector<size_t>& common_track_ids, const std::vector<Scalar>& pnt_depthes_anchor) const
 {
-    // motion estimation step
+    // motion estimation step   
     SE3Transform cam_frame_from_anchor{};
     bool suc = FindRelativeMotionMultiPoints(anchor_frame_ind, target_frame_ind, common_track_ids, pnt_depthes_anchor, &cam_frame_from_anchor);
     SRK_ASSERT(suc);
@@ -243,7 +256,7 @@ Scalar MultiViewIterativeFactorizer::Estimate3DPointDepthFromFrames(const std::v
     return dist;
 }
 
-void MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& gt_cam_orient_cfw)
+bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& gt_cam_orient_cfw)
 {
     size_t new_frame_ind = FramesCount();
 
@@ -252,7 +265,15 @@ void MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
     std::vector<size_t> common_point_ids;
     size_t anchor_frame_ind = FindAnchorFrame(new_frame_ind, &common_point_ids);
 
-    VLOG(4) << "f=" << new_frame_ind << " anchored on " << anchor_frame_ind << " based on common_points=" << common_point_ids.size();
+    size_t common_point_ids_size = common_point_ids.size();
+    if (common_point_ids_size == 0)
+    {
+        // TODO: how to roll back DetectAndMatchCorners
+        VLOG(3) << "Can't integrate frameInd=" << new_frame_ind;
+        return false;
+    }
+
+    VLOG(4) << "f=" << new_frame_ind << " anchored on f=" << anchor_frame_ind << " using common_points=" << common_point_ids.size();
 
     // find depthes of the salient points in the anchor frame
     std::vector<Scalar> pnt_depthes_anchor(common_point_ids.size());
@@ -270,74 +291,95 @@ void MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
             (gt_cam_new_from_anchor.R - cam_new_from_anchor.R).norm() +
             (gt_cam_new_from_anchor.T - cam_new_from_anchor.T).norm();
         if (diff_value > 1)
-            VLOG(4) << "failed cam localiz frame_ind=" << new_frame_ind << " diff_value=" << diff_value;
+            VLOG(4) << "diverged cam localiz, diff_value=" << diff_value << " frame_ind=" << new_frame_ind;
+        else
+            VLOG(5) <<          "cam localiz, diff_value=" << diff_value << " frame_ind=" << new_frame_ind;
     }
     
     const SE3Transform& anchor_from_world = cam_orient_cfw_[anchor_frame_ind];
     SE3Transform cam_new_from_world = SE3Compose(cam_new_from_anchor, anchor_from_world);
-    
-    if (fake_localization_)
-        cam_orient_cfw_.push_back(gt_cam_orient_cfw); // ground truth
-    else
-        cam_orient_cfw_.push_back(cam_new_from_world); // real
-    
+
+    {
+        std::lock_guard<std::shared_mutex> lock(location_and_map_mutex_);
+        if (fake_localization_)
+            cam_orient_cfw_.push_back(gt_cam_orient_cfw); // ground truth
+        else
+            cam_orient_cfw_.push_back(cam_new_from_world); // real
+    }
 
     // find tracks for which the salient point can be reconstructed
-    // it can't be new track because it has only one projection in this frame
-    // it can't be deleted track because no info is added
+    // it can't be a new track because it has only one projection in this frame
+    // it can't be deleted track because no info is added in this frame
     // hence the candidate tracks for reconstruction are in common set
-    std::set<size_t> frame_track_ids;
-    PopulateCornerTrackIds(track_rep_, new_frame_ind, &frame_track_ids);
+    // (the shared set of points between the previous and current frame)
+    std::set<size_t> point_track_ids;
+    PopulateCornerTrackIds(track_rep_, new_frame_ind, &point_track_ids);
 
     size_t reconstructed_salient_points_count = 0;
 
-    std::vector<PointInFrameInfo> pnt_per_frame_infos;
-    for (size_t track_id : frame_track_ids)
     {
-        CornerTrack& track = track_rep_.GetPointTrackById(track_id);
-        if (track.SalientPointId.has_value()) // already reconstructed
-            continue;
+        // creating all 3D points in one batch
+        std::lock_guard<std::shared_mutex> lock(location_and_map_mutex_);
 
-        pnt_per_frame_infos.clear();
-        size_t base_frame_ind = CollectFrameInfoListForPoint(track_id, &pnt_per_frame_infos);
+        std::vector<PointInFrameInfo> pnt_per_frame_infos;
 
-        if (pnt_per_frame_infos.size() <= 1)
-            continue;
-
-        //
-        Scalar depth_base = Estimate3DPointDepthFromFrames(pnt_per_frame_infos);
-
-        //
-        
-        Eigen::Matrix<Scalar, 3, 1> x3D_base = track.GetCornerData(base_frame_ind).value().ImageCoord;
-        x3D_base *= depth_base;
-
-        const SE3Transform& base_from_world = cam_orient_cfw_[base_frame_ind];
-        suriko::Point3 x3D_world = SE3Apply(SE3Inv(base_from_world), x3D_base);
-
-        // find expected 3D point
-        if (track.SyntheticVirtualPointId.has_value() && gt_salient_point_by_virtual_point_id_fun_ != nullptr)
+        for (size_t track_id : point_track_ids)
         {
-            suriko::Point3 expect_x3D_world = gt_salient_point_by_virtual_point_id_fun_(track.SyntheticVirtualPointId.value());
-            Scalar diff_value = (expect_x3D_world.Mat() - x3D_world.Mat()).norm();
-            if (diff_value > 1)
-                VLOG(4) << "failed pnt reconstr synth_id=" << track.SyntheticVirtualPointId.value() << " diff_value=" << diff_value;
+            CornerTrack& track = track_rep_.GetPointTrackById(track_id);
+            if (track.SalientPointId.has_value()) // already reconstructed
+                continue;
 
-            if (fake_mapping_)
-                x3D_world = expect_x3D_world; // imitate working mapping
+            pnt_per_frame_infos.clear();
+            size_t base_frame_ind = CollectFrameInfoListForPoint(track_id, &pnt_per_frame_infos);
+
+            if (pnt_per_frame_infos.size() <= 1)
+                continue;
+
+            //
+            Scalar depth_base = Estimate3DPointDepthFromFrames(pnt_per_frame_infos);
+
+            //
+
+            Eigen::Matrix<Scalar, 3, 1> x3D_base = track.GetCornerData(base_frame_ind).value().ImageCoord;
+            x3D_base *= depth_base;
+
+            const SE3Transform& base_from_world = cam_orient_cfw_[base_frame_ind];
+            suriko::Point3 x3D_world = SE3Apply(SE3Inv(base_from_world), x3D_base);
+
+            // find expected 3D point
+            if (track.SyntheticVirtualPointId.has_value() && gt_salient_point_by_virtual_point_id_fun_ != nullptr)
+            {
+                suriko::Point3 expect_x3D_world = gt_salient_point_by_virtual_point_id_fun_(track.SyntheticVirtualPointId.value());
+                Scalar diff_value = (expect_x3D_world.Mat() - x3D_world.Mat()).norm();
+                if (diff_value > 1)
+                    VLOG(4) << "diverged pnt reconstr, diff_value=" << diff_value << " synth_id=" << track.SyntheticVirtualPointId.value() ;
+                else
+                    VLOG(5) <<          "pnt reconstr, diff_value=" << diff_value << " synth_id=" << track.SyntheticVirtualPointId.value();
+
+                if (fake_mapping_)
+                    x3D_world = expect_x3D_world; // imitate working mapping
+            }
+
+            // create new 3D salient point
+            size_t salient_point_id = 0;
+            { // actual modification
+                SalientPointFragment& salient_point = map_.AddSalientPoint(x3D_world, &salient_point_id);
+                salient_point.SyntheticVirtualPointId = track.SyntheticVirtualPointId;
+            }
+
+            track.SalientPointId = salient_point_id;
+
+            reconstructed_salient_points_count += 1;
         }
-
-        // create new 3D salient point
-        size_t salient_point_id = 0;
-        SalientPointFragment& salient_point = map_.AddSalientPoint(x3D_world, &salient_point_id);
-        salient_point.SyntheticVirtualPointId = track.SyntheticVirtualPointId;
-
-        track.SalientPointId = salient_point_id;
-        
-        reconstructed_salient_points_count += 1;
     }
-    
-    LogReprojError();
+
+    Scalar err = -1;
+    bool op = ReprojError(kF0, map_, cam_orient_cfw_, track_rep_, &K_, &err);
+    VLOG(4) << "f=" << new_frame_ind 
+        << " reconstructed_salient_points_count=" << reconstructed_salient_points_count
+        << " ReprojError=" << (op ? err : (Scalar)-1);
+
+    return true;
 }
 
 size_t MultiViewIterativeFactorizer::FramesCount() const
@@ -352,22 +394,24 @@ void MultiViewIterativeFactorizer::SetCornersMatcher(std::unique_ptr<CornersMatc
 
 void MultiViewIterativeFactorizer::LogReprojError() const
 {
-    constexpr Scalar f0 = 1; // numerical stability factor to equalize image width, height and 1 (homogeneous component)
-    Scalar err = ReprojError(f0, map_, cam_orient_cfw_, track_rep_, &K_);
-    VLOG(4) << "ReprojError=" << err;
+    Scalar err = -1;
+    bool op = ReprojError(kF0, map_, cam_orient_cfw_, track_rep_, &K_, &err);
+    VLOG(4) << "ReprojError=" << (op ? err : (Scalar)-1);
 }
 
-Scalar MultiViewIterativeFactorizer::ReprojError(Scalar f0,
+bool MultiViewIterativeFactorizer::ReprojError(Scalar f0,
     const FragmentMap& map,
     const std::vector<SE3Transform>& cam_orient_cfw,
     const CornerTrackRepository& track_rep,
-    const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat)
+    const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
+    Scalar* reproj_err)
 {
     CHECK(!IsClose(0, f0)) << "f0 != 0";
 
     Scalar err_sum = 0;
 
     size_t frames_count = cam_orient_cfw.size();
+    size_t summand_count = 0;
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
         const SE3Transform* pInverse_orient_cam = &cam_orient_cfw[frame_ind];
@@ -396,7 +440,8 @@ Scalar MultiViewIterativeFactorizer::ReprojError(Scalar f0,
             // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
 
             bool zero_z = IsClose(0, x_img_h[2], 1e-5);
-            SRK_ASSERT(!zero_z) << "homog 2D point can't have Z=0";
+            if (zero_z)
+                continue;
 
             Scalar x = x_img_h[0] / x_img_h[2];
             Scalar y = x_img_h[1] / x_img_h[2];
@@ -406,9 +451,14 @@ Scalar MultiViewIterativeFactorizer::ReprojError(Scalar f0,
             SRK_ASSERT(std::isfinite(one_err));
 
             err_sum += one_err;
+            summand_count += 1;
         }
     }
+    if (summand_count == 0) // there are no points or all points are at infinity (z=0)
+        return false;
+
     SRK_ASSERT(std::isfinite(err_sum));
-    return err_sum;
+    *reproj_err = err_sum;
+    return true;
 }
 }

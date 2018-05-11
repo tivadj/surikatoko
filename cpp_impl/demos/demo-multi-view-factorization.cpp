@@ -23,10 +23,15 @@
 #include "suriko/multi-view-factorization.h"
 #include "suriko/virt-world/scene-generator.h"
 #include "stat-helpers.h"
+#include "visualize-helpers.h"
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/imgproc.hpp> // cv::circle
 #include <opencv2/highgui.hpp> // cv::imshow
+#endif
+
+#if defined(SRK_HAS_PANGOLIN)
+#include <pangolin/pangolin.h>
 #endif
 
 namespace suriko_demos
@@ -48,15 +53,23 @@ auto ProjectPnt(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_in
     return pnt_pix;
 }
 
-void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps_per_side, 
+void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps_per_side_x, size_t steps_per_side_y,
     Scalar viewer_down_offset, Scalar ascentZ, std::vector<SE3Transform>* inverse_orient_cams)
 {
-    std::vector<suriko::Point3> look_at_base_points = {
+    std::array<suriko::Point3,5> look_at_base_points = {
         suriko::Point3(wb.XMax, wb.YMin, wb.ZMin),
         suriko::Point3(wb.XMin, wb.YMin, wb.ZMin),
         suriko::Point3(wb.XMin, wb.YMax, wb.ZMin),
         suriko::Point3(wb.XMax, wb.YMax, wb.ZMin),
         suriko::Point3(wb.XMax, wb.YMin, wb.ZMin),
+    };
+
+    // number of viewer steps per each side is variable
+    std::array<size_t, 4> viewer_steps_per_side = {
+        steps_per_side_x,
+        steps_per_side_y,
+        steps_per_side_x,
+        steps_per_side_y
     };
 
     Scalar skew_ang = (Scalar)std::atan2(std::abs(wb.XMax - wb.XMin), std::abs(wb.YMax - wb.YMin));
@@ -67,6 +80,7 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     {
         suriko::Point3 base1 = look_at_base_points[base_point_ind];
         suriko::Point3 base2 = look_at_base_points[base_point_ind+1];
+        size_t steps_per_side = viewer_steps_per_side[base_point_ind];
 
         Eigen::Matrix<Scalar, 3, 1> step = (base2.Mat() - base1.Mat()) / steps_per_side;
         
@@ -105,35 +119,179 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     }
 }
 
-#if defined(SRK_HAS_OPENCV)
-void DrawAxes(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_inverse_orient, const cv::Mat& camera_image_rgb)
+#if defined(SRK_HAS_PANGOLIN)
+/// Draw axes in the local coordinates.
+void DrawAxes(Scalar axis_seg_len)
 {
-    // show center of coordinates as red dot
-    std::vector<suriko::Point3> axes_pnts = {
-        suriko::Point3(0, 0, 0),
-        suriko::Point3(1, 0, 0),
-        suriko::Point3(0, 1, 0),
-        suriko::Point3(0, 0, 1)
+    auto ax = axis_seg_len;
+    glLineWidth(2);
+    glBegin(GL_LINES);
+    glColor3f(1, 0, 0);
+    glVertex3f(0, 0, 0);
+    glVertex3f(ax, 0, 0); // OX
+    glColor3f(0, 1, 0);
+    glVertex3f(0, 0, 0);
+    glVertex3f(0, ax, 0); // OY
+    glColor3f(0, 0, 1);
+    glVertex3f(0, 0, 0);
+    glVertex3f(0, 0, ax); // OZ
+    glEnd();
+}
+
+void DrawPhysicalCamera(const SE3Transform& cam_wfc)
+{
+    // transform to the camera frame
+    std::array<double, 4 * 4> opengl_mat_by_col{};
+    Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::ColMajor>> opengl_mat(opengl_mat_by_col.data());
+    opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R;
+    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T;
+    opengl_mat(3, 3) = 1;
+
+    glPushMatrix();
+    glMultMatrixd(opengl_mat_by_col.data());
+
+    constexpr Scalar ax = 0.4;
+    DrawAxes(ax);
+
+    // draw camera in the local coordinates
+    constexpr Scalar hw = ax / 3; // halfwidth
+    //constexpr std::array<std::array<double, 3>, 5> cam_skel = {
+    //    {0, 0, 0},
+    //    {hw, hw, ax}, // left top
+    //    {-hw, hw, ax }, // right top
+    //    {-hw, -hw, ax}, // right bot
+    //    {hw, -hw, ax}, // left bot
+    //};
+    
+    constexpr double cam_skel[5][3] = {
+        {0, 0, 0},
+        {hw, hw, ax}, // left top
+        {-hw, hw, ax }, // right top
+        {-hw, -hw, ax}, // right bot
+        {hw, -hw, ax}, // left bot
     };
-    std::vector<cv::Scalar> axes_colors = {
-        CV_RGB(255, 255, 255),
-        CV_RGB(255,   0,   0),
-        CV_RGB(0, 255,   0),
-        CV_RGB(0,   0, 255)
-    };
-    std::vector<cv::Point2i> axes_pnts2D(axes_pnts.size());
-    for (size_t i = 0; i < axes_pnts.size(); ++i)
+
+    glColor3f(1, 1, 1);
+
+    glLineWidth(1);
+    glBegin(GL_LINE_LOOP); // left top of the front plane of the camera
+    glVertex3dv(cam_skel[1]);
+    glVertex3dv(cam_skel[2]);
+    glVertex3dv(cam_skel[3]);
+    glVertex3dv(cam_skel[4]);
+    glEnd();
+
+    glBegin(GL_LINES); // edges from center to the front plane
+    glVertex3dv(cam_skel[0]);
+    glVertex3dv(cam_skel[1]);
+    glVertex3dv(cam_skel[0]);
+    glVertex3dv(cam_skel[2]);
+    glVertex3dv(cam_skel[0]);
+    glVertex3dv(cam_skel[3]);
+    glVertex3dv(cam_skel[0]);
+    glVertex3dv(cam_skel[4]);
+    glEnd();
+    glPopMatrix();
+}
+
+void DrawCameras(const std::vector<SE3Transform>& cam_orient_cfw, bool draw_camera_each_frame = false)
+{
+    Eigen::Matrix<Scalar, 3, 1> cam_pos_world_prev;
+    bool cam_pos_world_prev_inited = false;
+
+    for (const auto& cam_cfw : cam_orient_cfw)
     {
-        Eigen::Matrix<Scalar, 3, 1> p = ProjectPnt(K, cam_inverse_orient, axes_pnts[i]);
-        axes_pnts2D[i] = cv::Point2i(
-            static_cast<int>(p[0] / p[2]),
-            static_cast<int>(p[1] / p[2]));
+        const SE3Transform& cam_wfc = SE3Inv(cam_cfw);
+
+        // get position of the camera in the world: cam_to_world*(0,0,0,1)=cam_pos
+        const Eigen::Matrix<Scalar, 3, 1>& cam_pos_world = cam_wfc.T;
+
+        if (cam_pos_world_prev_inited)
+        {
+            glBegin(GL_LINES);
+            glColor3f(1, 1, 1);
+            glVertex3d(cam_pos_world_prev[0], cam_pos_world_prev[1], cam_pos_world_prev[2]);
+            glVertex3d(cam_pos_world[0], cam_pos_world[1], cam_pos_world[2]);
+            glEnd();
+        }
+
+        glBegin(GL_POINTS);
+        glVertex3d(cam_pos_world[0], cam_pos_world[1], cam_pos_world[2]);
+        glEnd();
+
+        if (draw_camera_each_frame)
+            DrawPhysicalCamera(cam_wfc);
+
+        cam_pos_world_prev = cam_pos_world;
+        cam_pos_world_prev_inited = true;
     }
-    for (size_t i = 1; i < axes_pnts.size(); ++i)
+}
+
+void DrawMap(const FragmentMap& fragment_map)
+{
+    glColor3f(0.7, 0.7, 0.7);
+    glBegin(GL_POINTS);
+    for (const SalientPointFragment& point : fragment_map.SalientPoints())
     {
-        cv::line(camera_image_rgb, axes_pnts2D[0], axes_pnts2D[i], axes_colors[i]); // OX, OZ, OZ segments
-        //cv::circle(camera_image_rgb, axes_pnts2D[i], 3, axes_colors[i]);
+        if (!point.Coord.has_value()) continue;
+        const suriko::Point3& p = point.Coord.value();
+        glVertex3d(p.Mat()[0], p.Mat()[1], p.Mat()[2]);
     }
+    glEnd();
+}
+
+void DrawScene(const std::vector<SE3Transform>& cam_orient_cfw, const FragmentMap& fragment_map)
+{
+    DrawAxes(0.5);
+
+    DrawMap(fragment_map);
+
+    DrawCameras(cam_orient_cfw, true);
+}
+
+struct UIThreadParams
+{
+    MultiViewIterativeFactorizer* mvf;
+};
+
+void SceneVisualizationThread(UIThreadParams ui_params)
+{
+    VLOG(4) << "SceneVisualizationThread is running";
+
+    constexpr float w = 640;
+    constexpr float h = 480;
+
+    pangolin::CreateWindowAndBind("3DReconstr", w, h);
+    glEnable(GL_DEPTH_TEST);
+
+    float center_x = w / 2;
+    float center_y = h / 2;
+
+    pangolin::OpenGlRenderState view_state_3d(
+        pangolin::ProjectionMatrix(w, h, 420, 420, center_x, center_y, 0.2, 100),
+        pangolin::ModelViewLookAt(30, -30, 30, 0, 0, 0, pangolin::AxisZ)
+    );
+
+    // Create Interactive View in window
+    pangolin::Handler3D handler(view_state_3d);
+    pangolin::View& display_cam = pangolin::CreateDisplay()
+        .SetBounds(0.0, 1.0, 0.0, 1.0, -w / h) // TODO: why negative aspect?
+        .SetHandler(&handler);
+
+    while (!pangolin::ShouldQuit())
+    {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        display_cam.Activate(view_state_3d);
+
+        std::shared_lock<std::shared_mutex> lock(ui_params.mvf->location_and_map_mutex_);
+        DrawScene(ui_params.mvf->cam_orient_cfw_, ui_params.mvf->map_);
+
+        pangolin::FinishFrame();
+
+        std::this_thread::sleep_for(100ms); // make ui thread more 'lightweight'
+    }
+
+    VLOG(4) << "SceneVisualizationThread is exiting";
 }
 #endif
 
@@ -157,6 +315,7 @@ public:
 
     void DetectAndMatchCorners(size_t frame_ind, CornerTrackRepository* track_rep) override
     {
+        // determine current camerra's orientation using the ground truth
         const SE3Transform& rt_cfw = gt_cam_orient_cfw_[frame_ind];
 
         // determine which salient points are visible
@@ -164,6 +323,7 @@ public:
         {
             const Point3& salient_point = fragment.Coord.value();
             Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K_, rt_cfw, salient_point);
+            SRK_ASSERT(!IsClose(0, pnt_homog[2], 10e-5)) << "points in infinity are unsupported";
 
             auto pnt_pix = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
 
@@ -180,6 +340,7 @@ public:
             CornerTrack* corner_track = nullptr;
             if (fragment.SyntheticVirtualPointId.has_value())
             {
+                // determine points correspondance using synthatic ids
                 track_rep->GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
             }
             if (corner_track == nullptr)
@@ -212,10 +373,12 @@ DEFINE_double(world_cell_size_y, 0.5, "cell size y");
 DEFINE_double(world_cell_size_z, 0.5, "cell size z");
 DEFINE_double(viewer_offset_down, 10, "viewer's offset from viewed point in the down direction");
 DEFINE_double(viewer_ascendZ, 10, "viewer's offset in the up direction");
-DEFINE_int32(viewer_steps_per_side, 10, "number of viewer's steps at each side of the rectangle");
-DEFINE_double(noise_R_hi, 0.005, "Upper bound of noise uniform distribution for R, 0=no noise (eg: 0.01)");
-DEFINE_double(noise_x3D_hi, 0.005, "Upper bound of noise uniform distribution for salient points, 0=no noise (eg: 0.1)");
+DEFINE_int32(viewer_steps_per_side_x, 10, "number of viewer's steps at each side of the rectangle");
+DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
+DEFINE_double(noise_R_std, 0.005, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
+DEFINE_double(noise_x3D_std, 0.005, "Standard deviation of noise distribution for salient points, 0=no noise (eg: 0.1)");
 DEFINE_int32(wait_key_delay, 1, "parameter to cv::waitKey; 0 means 'wait forever'");
+DEFINE_bool(wait_key_after_each_frame, true, "true to wait for keypress after each iteration");
 DEFINE_bool(debug_skim_over, true, "overview the synthetic world without reconstruction");
 DEFINE_bool(fake_mapping, false, "");
 DEFINE_bool(fake_localization, false, "");
@@ -225,12 +388,12 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
     gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
     google::InitGoogleLogging(argv[0]);
 
-    LOG(INFO) << "noise_x3D_hi=" << FLAGS_noise_x3D_hi;
-    LOG(INFO) << "noise_R_hi=" << FLAGS_noise_R_hi;
+    LOG(INFO) << "noise_x3D_std=" << FLAGS_noise_x3D_std;
+    LOG(INFO) << "noise_R_std=" << FLAGS_noise_R_std;
 
     //
-    bool corrupt_salient_points_with_noise = FLAGS_noise_x3D_hi > 0;
-    bool corrupt_cam_orient_with_noise = FLAGS_noise_R_hi > 0;
+    bool corrupt_salient_points_with_noise = FLAGS_noise_x3D_std > 0;
+    bool corrupt_cam_orient_with_noise = FLAGS_noise_R_std > 0;
     std::vector<SE3Transform> gt_cam_orient_cfw; // ground truth camera orientation transforming into camera from world
     std::vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mat_per_frame;
 
@@ -249,7 +412,9 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
     std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
     gen.seed(1234);
 
-    std::normal_distribution<Scalar> noise_dis(0, 0.15/3);
+    std::unique_ptr<std::normal_distribution<Scalar>> x3D_noise_dis;
+    if (corrupt_salient_points_with_noise)
+        x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0, FLAGS_noise_x3D_std);
 
     size_t next_virtual_point_id = 6000'000 + 1;
     FragmentMap entire_map;
@@ -257,23 +422,25 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
     Scalar xmid = (wb.XMin + wb.XMax) / 2;
     Scalar xlen = wb.XMax - wb.XMin;
     Scalar zlen = wb.ZMax - wb.ZMin;
-    for (Scalar x = wb.XMin; x < wb.XMax + inclusive_gap; x += cell_size[0])
+    for (Scalar grid_x = wb.XMin; grid_x < wb.XMax + inclusive_gap; grid_x += cell_size[0])
     {
-        for (Scalar y = wb.YMin; y < wb.YMax + inclusive_gap; y += cell_size[1])
+        for (Scalar grid_y = wb.YMin; grid_y < wb.YMax + inclusive_gap; grid_y += cell_size[1])
         {
-            Scalar x_act = x;
-            Scalar y_act = y;
+            Scalar x = grid_x;
+            Scalar y = grid_y;
+            
+            Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
+            Scalar z = wb.ZMin + z_perc * zlen;
 
             // jit x and y so the points can be distinguished during movement
             if (corrupt_salient_points_with_noise)
             {
-                x_act += noise_dis(gen);
-                y_act += noise_dis(gen);
+                x += (*x3D_noise_dis)(gen);
+                y += (*x3D_noise_dis)(gen);
+                z += (*x3D_noise_dis)(gen);
             }
 
-            Scalar val_z = std::cos((x_act - xmid) / xlen * M_PI);
-            Scalar z = wb.ZMin + val_z * zlen;
-            SalientPointFragment& frag = entire_map.AddSalientPoint(Point3(x_act, y_act, z));
+            SalientPointFragment& frag = entire_map.AddSalientPoint(Point3(x, y, z));
             frag.SyntheticVirtualPointId = next_virtual_point_id++;
         }
     }
@@ -289,7 +456,29 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
         0, 0, 1;
     Eigen::Matrix<Scalar, 3, 3> K_inv = K.inverse();
 
-    GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side, FLAGS_viewer_offset_down, FLAGS_viewer_ascendZ, &gt_cam_orient_cfw);
+    GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y, FLAGS_viewer_offset_down, FLAGS_viewer_ascendZ, &gt_cam_orient_cfw);
+
+    if (corrupt_cam_orient_with_noise)
+    {
+        std::normal_distribution<Scalar> cam_orient_noise_dis(0, FLAGS_noise_R_std);
+        for (SE3Transform& cam_orient : gt_cam_orient_cfw)
+        {
+            Eigen::Matrix<Scalar, 3, 1> dir;
+            if (AxisAngleFromRotMat(cam_orient.R, &dir))
+            {
+                Scalar d1 = cam_orient_noise_dis(gen);
+                Scalar d2 = cam_orient_noise_dis(gen);
+                Scalar d3 = cam_orient_noise_dis(gen);
+                dir[0] += d1;
+                dir[1] += d2;
+                dir[2] += d3;
+
+                Eigen::Matrix<Scalar, 3, 3> newR;
+                if (RotMatFromAxisAngle(dir, &newR))
+                    cam_orient.R = newR;
+            }
+        }
+    }
 
     size_t frames_count = gt_cam_orient_cfw.size();
     LOG(INFO) << "frames_count=" << frames_count;
@@ -344,6 +533,12 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
 #if defined(SRK_HAS_OPENCV)
     cv::Mat camera_image_rgb = cv::Mat::zeros((int)img_size[1], (int)img_size[0], CV_8UC3);
 #endif
+#if defined(SRK_HAS_PANGOLIN)
+    UIThreadParams ui_params {};
+    ui_params.mvf = &mvf;
+    std::thread ui_thread(SceneVisualizationThread, ui_params);
+#endif
+
     constexpr size_t well_known_frames_count = 2;
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
@@ -354,7 +549,12 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
 
 #if defined(SRK_HAS_OPENCV)
         camera_image_rgb.setTo(0);
-        DrawAxes(K, rt_cfw, camera_image_rgb);
+        auto project_fun = [&K, &rt_cfw](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+        {
+            return ProjectPnt(K, rt_cfw, sal_pnt);
+        };
+        constexpr Scalar f0 = 1;
+        Draw2DProjectedAxes(f0, project_fun, &camera_image_rgb);
 #endif
         size_t new_points_per_frame_count = 0;
         size_t new_track_per_frame_count = 0;
@@ -448,19 +648,16 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
         }
 
         VLOG(4) << "f=" << frame_ind
-            << " new_points=" << new_points_per_frame_count << " of total=" << mvf.map_.SalientPointsCount()
-            << " new_tracks=" << new_track_per_frame_count << " of total=" << mvf.track_rep_.CornerTracks.size()
+            << " points_count=" << mvf.map_.SalientPointsCount()
+            << " tracks_count=" << mvf.track_rep_.CornerTracks.size()
             << " ncd=" << new_points.size() << "-" << common_points.size() << "-" << del_points.size();
-
-        //std::ostringstream ss;
-        //ss << "new points (" << new_points.size() << "): ";
-        //for (size_t pnt_id : new_points)
-        //    ss << pnt_id << " ";
-        //VLOG(4) << ss.str();
 
 #if defined(SRK_HAS_OPENCV)
         cv::imshow("front-camera", camera_image_rgb);
-        cv::waitKey(FLAGS_wait_key_delay); // 0=wait forever
+        if (FLAGS_wait_key_after_each_frame)
+            cv::waitKey(FLAGS_wait_key_delay); // 0=wait forever
+        else
+            cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
 #endif
         if (frame_ind < well_known_frames_count)
             mvf.LogReprojError();
@@ -468,9 +665,12 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
         // process the remaining frames
         if (!FLAGS_debug_skim_over && frame_ind >= well_known_frames_count)
         {
-            mvf.IntegrateNewFrameCorners(rt_cfw);
+            bool op = mvf.IntegrateNewFrameCorners(rt_cfw);
         }
     }
+#if defined(SRK_HAS_PANGOLIN)
+    ui_thread.join();
+#endif
 
 #if defined(SRK_HAS_OPENCV)
     cv::waitKey(0); // 0=wait forever

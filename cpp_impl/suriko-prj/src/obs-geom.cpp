@@ -183,12 +183,14 @@ CornerData& CornerTrack::AddCorner(size_t frame_ind)
             << " StartFrameInd=" << StartFrameInd << " frame_ind=" << frame_ind;
     }
     ptrdiff_t local_ind = frame_ind - (ptrdiff_t)StartFrameInd;
-    if (local_ind >= CoordPerFramePixels.size())
-    {
-        CornerData corner_data;
-        CoordPerFramePixels.push_back(std::optional<CornerData>(corner_data));
-        CheckConsistent();
-    }
+
+    // the salient point may not be registered in some frames and the gaps appear
+    CoordPerFramePixels.resize(local_ind + 1);
+
+    CornerData corner_data {};
+    CoordPerFramePixels.back() = std::optional<CornerData>(corner_data);
+
+    CheckConsistent();
     return CoordPerFramePixels.back().value();
 }
 
@@ -199,7 +201,11 @@ std::optional<suriko::Point2> CornerTrack::GetCorner(size_t frame_ind) const
 
     if (local_ind < 0 || (size_t)local_ind >= CoordPerFramePixels.size())
         return std::optional<suriko::Point2>();
-    return CoordPerFramePixels[local_ind].value().PixelCoord;
+
+    std::optional<CornerData> corner_data = CoordPerFramePixels[local_ind];
+    if (!corner_data.has_value())
+        return std::optional<suriko::Point2>();
+    return corner_data.value().PixelCoord;
 }
 
 std::optional<CornerData> CornerTrack::GetCornerData(size_t frame_ind) const

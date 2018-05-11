@@ -20,6 +20,7 @@ message(STATUS "CMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "CMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}")
 
 option(WITH_OPENCV "Enables visualization of images" OFF)
+option(WITH_PANGOLIN "Enables visualization of 3D scene" OFF)
 
 # C++14 is required (because of std::make_unique)
 # C++17 is required (because of [[noreturn]])
@@ -117,6 +118,13 @@ if (WITH_OPENCV)
     message(STATUS "OpenCV_INCLUDE_DIRS=${OpenCV_INCLUDE_DIRS}")
     message(STATUS "OpenCV_LIBS=${OpenCV_LIBS}")
     add_definitions(-DSRK_HAS_OPENCV)
+endif()
+
+if (WITH_PANGOLIN)
+    find_package(Pangolin REQUIRED)
+    message(STATUS "Pangolin_INCLUDE_DIRS=${Pangolin_INCLUDE_DIRS}")
+    message(STATUS "Pangolin_LIBRARIES=${Pangolin_LIBRARIES}")
+    add_definitions(-DSRK_HAS_PANGOLIN)
 endif()
 
 add_subdirectory(suriko-prj)

@@ -2,6 +2,7 @@
 #include <set>
 #include <vector>
 #include <memory>
+#include <shared_mutex>
 #include <functional>
 #include "suriko/obs-geom.h"
 
@@ -16,11 +17,15 @@ public:
 
 class MultiViewIterativeFactorizer
 {
+    static constexpr Scalar kF0 = 1; // numerical stability factor to equalize image width, height and 1 (homogeneous component)
 public:
+    // shared
+    std::shared_mutex location_and_map_mutex_;
     FragmentMap map_;
     std::vector<SE3Transform> cam_orient_cfw_; // orientations of cameras, transforming into camera from world (cfw)
-    CornerTrackRepository track_rep_;
+public:
     std::unique_ptr<CornersMatcherBase> corners_matcher_;
+    CornerTrackRepository track_rep_;
 public:
     std::function<SE3Transform(size_t, size_t)> gt_cam_orient_f1f2_;
     std::function<SE3Transform(size_t)> gt_cam_orient_world_to_f_;
@@ -33,7 +38,7 @@ public:
 public:
     MultiViewIterativeFactorizer();
 
-    void IntegrateNewFrameCorners(const SE3Transform& gt_cam_orient_cfw);
+    bool IntegrateNewFrameCorners(const SE3Transform& gt_cam_orient_cfw);
 
     void LogReprojError() const;
 
@@ -63,10 +68,11 @@ private:
     size_t FindAnchorFrame(size_t targ_frame_ind, std::vector<size_t>* common_track_ids) const;
     size_t FramesCount() const;
 
-    static Scalar ReprojError(Scalar f0, 
+    static bool ReprojError(Scalar f0, 
         const FragmentMap& map,
         const std::vector<SE3Transform>& cam_orient_cfw,
         const CornerTrackRepository& track_rep,
-        const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat);
+        const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
+        Scalar* reproj_err);
 };
 }
