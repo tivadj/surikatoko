@@ -252,6 +252,22 @@ bool CornerTrackRepository::GetFirstPointTrackByFragmentSyntheticId(size_t salie
     return false;
 }
 
+size_t CornerTrackRepository::CornerTracksCount() const
+{
+    return CornerTracks.size();
+}
+
+size_t CornerTrackRepository::ReconstructedCornerTracksCount() const
+{
+    size_t result = 0;
+    for (const CornerTrack& track : CornerTracks)
+    {
+        if (track.SalientPointId.has_value())
+            result += 1;
+    }
+    return result;
+}
+
 suriko::CornerTrack& CornerTrackRepository::AddCornerTrackObj()
 {
     size_t new_track_id = CornerTracks.size();
@@ -271,6 +287,31 @@ void CornerTrackRepository::PopulatePointTrackIds(std::vector<size_t> *result)
 {
     for (size_t pnt_ind=0;pnt_ind<CornerTracks.size(); ++pnt_ind)
         result->push_back(pnt_ind);
+}
+
+bool IsIdentity(const Eigen::Matrix<Scalar, 3, 3>& M, Scalar rtol, Scalar atol, std::string* msg)
+{
+    typedef Eigen::Matrix<Scalar, 3, 3>::Index IndT;
+    for (IndT row = 0; row < M.rows(); ++row)
+    {
+        for (IndT col = 0; col < M.cols(); ++col)
+        {
+            Scalar expect_value = row == col ? 1 : 0;
+            Scalar cell = M(row, col);
+            if (!IsClose(expect_value, cell, rtol, atol))
+            {
+                if (msg != nullptr)
+                {
+                    std::stringstream ss;
+                    ss << "expected M(" <<row <<"," <<col <<") to be" << expect_value
+                        <<" but actual=" <<cell;
+                    *msg = ss.str();
+                }
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {

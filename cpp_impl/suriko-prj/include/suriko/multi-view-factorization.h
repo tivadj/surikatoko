@@ -5,6 +5,7 @@
 #include <shared_mutex>
 #include <functional>
 #include "suriko/obs-geom.h"
+#include "suriko/bundle-adj-kanatani.h"
 
 namespace suriko {
 class CornersMatcherBase
@@ -35,8 +36,10 @@ public:
     SE3Transform tmp_cam_new_from_anchor_;
     bool fake_localization_ = false; // true to get camera orientation from ground truth
     bool fake_mapping_ = false;  // true to get salient 3D points from ground truth
+private:
+    BundleAdjustmentKanatani bundle_adjuster_;
 public:
-    MultiViewIterativeFactorizer();
+    MultiViewIterativeFactorizer() = default;
 
     bool IntegrateNewFrameCorners(const SE3Transform& gt_cam_orient_cfw);
 

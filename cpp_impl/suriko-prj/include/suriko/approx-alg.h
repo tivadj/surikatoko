@@ -13,6 +13,27 @@ bool IsClose(F1 a, F2 b,
     return std::abs(a - b) <= (atol + rtol * std::abs(std::max<F>(a, b)));
 }
 
+/// Absolute/relative tolerance.
+template <typename F>
+struct AbsRelTol
+{
+    F ATol; // absolute tolerance
+    F RTol; // relative tolerance
+    AbsRelTol(F atol, F rtol) : ATol(atol), RTol(rtol) {}
+};
+
+template <typename F>
+AbsRelTol<F> AbsTol(F atol) { return AbsRelTol<F>(atol, 0); }
+
+template <typename F>
+AbsRelTol<F> RelTol(F rtol) { return AbsRelTol<F>(0, rtol); }
+
+template<typename F1, typename F2>
+bool IsClose(F1 a, F2 b, AbsRelTol<typename std::common_type<F1, F2>::type> tol)
+{
+    return IsClose(a, b, tol.RTol, tol.ATol);
+}
+
 template <typename F>
 constexpr auto Sqr(F x) -> F { return x*x; }
 

@@ -154,6 +154,9 @@ public:
 
     suriko::CornerTrack& AddCornerTrackObj();
 
+    size_t CornerTracksCount() const;
+    size_t ReconstructedCornerTracksCount() const;
+
     const suriko::CornerTrack& GetPointTrackById(size_t point_track_id) const;
           suriko::CornerTrack& GetPointTrackById(size_t point_track_id);
     
@@ -176,7 +179,12 @@ auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Sc
 auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool;
 
 /// Checks if Rt*R=I and det(R)=1.
+[[nodiscard]]
 bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg = nullptr);
+
+/// Checks if M=Identity.
+[[nodiscard]]
+bool IsIdentity(const Eigen::Matrix<Scalar, 3, 3>& M, Scalar rtol, Scalar atol, std::string* msg = nullptr);
 
 /// Logarithm of SO(3) : R[3x3]->(n, ang) where n = rotation vector, ang = angle in radians.
 [[nodiscard]]

@@ -1,6 +1,7 @@
 #pragma once
 #include <gsl/span>
 #include <Eigen/Dense>
+#include <glog/logging.h>
 #include "suriko/rt-config.h" // Scalar
 
 namespace suriko

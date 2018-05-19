@@ -1,4 +1,5 @@
 #include "suriko/multi-view-factorization.h"
+#include <glog/logging.h>
 #include "suriko/approx-alg.h"
 
 namespace suriko
@@ -12,11 +13,6 @@ void PopulateCornerTrackIds(const CornerTrackRepository& track_rep, size_t frame
         if (corner.has_value())
             track_ids->insert(corner_track.TrackId);
     }
-}
-
-MultiViewIterativeFactorizer::MultiViewIterativeFactorizer()
-{
-    corners_matcher_ = nullptr;
 }
 
 size_t MultiViewIterativeFactorizer::CountCommonPoints(size_t a_frame_ind, const std::set<size_t>& a_frame_track_ids, size_t b_frame_ind,
@@ -378,6 +374,24 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
     VLOG(4) << "f=" << new_frame_ind 
         << " reconstructed_salient_points_count=" << reconstructed_salient_points_count
         << " ReprojError=" << (op ? err : (Scalar)-1);
+    
+    // do bundle adjustment on diverged model
+    Scalar max_reproj_err = 1e-3;
+    if (op && err > max_reproj_err)
+    {
+        // bundle adjustment may modify all 3D points and camera orientations
+        std::lock_guard<std::shared_mutex> lock(location_and_map_mutex_);
+
+        LOG(INFO) << "start bundle adjustment...";
+
+        BundleAdjustmentKanataniTermCriteria term_crit;
+        term_crit.AllowedReprojErrRelativeChange(1e-3);
+        op = bundle_adjuster_.ComputeInplace(kF0, map_, cam_orient_cfw_, track_rep_, &K_, nullptr, term_crit);
+
+        LOG(INFO) << "bundle adjustment finished with result: " << op << " (" << bundle_adjuster_.OptimizationStatusString() << ")";
+
+        LogReprojError();
+    }
 
     return true;
 }

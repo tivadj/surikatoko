@@ -42,7 +42,7 @@ class SceneNormalizer
 
     // TODO: back conversion check can be moved to unit testing
     static suriko::Point3 NormalizeOrRevertPoint(const suriko::Point3& x3D,
-        const SE3Transform& inverse_orient_cam0, Scalar world_scale, NormalizeAction action, bool check_back_conv=true);
+        const SE3Transform& inverse_orient_cam0, Scalar world_scale, NormalizeAction action, bool check_back_conv=false);
 
     /// Modify structure so that it becomes 'normalized'.
     /// The structure is updated in-place, because a copy of salient points and orientations of a camera can be too expensive to make.
@@ -154,6 +154,8 @@ private:
 
     std::string optimization_stop_reason_;
 public:
+    BundleAdjustmentKanatani();
+
     static Scalar ReprojError(Scalar f0, const FragmentMap& map,
                             const std::vector<SE3Transform>& inverse_orient_cams,
                             const CornerTrackRepository& track_rep,
@@ -205,9 +207,9 @@ private:
         size_t frame_ind, const Eigen::Matrix<Scalar, 3, 3>& cam_intrinsics_mat,
         const SE3Transform& direct_orient_cam, size_t frame_var_ind,
         Scalar finite_diff_eps) const->Scalar;
-    //
-    [[nodiscard]]
-    bool ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
+
+    // This method may produce point's hessian which can't be inverted. In this case a client may ignore the corresponding salient 3D point.
+    void ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
         EigenDynMat* deriv_second_pointpoint,
         EigenDynMat* deriv_second_frameframe,
         EigenDynMat* deriv_second_pointframe,
@@ -244,5 +246,7 @@ private:
         const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps);
 
     void ApplyCorrections(const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& corrections_with_gaps);
+
+    const Eigen::Matrix<Scalar, 3, 3>* GetSharedOrIndividualIntrinsicCamMat(size_t frame_ind) const;
 };
 }

@@ -21,7 +21,7 @@ void OrthonormalizeGramSchmidtInplace(Eigen::Matrix<Scalar, 3, 3>* mat)
     {
         std::string msg;
         bool op = IsSpecialOrthogonal(*mat, &msg);
-        CHECK(op) << msg;
+        SRK_ASSERT(op) << msg;
     }
 }
 }

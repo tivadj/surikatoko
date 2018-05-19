@@ -40,14 +40,14 @@ void MarkUndeterminedCameraOrientationAxisAngle() {}
 /// Flags to enable interactive debugging of some pathes in code.
 enum class DebugPath
 {
-    // True to compare close derivatives of reprojection error with finite difference approximation.
-    // The computation of finite differences is slow and this value should be false in normal debug and release modes.
     ReprojErrorFirstDerivatives = 0,
     ReprojErrorDerivativesPointPoint = 1,
     ReprojErrorDerivativesFrameFrame = 2,
     ReprojErrorDerivativesPointFrame = 3,
     Last=4
 };
+// True to compare close derivatives of reprojection error with finite difference approximation.
+// The computation of finite differences is slow and this value should be false in normal debug and release modes.
 bool Enable(DebugPath var_ind)
 {
     static std::array<bool, (int)DebugPath::Last> debug_vars; // change it manually in debug-time
@@ -155,8 +155,8 @@ SE3Transform SceneNormalizer::NormalizeRT(const SE3Transform& camk_from_world, c
         auto back_rt = RevertRT(result, cam0_from_world, world_scale);
         Scalar diffR = (Rkw - back_rt.R).norm();
         Scalar diffT = (Tkw - back_rt.T).norm();
-        SRK_ASSERT(IsClose(0, diffR, 1e-3)) << "Error in normalization or reverting of R";
-        SRK_ASSERT(IsClose(0, diffT, 1e-3)) << "Error in normalization or reverting of T";
+        SRK_ASSERT(IsClose(0, diffR, AbsRelTol<Scalar>(1e-3, 1e-3))) << "Error in normalization or reverting of R, diffR=" << diffR;
+        SRK_ASSERT(IsClose(0, diffT, AbsRelTol<Scalar>(1e-3, 1e-3))) << "Error in normalization or reverting of T, diffT=" << diffT;
     }
     return result;
 }
@@ -193,7 +193,7 @@ suriko::Point3 SceneNormalizer::NormalizeOrRevertPoint(const suriko::Point3& x3D
     {
         auto back_pnt = NormalizeOrRevertPoint(result, inverse_orient_cam0, world_scale, Opposite(action), false);
         Scalar diff = (back_pnt.Mat() - x3D.Mat()).norm();
-        SRK_ASSERT(IsClose(0, diff, 1e-3)) << "Error in normalization or reverting";
+        SRK_ASSERT(IsClose(0, diff, AbsRelTol<Scalar>(1e-3, 1e-3))) << "Error in normalization or reverting, diff=" <<diff;
     }
     return result;
 }
@@ -241,7 +241,7 @@ bool SceneNormalizer::NormalizeWorldInplaceInternal()
     {
         std::string err_msg;
         bool is_norm = CheckWorldIsNormalized(*inverse_orient_cams_, normalized_t1y_dist_, unity_comp_ind_, &err_msg);
-        SRK_ASSERT(is_norm);
+        SRK_ASSERT(is_norm) << "internal_error=" << err_msg;
     }
     return true;
 }
@@ -252,12 +252,11 @@ void SceneNormalizer::RevertNormalization()
     // the initial (pre-normalization) state
 
     // update salient points
-    auto point_track_count = map_->SalientPointsCount();
-    for (size_t pnt_track_id = 0; pnt_track_id < point_track_count; ++pnt_track_id)
+    for (SalientPointFragment& sal_pnt : map_->SalientPoints())
     {
-        suriko::Point3 salient_point = map_->GetSalientPoint(pnt_track_id);
-        auto revertX = NormalizeOrRevertPoint(salient_point, prenorm_cam0_from_world, world_scale_, NormalizeAction::Revert);
-        map_->SetSalientPoint(pnt_track_id, revertX);
+        suriko::Point3 salient_point = sal_pnt.Coord.value();
+        suriko::Point3 revertX = NormalizeOrRevertPoint(salient_point, prenorm_cam0_from_world, world_scale_, NormalizeAction::Revert);
+        sal_pnt.Coord = revertX;
     }
 
     // update orientations of the camera
@@ -290,16 +289,17 @@ bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams
     // the first frame is the identity
     const auto& rt0 = inverse_orient_cams[0];
 
-    if (!rt0.R.isIdentity())
+    constexpr Scalar atol = 1e-3;
+
+    if (!suriko::IsIdentity(rt0.R, atol, atol, err_msg))
     {
         if (err_msg != nullptr) {
             std::stringstream buf;
-            buf << "R0=Identity but was\n" <<rt0.R;
+            buf << "R0=Identity but was\n" <<rt0.R <<"(" <<*err_msg <<")";
             *err_msg = buf.str();
         }
         return false;
     }
-    Scalar atol = 1e-3;
     const auto diffT = rt0.T - Eigen::Matrix<Scalar,3,1>::Zero();
     if (diffT.norm() >= atol)
     {
@@ -388,6 +388,18 @@ public:
     }
 };
 
+const Eigen::Matrix<Scalar, 3, 3>* GetSharedOrIndividualIntrinsicCamMat(
+    const Eigen::Matrix<Scalar, 3, 3>* shared_intrinsic_cam_mat,
+    const std::vector<Eigen::Matrix<Scalar, 3, 3>>* intrinsic_cam_mats,
+    std::optional<size_t> frame_ind)
+{
+    if (shared_intrinsic_cam_mat != nullptr)
+        return shared_intrinsic_cam_mat;
+    if (intrinsic_cam_mats != nullptr)
+        return &(*intrinsic_cam_mats)[frame_ind.value()];
+    return nullptr;
+}
+
 /// Internal routine to compute the bandle adjustment's reprojection error
 /// with ability to overlap variables for specific salient point and/or camera orientation.
 Scalar ReprojErrorWithOverlap(Scalar f0,
@@ -401,10 +413,10 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
     size_t* seen_points_count = nullptr)
 {
     CHECK(!IsClose(0, f0)) << "f0 != 0";
-    CHECK(intrinsic_cam_mats != nullptr);
+    CHECK(shared_intrinsic_cam_mat != nullptr ^ intrinsic_cam_mats != nullptr) << "Provide either shared K or separate K for each camera frame";
 
     size_t points_count = map.SalientPointsCount();
-    CHECK(points_count == track_rep.CornerTracks.size() && "Each 3D point must be tracked");
+    //CHECK(points_count == track_rep.CornerTracks.size() && "Each 3D point must be tracked");
 
     Scalar err_sum = 0;
     size_t seen_points_cnt = 0;
@@ -413,7 +425,8 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
         const SE3Transform* pInverse_orient_cam = &inverse_orient_cams[frame_ind];
-        const Eigen::Matrix<Scalar, 3, 3>* pK = &(*intrinsic_cam_mats)[frame_ind];
+        
+        const Eigen::Matrix<Scalar, 3, 3>* pK = GetSharedOrIndividualIntrinsicCamMat(shared_intrinsic_cam_mat, intrinsic_cam_mats, frame_ind);
 
         // try to patch
         if (frame_patch != nullptr && frame_patch->FrameInd() == frame_ind)
@@ -427,6 +440,10 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
 
         for (const CornerTrack& point_track : track_rep.CornerTracks)
         {
+            // there must be the corresponding salient point
+            if (!point_track.SalientPointId.has_value())
+                continue;
+
             std::optional<suriko::Point2> corner = point_track.GetCorner(frame_ind);
             if (!corner.has_value())
             {
@@ -466,6 +483,14 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
     if (seen_points_count != nullptr)
         *seen_points_count = seen_points_cnt;
     return err_sum;
+}
+
+BundleAdjustmentKanatani::BundleAdjustmentKanatani()
+{
+    if (kSurikoDebug)
+    {
+        normalized_var_indices_.fill(kNan);
+    }
 }
 
 //void BundleAdjustmentKanataniTermCriteria::AllowedReprojErrAbs(std::optional<Scalar> value)
@@ -621,6 +646,11 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
     this->shared_intrinsic_cam_mat_ = shared_intrinsic_cam_mat;
     this->intrinsic_cam_mats_ = intrinsic_cam_mats;
 
+    // check all salient points are tracked
+    size_t sal_pnts_count = map_->SalientPointsCount();
+    size_t reconstr_corner_tracks_count = track_rep_->ReconstructedCornerTracksCount();
+    SRK_ASSERT(reconstr_corner_tracks_count == sal_pnts_count) << "Every salient point must be tracked";
+
     //
     vars_count_per_frame_ = kIntrinsicVarsCount + kTVarsCount + kWVarsCount;
     SRK_ASSERT(vars_count_per_frame_ <= kMaxFrameVarsCount);
@@ -638,7 +668,7 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
     Scalar err_value_before_normalization = 0;
     Scalar err_value_after_normalization = 0;
     if (kSurikoDebug)
-        err_value_before_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+        err_value_before_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_);
 
     // An optimization problem (bundle adjustment) is indeterminant as is, so the boundary condition is introduced:
     // R0=Identity, T0=zeros(3), t2y=1
@@ -650,8 +680,11 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
 
     if (kSurikoDebug)
     {
-        err_value_after_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
-        SRK_ASSERT(IsClose(err_value_before_normalization, err_value_after_normalization)) << "Reprojection error must not change during normalization.";
+        Scalar rtol = 1.0e-5;
+        Scalar  atol = 1.0e-3;
+        err_value_after_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_);
+        SRK_ASSERT(IsClose(err_value_before_normalization, err_value_after_normalization, AbsRelTol<Scalar>(atol, rtol))) << "Reprojection error must not change during normalization, err before="
+            << err_value_before_normalization <<", after=" << err_value_after_normalization;
     }
 
     EnsureMemoryAllocated();
@@ -687,7 +720,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
     Scalar hessian_factor = 0.0001; // hessian's diagonal multiplier
 
     size_t seen_points_count = 0;
-    Scalar err_initial = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_, &seen_points_count);
+    Scalar err_initial = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &seen_points_count);
 
     VLOG(4) << "Seen points: " << seen_points_count;
 
@@ -720,9 +753,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
     while(true)
     {
         constexpr Scalar finite_diff_eps_debug = 1e-5;
-        bool derivs_found = ComputeCloseFormReprErrorDerivatives(&gradE_, &deriv_second_pointpoint_, &deriv_second_frameframe_, &deriv_second_pointframe_, finite_diff_eps_debug);
-        if (!derivs_found)
-            return false; // point's hessian can't be inverted
+        ComputeCloseFormReprErrorDerivatives(&gradE_, &deriv_second_pointpoint_, &deriv_second_frameframe_, &deriv_second_pointframe_, finite_diff_eps_debug);
 
         enum class TargFunDecreaseResult { Success, FailedHessianOverflow, FailedButConverged };
 
@@ -731,7 +762,9 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
         {
             // backup current state(world points and camera orientations)
             FragmentMap map_copy = *map_;
-            std::vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mats_copy = *intrinsic_cam_mats_;
+            std::optional<std::vector<Eigen::Matrix<Scalar, 3, 3>>> intrinsic_cam_mats_copy;
+            if (intrinsic_cam_mats_ != nullptr)
+                intrinsic_cam_mats_copy = *intrinsic_cam_mats_;
             std::vector<SE3Transform> inverse_orient_cam_copy = *inverse_orient_cams_;
 
             // loop to find a hessian factor which decreases the target optimization function
@@ -773,7 +806,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
 
                 ApplyCorrections(corrections_);
 
-                *err_new = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+                *err_new = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_);
                 VLOG(5) << "try_hessian: got reproj_err=" << *err_new << " nodim (or " 
                     << ReprojErrorPixPerPoint(*err_new, seen_points_count) << " pix/seenpoint) for hessian_factor=" << *hessian_factor;
                 
@@ -785,7 +818,8 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
                 // failed to decrease the function
                 // restore saved state before return
                 *map_ = map_copy;
-                *intrinsic_cam_mats_ = intrinsic_cam_mats_copy;
+                if (intrinsic_cam_mats_copy.has_value())
+                    *intrinsic_cam_mats_ = intrinsic_cam_mats_copy.value();
                 *inverse_orient_cams_ = inverse_orient_cam_copy;
 
                 if (err_new_prev.has_value() && err_thresh.has_value())
@@ -821,7 +855,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
         {
             if (VLOG_IS_ON(4))
             {
-                Scalar err = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, nullptr, intrinsic_cam_mats_);
+                Scalar err = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_);
                 VLOG(4) << "reproj_err=" << err << " nodim (or " << ReprojErrorPixPerPoint(err, seen_points_count) << " pix/seenpoint) hessian_factor=" << hessian_factor;
             }
 
@@ -1100,7 +1134,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffSecondPartialDerivPointFrame(
     return value;
 }
 
-bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
+void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<Scalar>* grad_error,
     EigenDynMat* deriv_second_pointpoint,
     EigenDynMat* deriv_second_frameframe,
     EigenDynMat* deriv_second_pointframe, Scalar finite_diff_eps)
@@ -1120,105 +1154,112 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
     // 2. The error derivatives are computed using the Pqr derivatives.
 
     // compute point derivatives
-    track_rep_->IteratePointsMarker();
-    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
     {
-        const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
-
-        const suriko::Point3& salient_point = map_->GetSalientPoint(point_track.SalientPointId.value());
-
-        size_t pnt_ind = point_track_id;
-        gsl::span<Scalar> grad_point = gsl::make_span(&(*grad_error)[pnt_ind * kPointVarsCount], kPointVarsCount);
-
-        for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
+        size_t pnt_ind = -1; // pre-decremented
+        track_rep_->IteratePointsMarker();
+        for (size_t point_track_id = 0; point_track_id < track_rep_->CornerTracksCount(); ++point_track_id)
         {
-            std::optional<suriko::Point2> corner_pix_opt = point_track.GetCorner(frame_ind);
-            if (!corner_pix_opt.has_value())
-            {
-                // Te salient point is not detected in current frame and hence doesn't influence the reprojection error.
+            const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
+            if (!point_track.SalientPointId.has_value())
                 continue;
-            }
             
-            const suriko::Point2& corner_pix = corner_pix_opt.value();
+            pnt_ind += 1; // only increment for corresponding reconstructed salient point
 
-            const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
-            const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
+            const suriko::Point3& salient_point = map_->GetSalientPoint(point_track.SalientPointId.value());
 
-            suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
-            Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
-            const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+            gsl::span<Scalar> grad_point = gsl::make_span(&(*grad_error)[pnt_ind * kPointVarsCount], kPointVarsCount);
 
-            Eigen::Matrix<Scalar, 3, 4> P;
-            P << K * inverse_orient_cam.R, K * inverse_orient_cam.T;
-
-            Eigen::Matrix<Scalar, kPointVarsCount, PqrCount> point_pqr_deriv;
-            ComputePointPqrDerivatives(P, &point_pqr_deriv);
-
-            // 1st derivative Point
-            for (size_t xyz_ind = 0; xyz_ind < kPointVarsCount; ++xyz_ind)
+            for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
             {
-                Scalar ax = FirstDerivFromPqrDerivative(f0_, pqr, corner_pix, point_pqr_deriv(xyz_ind, 0), point_pqr_deriv(xyz_ind, 1), point_pqr_deriv(xyz_ind, 2));
-                grad_point[xyz_ind] += ax;
-            }
-
-            // 2nd derivative Point - Point
-            for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
-            {
-                Scalar gradp_byvar1 = point_pqr_deriv(var1, kPCompInd);
-                Scalar gradq_byvar1 = point_pqr_deriv(var1, kQCompInd);
-                Scalar gradr_byvar1 = point_pqr_deriv(var1, kRCompInd);
-                for (size_t var2 = 0; var2 < kPointVarsCount; ++var2)
+                std::optional<suriko::Point2> corner_pix_opt = point_track.GetCorner(frame_ind);
+                if (!corner_pix_opt.has_value())
                 {
-                    Scalar gradp_byvar2 = point_pqr_deriv(var2, kPCompInd);
-                    Scalar gradq_byvar2 = point_pqr_deriv(var2, kQCompInd);
-                    Scalar gradr_byvar2 = point_pqr_deriv(var2, kRCompInd);
-                    Scalar ax = SecondDerivFromPqrDerivative(pqr, gradp_byvar1, gradq_byvar1, gradr_byvar1, gradp_byvar2, gradq_byvar2, gradr_byvar2);
-                    (*deriv_second_pointpoint)(pnt_ind * kPointVarsCount + var1, var2) += ax;
+                    // Te salient point is not detected in current frame and hence doesn't influence the reprojection error.
+                    continue;
                 }
-            }
-        }
 
-        // all frames where the current point visible are processed, and now derivative with respect to point are ready and can be checked
-        if (kSurikoDebug)
-        {
-            // check point hessian is invertible
-            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian = (*deriv_second_pointpoint).middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount);
+                const suriko::Point2& corner_pix = corner_pix_opt.value();
 
-            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv;
-            bool is_inverted = false;
-            Scalar det = 0;
-            point_hessian.computeInverseAndDetWithCheck(point_hessian_inv, det, is_inverted);
-            if (!is_inverted)
-            {
-                LOG(INFO) << "3x3 matrix of second derivatives of points is not invertible, point_track_id=" << point_track_id << " det=" << det << " mat=\n" << point_hessian;
-                return false;
-            }
+                const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
+                const Eigen::Matrix<Scalar, 3, 3>& K = *GetSharedOrIndividualIntrinsicCamMat(frame_ind);
 
-            if (Enable(DebugPath::ReprojErrorFirstDerivatives)) // slow, check if requested
-            {
+                suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
+                Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
+                const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+
+                Eigen::Matrix<Scalar, 3, 4> P;
+                P << K * inverse_orient_cam.R, K * inverse_orient_cam.T;
+
+                Eigen::Matrix<Scalar, kPointVarsCount, PqrCount> point_pqr_deriv;
+                ComputePointPqrDerivatives(P, &point_pqr_deriv);
+
                 // 1st derivative Point
-                for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
+                for (size_t xyz_ind = 0; xyz_ind < kPointVarsCount; ++xyz_ind)
                 {
-                    Scalar close_deriv = grad_point[var1];
-                    Scalar finite_diff_deriv = GetFiniteDiffFirstPartialDerivPoint(point_track_id, salient_point, var1, finite_diff_eps);
-                    if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
-                        VLOG(4) << "d1point[" << var1 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                    Scalar ax = FirstDerivFromPqrDerivative(f0_, pqr, corner_pix, point_pqr_deriv(xyz_ind, 0), point_pqr_deriv(xyz_ind, 1), point_pqr_deriv(xyz_ind, 2));
+                    grad_point[xyz_ind] += ax;
                 }
-            }
-            if (Enable(DebugPath::ReprojErrorDerivativesPointPoint)) // slow, check if requested
-            {
+
                 // 2nd derivative Point - Point
                 for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
+                {
+                    Scalar gradp_byvar1 = point_pqr_deriv(var1, kPCompInd);
+                    Scalar gradq_byvar1 = point_pqr_deriv(var1, kQCompInd);
+                    Scalar gradr_byvar1 = point_pqr_deriv(var1, kRCompInd);
                     for (size_t var2 = 0; var2 < kPointVarsCount; ++var2)
                     {
-                        Scalar close_deriv = (*deriv_second_pointpoint)(pnt_ind * kPointVarsCount + var1, var2);
-
-                        Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivPointPoint(point_track_id, salient_point, var1, var2, finite_diff_eps);
-                        if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
-                            VLOG(4) << "d2pointpoint[" << var1 << "," << var2 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                        Scalar gradp_byvar2 = point_pqr_deriv(var2, kPCompInd);
+                        Scalar gradq_byvar2 = point_pqr_deriv(var2, kQCompInd);
+                        Scalar gradr_byvar2 = point_pqr_deriv(var2, kRCompInd);
+                        Scalar ax = SecondDerivFromPqrDerivative(pqr, gradp_byvar1, gradq_byvar1, gradr_byvar1, gradp_byvar2, gradq_byvar2, gradr_byvar2);
+                        (*deriv_second_pointpoint)(pnt_ind * kPointVarsCount + var1, var2) += ax;
                     }
+                }
+            }
+
+            // all frames where the current point visible are processed, and now derivative with respect to point are ready and can be checked
+            if (kSurikoDebug)
+            {
+                // check point hessian is invertible (inverted point hessian is required to compute the point's correction)
+                Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian = (*deriv_second_pointpoint).middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount);
+
+                //Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv;
+                //bool is_inverted = false;
+                //Scalar det = 0;
+                //point_hessian.computeInverseAndDetWithCheck(point_hessian_inv, det, is_inverted);
+                //if (!is_inverted)
+                //{
+                //    LOG(INFO) << "3x3 matrix of second derivatives of points is not invertible, point_track_id=" << point_track_id << " det=" << det << " mat=\n" << point_hessian;
+                //    return false;
+                //}
+
+                if (Enable(DebugPath::ReprojErrorFirstDerivatives)) // slow, check if requested
+                {
+                    // 1st derivative Point
+                    for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
+                    {
+                        Scalar close_deriv = grad_point[var1];
+                        Scalar finite_diff_deriv = GetFiniteDiffFirstPartialDerivPoint(point_track_id, salient_point, var1, finite_diff_eps);
+                        if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
+                            VLOG(4) << "d1point[" << var1 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                    }
+                }
+                if (Enable(DebugPath::ReprojErrorDerivativesPointPoint)) // slow, check if requested
+                {
+                    // 2nd derivative Point - Point
+                    for (size_t var1 = 0; var1 < kPointVarsCount; ++var1)
+                        for (size_t var2 = 0; var2 < kPointVarsCount; ++var2)
+                        {
+                            Scalar close_deriv = (*deriv_second_pointpoint)(pnt_ind * kPointVarsCount + var1, var2);
+
+                            Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivPointPoint(point_track_id, salient_point, var1, var2, finite_diff_eps);
+                            if (!IsClose(finite_diff_deriv, close_deriv, rough_rtol, 0))
+                                VLOG(4) << "d2pointpoint[" << var1 << "," << var2 << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
+                        }
+                }
             }
         }
+        SRK_ASSERT(pnt_ind + 1 == points_count);
     }
 
     // dT
@@ -1226,15 +1267,21 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
         const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
-        const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
+        const Eigen::Matrix<Scalar, 3, 3>& K = *GetSharedOrIndividualIntrinsicCamMat(frame_ind);
 
         size_t grad_cur_frame_offset = grad_frames_section_offset + frame_ind * vars_count_per_frame_;
         gsl::span<Scalar> grad_frame = gsl::make_span(&(*grad_error)[grad_cur_frame_offset], vars_count_per_frame_);
 
+        size_t pnt_ind = -1; // pre-decremented
         track_rep_->IteratePointsMarker();
-        for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+        for (size_t point_track_id = 0; point_track_id < track_rep_->CornerTracksCount(); ++point_track_id)
         {
             const suriko::CornerTrack& point_track = track_rep_->GetPointTrackById(point_track_id);
+            if (!point_track.SalientPointId.has_value())
+                continue;
+
+            pnt_ind += 1; // only increment for corresponding reconstructed salient point
+
             std::optional<suriko::Point2> corner_pix_opt = point_track.GetCorner(frame_ind);
             if (!corner_pix_opt.has_value())
             {
@@ -1303,11 +1350,11 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                     Scalar gradr_by_var2 = frame_pqr_deriv(frame_var_ind, kRCompInd);
 
                     Scalar s = SecondDerivFromPqrDerivative(pqr, gradp_by_var1, gradq_by_var1, gradr_by_var1, gradp_by_var2, gradq_by_var2, gradr_by_var2);
-                    size_t pnt_ind = point_track_id;
                     (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var_ind, frame_ind * vars_count_per_frame_ + frame_var_ind) += s;
                 }
             }
         }
+        SRK_ASSERT(pnt_ind + 1 == points_count);
 
         // all points in the current frame are processed, and now derivative with respect to frame are ready and can be checked
         if (kSurikoDebug)
@@ -1367,18 +1414,24 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
         {
             const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
             SE3Transform direct_orient_cam = SE3Inv(inverse_orient_cam);
-            const Eigen::Matrix<Scalar, 3, 3>& K = (*intrinsic_cam_mats_)[frame_ind];
+            const Eigen::Matrix<Scalar, 3, 3>& K = *GetSharedOrIndividualIntrinsicCamMat(frame_ind);
 
+            size_t pnt_ind = -1; // pre-decremented
             track_rep_->IteratePointsMarker();
-            for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+            for (size_t point_track_id = 0; point_track_id < track_rep_->CornerTracksCount(); ++point_track_id)
             {
+                const CornerTrack& corner_track = track_rep_->GetPointTrackById(point_track_id);
+                if (!corner_track.SalientPointId.has_value())
+                    continue;
+
+                pnt_ind += 1; // only increment for corresponding reconstructed salient point
+
                 const suriko::Point3& salient_point = map_->GetSalientPoint(point_track_id);
 
                 // 2nd derivative with respect to Point - Frame variables
                 for (size_t point_var = 0; point_var < kPointVarsCount; ++point_var)
                     for (size_t frame_var = 0; frame_var < vars_count_per_frame_; ++frame_var)
                     {
-                        size_t pnt_ind = point_track_id;
                         Scalar close_deriv = (*deriv_second_pointframe)(pnt_ind * kPointVarsCount + point_var, frame_ind * vars_count_per_frame_ + frame_var);
 
                         Scalar finite_diff_deriv = GetFiniteDiffSecondPartialDerivPointFrame(point_track_id, salient_point, point_var, frame_ind, K, direct_orient_cam, frame_var, finite_diff_eps);
@@ -1386,9 +1439,9 @@ bool BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                             VLOG(4) << "d2frameframe[" << point_var << "," << frame_var << "] mismatch finitediff:" << finite_diff_deriv << " close:" << close_deriv;
                     }
             }
+            SRK_ASSERT(pnt_ind + 1 == points_count);
         }
     }
-    return true;
 }
 
 void BundleAdjustmentKanatani::ComputePointPqrDerivatives(const Eigen::Matrix<Scalar,3,4>& P, Eigen::Matrix<Scalar, kPointVarsCount, PqrCount>* point_pqr_deriv) const
@@ -1504,10 +1557,16 @@ void BundleAdjustmentKanatani::FillHessian(const EigenDynMat& deriv_second_point
 
     hessian->fill(0);
 
+    size_t pnt_ind = -1; // pre-decremented
     track_rep_->IteratePointsMarker();
-    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+    for (size_t point_track_id = 0; point_track_id < track_rep_->CornerTracksCount(); ++point_track_id)
     {
-        size_t pnt_ind = point_track_id;
+        const CornerTrack& corner_track = track_rep_->GetPointTrackById(point_track_id);
+        if (!corner_track.SalientPointId.has_value())
+            continue;
+
+        pnt_ind += 1; // only increment for corresponding reconstructed salient point
+
         size_t vert_offset = pnt_ind * kPointVarsCount;
         
         // [3x3] point-point matrices on the diagonal
@@ -1517,6 +1576,7 @@ void BundleAdjustmentKanatani::FillHessian(const EigenDynMat& deriv_second_point
         hessian->block(vert_offset, points_count * kPointVarsCount, kPointVarsCount, frames_count * vars_count_per_frame_) = point_frame;
         hessian->block(points_count * kPointVarsCount, vert_offset, frames_count * vars_count_per_frame_, kPointVarsCount) = point_frame.transpose();
     }
+    SRK_ASSERT(pnt_ind + 1 == points_count);
 
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
@@ -1707,7 +1767,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar
 
 bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const std::vector<Scalar>& grad_error, const EigenDynMat& deriv_second_pointpoint,
     const EigenDynMat& deriv_second_frameframe,
-    const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor, 
+    const EigenDynMat& deriv_second_pointframe, Scalar hessian_factor,
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* corrections_with_gaps)
 {
     size_t points_count = map_->SalientPointsCount();
@@ -1737,7 +1797,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
                 // skip (T1x or) T1y row and column
                 EigenDynMat block = ax;
 
-                std::array<size_t, 1> remove_rows = { kIntrinsicVarsCount+unity_t1_comp_ind_ };
+                std::array<size_t, 1> remove_rows = { kIntrinsicVarsCount + unity_t1_comp_ind_ };
                 RemoveRowsAndColsInplace(remove_rows, remove_rows, &block);
 
                 block_height = (size_t)block.rows();
@@ -1759,10 +1819,10 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         }
     };
 
-    auto get_scaled_point_hessian = [&deriv_second_pointpoint](size_t pnt_ind, Scalar hessian_factor,  Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount>* point_hessian) -> void
+    auto get_scaled_point_hessian = [&deriv_second_pointpoint](size_t pnt_ind, Scalar hessian_factor, Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount>* point_hessian) -> void
     {
         *point_hessian = deriv_second_pointpoint.middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount); // copy
-        
+
         // scale diagonal elements
         for (size_t i = 0; i < kPointVarsCount; ++i)
             (*point_hessian)(i, i) *= 1 + hessian_factor;
@@ -1770,7 +1830,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         SRK_ASSERT(point_hessian->allFinite()) << "Possibly hessian factor is too big c=" << hessian_factor;
     };
 
-    auto get_normalized_point_frame = [this,&deriv_second_pointframe](size_t pnt_ind, EigenDynMat* mat) -> void
+    auto get_normalized_point_frame = [this, &deriv_second_pointframe](size_t pnt_ind, EigenDynMat* mat) -> void
     {
         // make a copy because normalized columns have to be removed
         *mat = deriv_second_pointframe.middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount); // 3x9*frames_count
@@ -1792,27 +1852,43 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
     decomp_lin_sys_left_side.fill(0);
     decomp_lin_sys_right_side.fill(0);
 
-    track_rep_->IteratePointsMarker();
-    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
     {
-        size_t pnt_ind = point_track_id;
+        size_t pnt_ind = -1; // pre-decremented
+        track_rep_->IteratePointsMarker();
+        for (size_t point_track_id = 0; point_track_id < track_rep_->CornerTracksCount(); ++point_track_id)
+        {
+            const CornerTrack& corner_track = track_rep_->GetPointTrackById(point_track_id);
+            if (!corner_track.SalientPointId.has_value())
+                continue;
 
-        EigenDynMat point_frame;
-        get_normalized_point_frame(pnt_ind, &point_frame);
+            pnt_ind += 1; // only increment for corresponding reconstructed salient point
 
-        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian;
-        get_scaled_point_hessian(pnt_ind, hessian_factor, &point_hessian);
-        
-        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv = point_hessian.inverse();
+            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian;
+            get_scaled_point_hessian(pnt_ind, hessian_factor, &point_hessian);
 
-        // left side
-        EigenDynMat ax1 = point_frame.transpose() * point_hessian_inv * point_frame;
-        decomp_lin_sys_left_side += ax1;
+            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv;
+            bool is_inverted = false;
+            Scalar det = 0;
+            point_hessian.computeInverseAndDetWithCheck(point_hessian_inv, det, is_inverted);
+            if (!is_inverted)
+            {
+                // non-invertable point hessian means that the point can't be corrected
+                continue;
+            }
 
-        // right side
-        Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
-        EigenDynMat ax2 = point_frame.transpose() * point_hessian_inv * gradeE_point;
-        decomp_lin_sys_right_side += ax2;
+            EigenDynMat point_frame;
+            get_normalized_point_frame(pnt_ind, &point_frame);
+
+            // left side
+            EigenDynMat ax1 = point_frame.transpose() * point_hessian_inv * point_frame;
+            decomp_lin_sys_left_side += ax1;
+
+            // right side
+            Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
+            EigenDynMat ax2 = point_frame.transpose() * point_hessian_inv * gradeE_point;
+            decomp_lin_sys_right_side += ax2;
+        }
+        SRK_ASSERT(pnt_ind + 1 == points_count);
     }
 
     // G-sum(F.E.F)
@@ -1835,25 +1911,46 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> normalized_corrections;
     normalized_corrections.resize(NormalizedVarsCount(), 1);
 
-    track_rep_->IteratePointsMarker();
-    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
     {
-        size_t pnt_ind = point_track_id;
-        
-        EigenDynMat point_frame;
-        get_normalized_point_frame(pnt_ind, &point_frame);
+        size_t pnt_ind = -1; // pre-decremented
+        track_rep_->IteratePointsMarker();
+        for (size_t point_track_id = 0; point_track_id < track_rep_->CornerTracksCount(); ++point_track_id)
+        {
+            const CornerTrack& corner_track = track_rep_->GetPointTrackById(point_track_id);
+            if (!corner_track.SalientPointId.has_value())
+                continue;
 
-        Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
+            pnt_ind += 1; // only increment for corresponding reconstructed salient point
 
-        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian;
-        get_scaled_point_hessian(pnt_ind, hessian_factor, &point_hessian);
+            EigenDynMat point_frame;
+            get_normalized_point_frame(pnt_ind, &point_frame);
 
-        Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv = point_hessian.inverse();
+            Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
 
-        Eigen::Matrix<Scalar, kPointVarsCount, 1> corrects_one_point = - point_hessian_inv * (point_frame * corrections_frame + gradeE_point);
-        if (!corrects_one_point.allFinite())
-            return false;
-        normalized_corrections.middleRows<kPointVarsCount>(pnt_ind*kPointVarsCount) = corrects_one_point;
+            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian;
+            get_scaled_point_hessian(pnt_ind, hessian_factor, &point_hessian);
+
+            Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian_inv;
+            bool is_inverted = false;
+            Scalar det = 0;
+            point_hessian.computeInverseAndDetWithCheck(point_hessian_inv, det, is_inverted);
+
+            Eigen::Matrix<Scalar, kPointVarsCount, 1> corrects_one_point;
+            if (!is_inverted)
+            {
+                // non-invertable point hessian means that the point can't be corrected
+                corrects_one_point.fill(0);
+            }
+            else
+            {
+                corrects_one_point = -point_hessian_inv * (point_frame * corrections_frame + gradeE_point);
+            }
+
+            if (!corrects_one_point.allFinite())
+                return false;
+            normalized_corrections.middleRows<kPointVarsCount>(pnt_ind*kPointVarsCount) = corrects_one_point;
+        }
+        SRK_ASSERT(pnt_ind + 1 == points_count);
     }
 
     normalized_corrections.middleRows(points_count * kPointVarsCount, corrections_frame.rows()) = corrections_frame;
@@ -1897,16 +1994,22 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
     size_t frames_count = inverse_orient_cams_->size();
 
     track_rep_->IteratePointsMarker();
-    for (size_t point_track_id = 0; point_track_id < points_count; ++point_track_id)
+    size_t pnt_ind = -1; // pre-decremented
+    for (size_t point_track_id = 0; point_track_id < track_rep_->CornerTracksCount(); ++point_track_id)
     {
-        size_t pnt_ind = point_track_id;
+        const CornerTrack& corner_track = track_rep_->GetPointTrackById(point_track_id);
+        if (!corner_track.SalientPointId.has_value())
+            continue;
+
+        pnt_ind += 1; // only increment for corresponding reconstructed salient point
+
         Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> delta_point(&corrections_with_gaps[pnt_ind * kPointVarsCount]);
 
-        const CornerTrack& corner_track = track_rep_->GetPointTrackById(point_track_id);
         suriko::Point3& salient_point = map_->GetSalientPoint(corner_track.SalientPointId.value());
         if (kDebugCorrectSalientPoints)
             salient_point.Mat() += delta_point;
     }
+    SRK_ASSERT(pnt_ind + 1 == points_count);
 
     MarkOptVarsOrderDependency();
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
@@ -1915,7 +2018,7 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
 
         // camera intrinsics
         gsl::span<const Scalar> delta_cam_intrinsics = gsl::make_span(&corrections_with_gaps[cur_offset], kIntrinsicVarsCount);
-        Eigen::Matrix<Scalar, 3, 3> K = (*intrinsic_cam_mats_)[frame_ind];
+        Eigen::Matrix<Scalar, 3, 3> K = *GetSharedOrIndividualIntrinsicCamMat(frame_ind); // copy
         if (kDebugCorrectCamIntrinsics)
         {
             K(0, 0) += delta_cam_intrinsics[0]; // fx
@@ -1978,5 +2081,10 @@ size_t BundleAdjustmentKanatani::NormalizedVarsCount() const
 const std::string& BundleAdjustmentKanatani::OptimizationStatusString() const
 {
     return optimization_stop_reason_;
+}
+
+const Eigen::Matrix<Scalar, 3, 3>* BundleAdjustmentKanatani::GetSharedOrIndividualIntrinsicCamMat(size_t frame_ind) const
+{
+    return suriko::GetSharedOrIndividualIntrinsicCamMat(shared_intrinsic_cam_mat_, intrinsic_cam_mats_, frame_ind);;
 }
 }

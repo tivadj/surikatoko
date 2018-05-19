@@ -378,7 +378,7 @@ DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side
 DEFINE_double(noise_R_std, 0.005, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
 DEFINE_double(noise_x3D_std, 0.005, "Standard deviation of noise distribution for salient points, 0=no noise (eg: 0.1)");
 DEFINE_int32(wait_key_delay, 1, "parameter to cv::waitKey; 0 means 'wait forever'");
-DEFINE_bool(wait_key_after_each_frame, true, "true to wait for keypress after each iteration");
+DEFINE_bool(wait_after_each_frame, true, "true to wait for keypress after each iteration");
 DEFINE_bool(debug_skim_over, true, "overview the synthetic world without reconstruction");
 DEFINE_bool(fake_mapping, false, "");
 DEFINE_bool(fake_localization, false, "");
@@ -654,7 +654,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
 
 #if defined(SRK_HAS_OPENCV)
         cv::imshow("front-camera", camera_image_rgb);
-        if (FLAGS_wait_key_after_each_frame)
+        if (FLAGS_wait_after_each_frame)
             cv::waitKey(FLAGS_wait_key_delay); // 0=wait forever
         else
             cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
