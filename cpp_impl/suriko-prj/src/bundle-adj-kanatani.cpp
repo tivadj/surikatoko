@@ -578,9 +578,8 @@ void BundleAdjustmentKanatani::EnsureMemoryAllocated()
     corrections_.resize(VarsCount(), 1); // corrections of vars
 
     size_t normalized_frame_vars_count = vars_count_per_frame_ * frames_count - normalized_var_indices_count_;
-    decomp_lin_sys_left_side1_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
-    decomp_lin_sys_right_side_.resize(normalized_frame_vars_count, 1);
-    matG_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
+    decomp_lin_sys_cache_.left_side_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
+    decomp_lin_sys_cache_.right_side_.resize(normalized_frame_vars_count, 1);
 }
 
 Scalar BundleAdjustmentKanatani::ReprojError(Scalar f0, const FragmentMap& map,
@@ -1786,7 +1785,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
             size_t block_height;
             if (frame_ind == 0)
             {
-                // take [fx fy u0 v0], skip R0=Identity and T0=[0 0 0]
+                // take first 4 elements [fx fy u0 v0] and skip next 6 elements (3 for T0=[0 0 0] and 3 elements [Wx Wy Wz] for R0=Identity)
                 EigenDynMat block = ax.topLeftCorner<kIntrinsicVarsCount, kIntrinsicVarsCount>();
                 block_height = (size_t)block.rows();
 
@@ -1830,7 +1829,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         SRK_ASSERT(point_hessian->allFinite()) << "Possibly hessian factor is too big c=" << hessian_factor;
     };
 
-    auto get_normalized_point_frame = [this, &deriv_second_pointframe](size_t pnt_ind, EigenDynMat* mat) -> void
+    auto get_normalized_point_allframes = [this, &deriv_second_pointframe](size_t pnt_ind, decltype(decomp_lin_sys_cache_.point_allframes_)* mat) -> void
     {
         // make a copy because normalized columns have to be removed
         *mat = deriv_second_pointframe.middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount); // 3x9*frames_count
@@ -1841,15 +1840,16 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         RemoveRowsAndColsInplace(empty_lines, remove_cols, mat);
     };
 
-    EigenDynMat& matG = matG_; // [9*frames_count,9*frames_count]
-    fill_matG(&matG);
+    // left_side <- G
+    EigenDynMat& decomp_lin_sys_left_side = decomp_lin_sys_cache_.left_side_; // [9*frames_count,9*frames_count]
+    fill_matG(&decomp_lin_sys_left_side);
+
+    size_t matG_size = decomp_lin_sys_left_side.rows();
 
     // calculate deltas for frame vars
 
-    EigenDynMat& decomp_lin_sys_left_side = decomp_lin_sys_left_side1_;
-    Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& decomp_lin_sys_right_side = decomp_lin_sys_right_side_;
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& decomp_lin_sys_right_side = decomp_lin_sys_cache_.right_side_;
 
-    decomp_lin_sys_left_side.fill(0);
     decomp_lin_sys_right_side.fill(0);
 
     {
@@ -1876,31 +1876,32 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
                 continue;
             }
 
-            EigenDynMat point_frame;
-            get_normalized_point_frame(pnt_ind, &point_frame);
-
             // left side
-            EigenDynMat ax1 = point_frame.transpose() * point_hessian_inv * point_frame;
-            decomp_lin_sys_left_side += ax1;
+            auto& point_allframes = decomp_lin_sys_cache_.point_allframes_; // [3x9M] cached matrix
+            point_allframes.resize(Eigen::NoChange, matG_size);
+            get_normalized_point_allframes(pnt_ind, &point_allframes);
+
+            // perf: the Ft.E.F product is a hot spot
+            // subtract Ft.E.F as in G-sum(Ft.E.F)
+            EigenDynMat& left_summand = decomp_lin_sys_cache_.left_summand_; // [9Mx9M] cached matrix
+            left_summand.noalias() = point_allframes.transpose() * point_hessian_inv * point_allframes;
+            decomp_lin_sys_left_side -= left_summand;
 
             // right side
             Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
-            EigenDynMat ax2 = point_frame.transpose() * point_hessian_inv * gradeE_point;
-            decomp_lin_sys_right_side += ax2;
+            EigenDynMat right_summand = point_allframes.transpose() * point_hessian_inv * gradeE_point; // [9Mx1]
+            decomp_lin_sys_right_side += right_summand;
         }
         SRK_ASSERT(pnt_ind + 1 == points_count);
     }
-
-    // G-sum(F.E.F)
-    decomp_lin_sys_left_side = matG - decomp_lin_sys_left_side;
 
     // normalize frame derivatives
     Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>> frame_derivs(&grad_error[points_count * kPointVarsCount], frames_count * vars_count_per_frame_);
     EigenDynMat normalized_frame_derivs = frame_derivs; // copy
     RemoveRowsAndColsInplace(gsl::make_span(normalized_var_indices_.data(), normalized_var_indices_count_), gsl::span<size_t>(nullptr), &normalized_frame_derivs);
 
-    //
-    decomp_lin_sys_right_side -= normalized_frame_derivs; // sum(F.E.gradE) - Df
+    // sum(F.E.gradE) - Df
+    decomp_lin_sys_right_side -= normalized_frame_derivs;
 
     //
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections_frame = decomp_lin_sys_left_side.householderQr().solve(decomp_lin_sys_right_side);
@@ -1922,11 +1923,6 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
 
             pnt_ind += 1; // only increment for corresponding reconstructed salient point
 
-            EigenDynMat point_frame;
-            get_normalized_point_frame(pnt_ind, &point_frame);
-
-            Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
-
             Eigen::Matrix<Scalar, kPointVarsCount, kPointVarsCount> point_hessian;
             get_scaled_point_hessian(pnt_ind, hessian_factor, &point_hessian);
 
@@ -1943,11 +1939,17 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
             }
             else
             {
+                Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
+
+                auto& point_frame = decomp_lin_sys_cache_.point_allframes_; // [3x9M] cached matrix
+                get_normalized_point_allframes(pnt_ind, &point_frame);
+
                 corrects_one_point = -point_hessian_inv * (point_frame * corrections_frame + gradeE_point);
+
+                if (!corrects_one_point.allFinite())
+                    return false;
             }
 
-            if (!corrects_one_point.allFinite())
-                return false;
             normalized_corrections.middleRows<kPointVarsCount>(pnt_ind*kPointVarsCount) = corrects_one_point;
         }
         SRK_ASSERT(pnt_ind + 1 == points_count);

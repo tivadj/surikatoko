@@ -7,8 +7,8 @@
 namespace suriko
 {
 // Indices of columns/rows to be removed must be sorted in ascending order.
-template <typename T>
-void RemoveRowsAndColsInplace(gsl::span<const size_t> rows_to_remove, gsl::span<const size_t> cols_to_remove, Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>* mat)
+template <typename EigenMatT>
+void RemoveRowsAndColsInplace(gsl::span<const size_t> rows_to_remove, gsl::span<const size_t> cols_to_remove, EigenMatT* mat)
 {
     for (ptrdiff_t i = 0; i < (ptrdiff_t)rows_to_remove.size() - 1; ++i)
         CHECK(rows_to_remove[i] < rows_to_remove[i + 1]) << "Require strictly ascending indices";

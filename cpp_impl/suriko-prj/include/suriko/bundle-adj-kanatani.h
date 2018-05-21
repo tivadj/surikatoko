@@ -138,11 +138,6 @@ private:
     
     Eigen::Matrix<Scalar, Eigen::Dynamic, 1> corrections_;
 
-    // data to solve linear equations
-    EigenDynMat matG_;
-    EigenDynMat decomp_lin_sys_left_side1_;
-    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> decomp_lin_sys_right_side_;
-
     size_t vars_count_per_frame_ = 0; // number of variables to parameterize a camera orientation [[fx fy u0 v0] Tx Ty Tz Wx Wy Wz]
     
     // some corrections are fixed during normalization, thus the gaps appear :
@@ -153,6 +148,16 @@ private:
     size_t normalized_var_indices_count_ = 0; // number of var indices in the corresponding array
 
     std::string optimization_stop_reason_;
+
+    // data to solve linear equations
+    // perf: eigen matrices are scoped to class to avoid dynamic allocation
+    struct EstimateCorrectionsDecomposedInTwoPhases_Cache
+    {
+        Eigen::Matrix<Scalar, kPointVarsCount, Eigen::Dynamic, Eigen::ColMajor> point_allframes_; // [3x9M] point-allframes matrix
+        EigenDynMat left_side_; // [9Mx9M], M=number of frames, =G-sum(Ft.P.F)
+        EigenDynMat left_summand_; // [9Mx9M], =Ft.P.F
+        Eigen::Matrix<Scalar, Eigen::Dynamic, 1> right_side_; // [9Mx1], =sum(Ft.P.E)-Df
+    } decomp_lin_sys_cache_;
 public:
     BundleAdjustmentKanatani();
 
@@ -179,6 +184,8 @@ public:
     size_t PointsCount() const;
     size_t FramesCount() const;
     size_t VarsCount() const;
+
+    /// Number of variables after normalization has been applied (fixed as known (removed) 7 variables).
     size_t NormalizedVarsCount() const;
     const std::string& OptimizationStatusString() const;
 
