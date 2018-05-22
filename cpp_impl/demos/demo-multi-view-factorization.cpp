@@ -143,8 +143,8 @@ void DrawPhysicalCamera(const SE3Transform& cam_wfc)
     // transform to the camera frame
     std::array<double, 4 * 4> opengl_mat_by_col{};
     Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::ColMajor>> opengl_mat(opengl_mat_by_col.data());
-    opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R;
-    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T;
+    opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R.cast<double>();
+    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T.cast<double>();
     opengl_mat(3, 3) = 1;
 
     glPushMatrix();

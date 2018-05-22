@@ -10,6 +10,9 @@ message(STATUS "PROJECT_ARCH=${PROJECT_ARCH}") #
 message(STATUS "PLATFORM_SHORT_NAME=${PLATFORM_SHORT_NAME}") #
 message(STATUS "PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}") #
 
+option (SURIKO_DEBUG "Adds extra run-time checks, slightly slowing the run-time speed" OFF)
+set (SURIKO_SCALAR_TYPE_STRING "f64" CACHE STRING "f32 (for c++ float) or f64 (for c++ double)")
+set_property(CACHE SURIKO_SCALAR_TYPE_STRING PROPERTY STRINGS f32 f64)
 #
 set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.h
@@ -41,6 +44,22 @@ target_include_directories(suriko-engine
 if (MSVC)
     target_compile_definitions(suriko-engine PRIVATE _USE_MATH_DEFINES) # allow M_PI in "cmath.h"
 endif()
+
+set (SRK_DEBUG ${SURIKO_DEBUG})
+if (SURIKO_SCALAR_TYPE_STRING STREQUAL "f32")
+    set (SRK_SCALAR_TYPE "float")
+elseif (SURIKO_SCALAR_TYPE_STRING STREQUAL "f64")
+    set (SRK_SCALAR_TYPE "double")
+else()
+    message(SEND_ERROR "Unrecognized floating type SURIKO_SCALAR_TYPE_STRING=${SURIKO_SCALAR_TYPE_STRING}")
+endif()
+
+configure_file(
+  "${PROJECT_SOURCE_DIR}/include/suriko/rt-config-autogen.h.in"
+  "${PROJECT_BINARY_DIR}/rt-config-autogen.h"
+  )
+
+target_include_directories(suriko-engine PUBLIC "${PROJECT_BINARY_DIR}")
 
 #target_include_directories(suriko-engine PRIVATE ${Boost_INCLUDE_DIRS})
 #target_link_libraries(suriko-engine PRIVATE ${Boost_LIBRARIES})

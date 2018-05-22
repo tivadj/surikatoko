@@ -39,7 +39,7 @@ TEST_F(BAKanataniTest, NormalizationSimple)
     suriko::Point3 circle_center(0, 0, 0);
     Scalar circle_radius = 1;
     Scalar ascentZ = 0; // work in XOY plane
-    std::vector<Scalar> rot_angles = { 3*M_PI/2 + M_PI/6, 3*M_PI/2 };
+    std::vector<Scalar> rot_angles = { static_cast<Scalar>(3*M_PI/2 + M_PI/6), static_cast<Scalar>(3*M_PI/2) };
     std::vector<SE3Transform> inverse_orient_cams;
     GenerateCircleCameraShots(circle_center, circle_radius, ascentZ, rot_angles, &inverse_orient_cams);
 

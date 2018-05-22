@@ -489,7 +489,7 @@ BundleAdjustmentKanatani::BundleAdjustmentKanatani()
 {
     if (kSurikoDebug)
     {
-        normalized_var_indices_.fill(kNan);
+        normalized_var_indices_.fill(static_cast<size_t>(-1));
     }
 }
 
