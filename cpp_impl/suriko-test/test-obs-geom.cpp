@@ -13,7 +13,7 @@ using namespace suriko;
 class ObsGeomTest : public testing::Test
 {
 public:
-	Scalar atol = 1e-5;
+	Scalar atol = (Scalar)1e-5;
 };
 
 TEST_F(ObsGeomTest, SkewSymmetricMatConstruction)
@@ -22,15 +22,15 @@ TEST_F(ObsGeomTest, SkewSymmetricMatConstruction)
 	Eigen::Matrix<Scalar, 3, 3> skew_mat;
 	SkewSymmetricMat(v, &skew_mat);
 
-    EXPECT_FLOAT_EQ(Scalar{ 0 }, skew_mat(0, 0));
-    EXPECT_FLOAT_EQ(Scalar{ -3 }, skew_mat(0, 1));
-    EXPECT_FLOAT_EQ(Scalar{ 3 }, skew_mat(1, 0));
+    EXPECT_DOUBLE_EQ( 0, skew_mat(0, 0));
+    EXPECT_DOUBLE_EQ(-3, skew_mat(0, 1));
+    EXPECT_DOUBLE_EQ( 3, skew_mat(1, 0));
 }
 
 TEST_F(ObsGeomTest, RotMatFromAxisAngle)
 {
 	Eigen::Matrix<Scalar, 3, 1> dir(1,1,1);
-	dir *= 2*M_PI/3 / dir.norm();
+	dir *= static_cast<Scalar>(2*M_PI/3) / dir.norm();
 	Eigen::Matrix<Scalar, 3, 3> R120;
 	bool op = RotMatFromAxisAngle(dir, &R120);
 	ASSERT_TRUE(op);
@@ -47,7 +47,7 @@ TEST_F(ObsGeomTest, RotMatFromAxisAngle)
 TEST_F(ObsGeomTest, AxisAngle_To_RotMat_And_Back)
 {
 	Eigen::Matrix<Scalar, 3, 1> dir(1,1,1);
-	dir *= M_PI / 4 / dir.norm(); // len=pi/4
+	dir *= static_cast<Scalar>(M_PI / 4) / dir.norm(); // len=pi/4
 
 	Eigen::Matrix<Scalar, 3, 3> rot_mat;
 	bool op = RotMatFromAxisAngle(dir, &rot_mat);

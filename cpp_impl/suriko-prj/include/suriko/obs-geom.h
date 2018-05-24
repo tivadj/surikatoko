@@ -35,13 +35,14 @@ public:
 class Point3 {
     Eigen::Matrix<Scalar,3,1> mat_;
 public:
+    Point3() = default;
     Point3(const Eigen::Matrix<Scalar, 3, 1> &m) : mat_(m) { }
 
     template <typename F0, typename F1, typename F2>
     Point3(const F0 &x, const F1 &y, const F2 &z) {
-        mat_(0) = x;
-        mat_(1) = y;
-        mat_(2) = z;
+        mat_(0) = static_cast<Scalar>(x);
+        mat_(1) = static_cast<Scalar>(y);
+        mat_(2) = static_cast<Scalar>(z);
     }
 
     const Eigen::Matrix<Scalar,3,1>& Mat() const { return mat_; };

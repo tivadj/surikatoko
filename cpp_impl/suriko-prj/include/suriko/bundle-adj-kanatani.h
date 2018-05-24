@@ -51,6 +51,9 @@ public:
     SceneNormalizer() = default; // TODO: fragile
 
     void RevertNormalization();
+
+    /// Returns the factor which was applied to original scene to get the current scene.
+    Scalar WorldScale() const;
 };
 
 /// Normalizes the salient points and orientations of the camera so that R0=Identity, T0=zeros(3), T1[unity_comp_ind]=t1y_dist.

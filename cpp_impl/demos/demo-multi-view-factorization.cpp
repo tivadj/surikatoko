@@ -126,15 +126,15 @@ void DrawAxes(Scalar axis_seg_len)
     auto ax = axis_seg_len;
     glLineWidth(2);
     glBegin(GL_LINES);
-    glColor3f(1, 0, 0);
-    glVertex3f(0, 0, 0);
-    glVertex3f(ax, 0, 0); // OX
-    glColor3f(0, 1, 0);
-    glVertex3f(0, 0, 0);
-    glVertex3f(0, ax, 0); // OY
-    glColor3f(0, 0, 1);
-    glVertex3f(0, 0, 0);
-    glVertex3f(0, 0, ax); // OZ
+    glColor3d(1, 0, 0);
+    glVertex3d(0, 0, 0);
+    glVertex3d(ax, 0, 0); // OX
+    glColor3d(0, 1, 0);
+    glVertex3d(0, 0, 0);
+    glVertex3d(0, ax, 0); // OY
+    glColor3d(0, 0, 1);
+    glVertex3d(0, 0, 0);
+    glVertex3d(0, 0, ax); // OZ
     glEnd();
 }
 
@@ -229,7 +229,7 @@ void DrawCameras(const std::vector<SE3Transform>& cam_orient_cfw, bool draw_came
 
 void DrawMap(const FragmentMap& fragment_map)
 {
-    glColor3f(0.7, 0.7, 0.7);
+    glColor3d(0.7, 0.7, 0.7);
     glBegin(GL_POINTS);
     for (const SalientPointFragment& point : fragment_map.SalientPoints())
     {
@@ -258,14 +258,16 @@ void SceneVisualizationThread(UIThreadParams ui_params)
 {
     VLOG(4) << "SceneVisualizationThread is running";
 
-    constexpr float w = 640;
-    constexpr float h = 480;
+    constexpr float fw = 640;
+    constexpr float fh = 480;
+    constexpr int w = (int)fw;
+    constexpr int h = (int)fh;
 
     pangolin::CreateWindowAndBind("3DReconstr", w, h);
     glEnable(GL_DEPTH_TEST);
 
-    float center_x = w / 2;
-    float center_y = h / 2;
+    float center_x = fw / 2;
+    float center_y = fh / 2;
 
     pangolin::OpenGlRenderState view_state_3d(
         pangolin::ProjectionMatrix(w, h, 420, 420, center_x, center_y, 0.2, 100),
@@ -275,7 +277,7 @@ void SceneVisualizationThread(UIThreadParams ui_params)
     // Create Interactive View in window
     pangolin::Handler3D handler(view_state_3d);
     pangolin::View& display_cam = pangolin::CreateDisplay()
-        .SetBounds(0.0, 1.0, 0.0, 1.0, -w / h) // TODO: why negative aspect?
+        .SetBounds(0.0, 1.0, 0.0, 1.0, -fw / fh) // TODO: why negative aspect?
         .SetHandler(&handler);
 
     while (!pangolin::ShouldQuit())
@@ -509,7 +511,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
             const suriko::Point3& pnt_world = sal_pnt->Coord.value();
             return pnt_world;
         }
-        CHECK(false);
+        AssertFalse();
     };
     mvf.SetCornersMatcher(std::make_unique<DemoCornersMatcher>(K, gt_cam_orient_cfw, entire_map, img_size));
     mvf.fake_localization_ = FLAGS_fake_localization;

@@ -17,24 +17,26 @@ using namespace suriko::virt_world;
 class BAKanataniTest : public testing::Test
 {
 public:
-	Scalar atol_ = 1e-2;
+    Scalar atol_ = static_cast<Scalar>(1e-2);
 };
 
 TEST_F(BAKanataniTest, NormalizationSimple)
 {
-    std::vector<suriko::Point3> pnts3D = {
-        suriko::Point3(-1, 0, 0), // A
-        suriko::Point3(-0.5, 0.866, 0), // B
-        suriko::Point3(0, 1, 0), // C
-        suriko::Point3(1, 0, 0), // D
-        suriko::Point3(0, -1, 0), // K
-    };
+    // [id, coord] list of salient points
+    std::vector<std::pair<size_t, suriko::Point3>> pnts3D = {
+        {0, suriko::Point3(-1, 0, 0)}, // A
+        {0, suriko::Point3(-0.5, 0.866, 0) }, // B
+        {0, suriko::Point3(0, 1, 0) }, // C
+        {0, suriko::Point3(1, 0, 0) }, // D
+        {0, suriko::Point3(0, -1, 0) }, // K
+    };  
     FragmentMap map;
-    map.AddSalientPoint(pnts3D[0]);
-    map.AddSalientPoint(pnts3D[1]);
-    map.AddSalientPoint(pnts3D[2]);
-    map.AddSalientPoint(pnts3D[3]);
-    map.AddSalientPoint(pnts3D[4]);
+    for (size_t i=0; i<pnts3D.size(); ++i)
+    {
+        size_t salient_point_id = -1;
+        map.AddSalientPoint(pnts3D[i].second, &salient_point_id);
+        pnts3D[i].first = salient_point_id;
+    }
 
     suriko::Point3 circle_center(0, 0, 0);
     Scalar circle_radius = 1;
@@ -51,13 +53,22 @@ TEST_F(BAKanataniTest, NormalizationSimple)
     SceneNormalizer sn = NormalizeSceneInplace(&map, &inverse_orient_cams, t1_dist, unity_comp_ind, &success);
     ASSERT_TRUE(success) << "normalization failed";
 
+    // check cam0
+    const SE3Transform& cam0_CifromC0 = inverse_orient_cams[0];
+    EXPECT_NEAR(0, cam0_CifromC0.T.norm(), atol_) << "cam0 is the new center of the world";
+    
+    std::string msg;
+    bool op = IsIdentity(cam0_CifromC0.R, 0, atol_);
+    ASSERT_TRUE(op) << "failed R=Identity" << msg;
+
+    // check cam1
     SE3Transform cam1_from_cam2 = SE3Inv(inverse_orient_cams[1]);
     EXPECT_NEAR(std::abs(cam1_from_cam2.T[unity_comp_ind]), t1_dist, 0.01) << "Scaling of world failed: expect t1y=" << t1_dist << " actual T1=" << cam1_from_cam2.T;
 
     // map is inflated *2 because world scale factor was 2
-    constexpr Scalar s = 2;
+    Scalar s = sn.WorldScale();
 
-    // cam0 (new world center)
+    // check points in cam0 (new world center)
     std::vector<suriko::Point3> pnts3D_cam0 = {
         suriko::Point3(-0.866*s, 0, 1.5*s), // A
         suriko::Point3(0, 0, 2*s), // B
@@ -69,11 +80,12 @@ TEST_F(BAKanataniTest, NormalizationSimple)
     for (size_t i=0; i<pnts3D.size(); ++i)
     {
         Point3 pnt_expect = pnts3D_cam0[i];
-        Point3 pnt_actual = map.GetSalientPoint(i);
-        EXPECT_TRUE((pnt_expect.Mat() - pnt_actual.Mat()).norm() < atol_) << "cam0 3D point mismatch i=" << i << " P1=" << pnt_expect.Mat() << " P2=" << pnt_actual.Mat();
+        size_t salient_point_id = pnts3D[i].first;
+        Point3 pnt3D_cam0 = map.GetSalientPoint(salient_point_id);
+        EXPECT_TRUE((pnt_expect.Mat() - pnt3D_cam0.Mat()).norm() < atol_) << "cam0 3D point mismatch i=" << i << " P1=" << pnt_expect.Mat() << " P2=" << pnt3D_cam0.Mat();
     }
 
-    // cam1
+    // check points in cam1
     std::vector<suriko::Point3> pnts3D_cam1 = {
         suriko::Point3(-1*s, 0, 1*s), // A
         suriko::Point3(-0.5*s, 0, 1.866*s), // B
@@ -82,13 +94,14 @@ TEST_F(BAKanataniTest, NormalizationSimple)
         suriko::Point3(0, 0, 0), // K
     };
 
-    SE3Transform cam1 = inverse_orient_cams[1];
+    SE3Transform cam1_from_cam0 = inverse_orient_cams[1]; // cami from cam0
     for (size_t i=0; i<pnts3D.size(); ++i)
     {
         Point3 pnt_expect = pnts3D_cam1[i];
-        Point3 p3D = map.GetSalientPoint(i);
+        size_t salient_point_id = pnts3D[i].first;
+        Point3 p3D_cam0 = map.GetSalientPoint(salient_point_id);
         
-        Point3 pnt_actual = SE3Apply(cam1, p3D);
+        Point3 pnt_actual = SE3Apply(cam1_from_cam0, p3D_cam0);
         EXPECT_TRUE((pnt_expect.Mat() - pnt_actual.Mat()).norm() < atol_) << "cam1 3D point mismatch i=" << i << " P1=" << pnt_expect.Mat() << " P2=" << pnt_actual.Mat();
     }
 
@@ -108,8 +121,9 @@ TEST_F(BAKanataniTest, NormalizationSimple)
     // check salient points are restored
     for (size_t i = 0; i<pnts3D.size(); ++i)
     {
-        Point3 pnt_expect = pnts3D[i];
-        Point3 pnt_actual = map.GetSalientPoint(i);
+        Point3 pnt_expect = pnts3D[i].second;
+        size_t salient_point_id = pnts3D[i].first;
+        Point3 pnt_actual = map.GetSalientPoint(salient_point_id);
         EXPECT_TRUE((pnt_expect.Mat() - pnt_actual.Mat()).norm() < atol_) << "cam0 3D point mismatch i=" << i << " P1=" << pnt_expect.Mat() << " P2=" << pnt_actual.Mat();
     }
 }

@@ -155,8 +155,8 @@ SE3Transform SceneNormalizer::NormalizeRT(const SE3Transform& camk_from_world, c
         auto back_rt = RevertRT(result, cam0_from_world, world_scale);
         Scalar diffR = (Rkw - back_rt.R).norm();
         Scalar diffT = (Tkw - back_rt.T).norm();
-        SRK_ASSERT(IsClose(0, diffR, AbsRelTol<Scalar>(1e-3, 1e-3))) << "Error in normalization or reverting of R, diffR=" << diffR;
-        SRK_ASSERT(IsClose(0, diffT, AbsRelTol<Scalar>(1e-3, 1e-3))) << "Error in normalization or reverting of T, diffT=" << diffT;
+        SRK_ASSERT(IsClose(0.0f, diffR, AbsRelTol<Scalar>(1e-3f, 1e-3f))) << "Error in normalization or reverting of R, diffR=" << diffR;
+        SRK_ASSERT(IsClose(0.0f, diffT, AbsRelTol<Scalar>(1e-3f, 1e-3f))) << "Error in normalization or reverting of T, diffT=" << diffT;
     }
     return result;
 }
@@ -193,7 +193,7 @@ suriko::Point3 SceneNormalizer::NormalizeOrRevertPoint(const suriko::Point3& x3D
     {
         auto back_pnt = NormalizeOrRevertPoint(result, inverse_orient_cam0, world_scale, Opposite(action), false);
         Scalar diff = (back_pnt.Mat() - x3D.Mat()).norm();
-        SRK_ASSERT(IsClose(0, diff, AbsRelTol<Scalar>(1e-3, 1e-3))) << "Error in normalization or reverting, diff=" <<diff;
+        SRK_ASSERT(IsClose(0.0f, diff, AbsRelTol<Scalar>(1e-3f, 1e-3f))) << "Error in normalization or reverting, diff=" <<diff;
     }
     return result;
 }
@@ -212,7 +212,7 @@ bool SceneNormalizer::NormalizeWorldInplaceInternal()
     Scalar initial_camera_shift_y = initial_camera_shift[unity_comp_ind_];
     VLOG(4) << "Original cam0 to cam1 shift T01=[" << initial_camera_shift[0] << "," << initial_camera_shift[1] << "," << initial_camera_shift[2] << "]";
 
-    Scalar atol = 1e-5;
+    Scalar atol = (Scalar)1e-5;
     if (IsClose(0, initial_camera_shift_y, atol))
         return false; // can't normalize because of zero translation
 
@@ -269,6 +269,11 @@ void SceneNormalizer::RevertNormalization()
     }
 }
 
+Scalar SceneNormalizer::WorldScale() const
+{
+    return world_scale_;
+}
+
 SceneNormalizer NormalizeSceneInplace(FragmentMap* map, std::vector<SE3Transform>* inverse_orient_cams, Scalar t1y_dist, size_t unity_comp_ind, bool* success)
 {
     *success = false;
@@ -289,7 +294,7 @@ bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams
     // the first frame is the identity
     const auto& rt0 = inverse_orient_cams[0];
 
-    constexpr Scalar atol = 1e-3;
+    constexpr Scalar atol = (Scalar)1e-3;
 
     if (!suriko::IsIdentity(rt0.R, atol, atol, err_msg))
     {
@@ -413,7 +418,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
     size_t* seen_points_count = nullptr)
 {
     CHECK(!IsClose(0, f0)) << "f0 != 0";
-    CHECK(shared_intrinsic_cam_mat != nullptr ^ intrinsic_cam_mats != nullptr) << "Provide either shared K or separate K for each camera frame";
+    CHECK((shared_intrinsic_cam_mat != nullptr) ^ (intrinsic_cam_mats != nullptr)) << "Provide either shared K or separate K for each camera frame";
 
     size_t points_count = map.SalientPointsCount();
     //CHECK(points_count == track_rep.CornerTracks.size() && "Each 3D point must be tracked");
@@ -465,7 +470,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
             suriko::Point3 x_img_h = suriko::Point3((*pK) * x3D_cam.Mat());
             // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
 
-            bool zero_z = IsClose(0, x_img_h[2], 1e-5);
+            bool zero_z = IsClose(0.0f, x_img_h[2], 1e-5f);
             SRK_ASSERT(!zero_z) << "homog 2D point can't have Z=0";
 
             Scalar x = x_img_h[0] / x_img_h[2];
@@ -679,8 +684,8 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
 
     if (kSurikoDebug)
     {
-        Scalar rtol = 1.0e-5;
-        Scalar  atol = 1.0e-3;
+        Scalar rtol = 1.0e-5f;
+        Scalar  atol = 1.0e-3f;
         err_value_after_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_);
         SRK_ASSERT(IsClose(err_value_before_normalization, err_value_after_normalization, AbsRelTol<Scalar>(atol, rtol))) << "Reprojection error must not change during normalization, err before="
             << err_value_before_normalization <<", after=" << err_value_after_normalization;
@@ -716,7 +721,7 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
 bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKanataniTermCriteria& term_crit)
 {
     size_t it = 1;
-    Scalar hessian_factor = 0.0001; // hessian's diagonal multiplier
+    Scalar hessian_factor = 0.0001f; // hessian's diagonal multiplier
 
     size_t seen_points_count = 0;
     Scalar err_initial = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, &seen_points_count);
@@ -751,7 +756,7 @@ bool BundleAdjustmentKanatani::ComputeOnNormalizedWorld(const BundleAdjustmentKa
     Scalar err_value = err_initial;
     while(true)
     {
-        constexpr Scalar finite_diff_eps_debug = 1e-5;
+        constexpr Scalar finite_diff_eps_debug = (Scalar)1e-5;
         ComputeCloseFormReprErrorDerivatives(&gradE_, &deriv_second_pointpoint_, &deriv_second_frameframe_, &deriv_second_pointframe_, finite_diff_eps_debug);
 
         enum class TargFunDecreaseResult { Success, FailedHessianOverflow, FailedButConverged };
@@ -1138,7 +1143,7 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
     EigenDynMat* deriv_second_frameframe,
     EigenDynMat* deriv_second_pointframe, Scalar finite_diff_eps)
 {
-    Scalar rough_rtol = 0.2; // used to compare close and finite difference derivatives
+    Scalar rough_rtol = 0.2f; // used to compare close and finite difference derivatives
     size_t points_count = map_->SalientPointsCount();
     size_t frames_count = inverse_orient_cams_->size();
 

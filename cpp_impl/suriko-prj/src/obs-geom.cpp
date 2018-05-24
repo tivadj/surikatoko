@@ -296,7 +296,7 @@ bool IsIdentity(const Eigen::Matrix<Scalar, 3, 3>& M, Scalar rtol, Scalar atol, 
     {
         for (IndT col = 0; col < M.cols(); ++col)
         {
-            Scalar expect_value = row == col ? 1 : 0;
+            Scalar expect_value = row == col ? (Scalar)1 : (Scalar)0;
             Scalar cell = M(row, col);
             if (!IsClose(expect_value, cell, rtol, atol))
             {
@@ -402,10 +402,10 @@ auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Mat
         bool ok = IsSpecialOrthogonal(rot_mat, &msg);
         CHECK(ok) << msg;
     }
-    Scalar cos_ang = 0.5*(rot_mat.trace() - 1);
+    Scalar cos_ang = (Scalar)(0.5*(rot_mat.trace() - 1));
     cos_ang = std::clamp<Scalar>(cos_ang, -1, 1); // the cosine may be slightly off due to rounding errors
 
-    Scalar sin_ang = std::sqrt(1.0 - cos_ang * cos_ang);
+    Scalar sin_ang = (Scalar)std::sqrt(1.0 - cos_ang * cos_ang);
     Scalar atol = 1e-3;
     if (IsClose(0, sin_ang, 0, atol))
         return false;
@@ -414,7 +414,7 @@ auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Mat
     udir[0] = rot_mat(2, 1) - rot_mat(1, 2);
     udir[1] = rot_mat(0, 2) - rot_mat(2, 0);
     udir[2] = rot_mat(1, 0) - rot_mat(0, 1);
-    udir *= 0.5 / sin_ang;
+    udir *= (Scalar)0.5 / sin_ang;
 
     // direction vector is already close to unity, but due to rounding errors it diverges
     // TODO: check where the rounding error appears

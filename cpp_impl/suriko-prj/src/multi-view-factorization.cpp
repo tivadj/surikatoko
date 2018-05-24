@@ -453,7 +453,7 @@ bool MultiViewIterativeFactorizer::ReprojError(Scalar f0,
             suriko::Point3 x_img_h = suriko::Point3((*pK) * x3D_cam.Mat());
             // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
 
-            bool zero_z = IsClose(0, x_img_h[2], 1e-5);
+            bool zero_z = IsClose((Scalar)0, x_img_h[2], 1e-5);
             if (zero_z)
                 continue;
 
