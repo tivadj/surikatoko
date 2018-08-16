@@ -81,4 +81,17 @@ void RemoveRowsAndColsInplace(gsl::span<const size_t> rows_to_remove, gsl::span<
 
     mat->conservativeResize(new_rows, new_cols); // resize means 'keep matrix elements intact'
 }
+
+template <typename _Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
+auto AllFiniteNotMax(const Eigen::Matrix<_Scalar, _Rows, _Cols, _Options, _MaxRows, _MaxCols>& m) -> bool
+{
+    for (size_t i=0; i<m.rows(); ++i)
+        for (size_t j=0; j<m.cols(); ++j)
+        {
+            _Scalar v = m(i, j);
+            if (v == std::numeric_limits<_Scalar>::max())
+                return false;
+        }
+    return m.allFinite();
+}
 }

@@ -88,6 +88,11 @@ const SalientPointFragment& FragmentMap::GetSalientPointNew(size_t salient_point
     return salient_points_[ind];
 }
 
+const SalientPointFragment& FragmentMap::GetSalientPointByInternalOrder(size_t sal_pnt_array_ind) const
+{
+    return salient_points_[sal_pnt_array_ind];
+}
+
 const suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id) const
 {
     size_t ind = SalientPointIdToInd(salient_point_id);
@@ -266,6 +271,14 @@ size_t CornerTrackRepository::ReconstructedCornerTracksCount() const
             result += 1;
     }
     return result;
+}
+
+size_t CornerTrackRepository::FramesCount() const
+{
+    if (CornerTracks.empty())
+        return 0;
+    size_t corners_count = CornerTracks[0].CornersCount();
+    return corners_count;
 }
 
 suriko::CornerTrack& CornerTrackRepository::AddCornerTrackObj()
@@ -557,6 +570,114 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
     }
     suriko::Point3 x3D(sol(0), sol(1), sol(2));
     return x3D;
+}
+
+Scalar GetUncertaintyEllipsoidProbabilityCutValue(
+    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma,
+    Scalar portion_of_max_prob)
+{
+    Scalar uncert_det = gauss_sigma.determinant();
+    SRK_ASSERT(uncert_det >= 0);
+    Scalar max_prob = 1 / std::sqrt(suriko::Pow3(2 * M_PI) * uncert_det);
+    Scalar cut_value = portion_of_max_prob * max_prob;
+    return cut_value;
+}
+
+void PickPointOnEllipsoid(
+    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
+    const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert, Scalar ellipsoid_cut_thr,
+    const Eigen::Matrix<Scalar, 3, 1>& ray,
+    Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid)
+{
+    Eigen::Matrix<Scalar, 3, 3> uncert_inv = cam_pos_uncert.inverse();
+    Scalar uncert_det = cam_pos_uncert.determinant();
+    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(cam_pos_uncert, ellipsoid_cut_thr);
+
+    // cross ellipsoid with ray
+    Scalar b1 = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
+    Eigen::Matrix<Scalar, 1, 1> b2 = ray.transpose() * uncert_inv * ray;
+    Scalar t2 = b1 / b2[0];
+    SRK_ASSERT(t2 >= 0) << "invalid covariance matrix";
+
+    Scalar t = std::sqrt(t2);
+
+    // crossing of ellipsoid and ray
+    *pos_ellipsoid = cam_pos + t * ray;
+}
+
+/// Calculates A,b,c ellipsoid coefficients as in equation xAx+bx+c=0. eg: prop_thr=0.05 for 2sigma.
+void ExtractEllipsoidFromUncertaintyMat(
+    const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
+    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
+    Eigen::Matrix<Scalar, 3, 3>* A,
+    Eigen::Matrix<Scalar, 3, 1>* b, Scalar* c)
+{
+    Eigen::Matrix<Scalar, 3, 3> uncert_inv = gauss_sigma.inverse();
+    *A = uncert_inv;
+    *b = -2 * uncert_inv * gauss_mean;
+
+    Scalar uncert_det = gauss_sigma.determinant();
+    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(gauss_sigma, ellipsoid_cut_thr);
+
+    Scalar c1 = std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
+    Eigen::Matrix<Scalar, 1, 1> c2 = gauss_mean.transpose() * uncert_inv * gauss_mean;
+    *c = c1 + c2[0];
+
+    if (VLOG_IS_ON(4))
+    {
+        Eigen::Matrix<Scalar, 3, 1> ray{ 0.5, 0.5, 0.5 };
+        Eigen::Matrix<Scalar, 3, 1> pos_ellipsoid;
+        PickPointOnEllipsoid(gauss_mean, gauss_sigma, ellipsoid_cut_thr, ray, &pos_ellipsoid);
+        Scalar diff = (pos_ellipsoid.transpose() * (*A) * pos_ellipsoid + b->transpose() * pos_ellipsoid)[0] + (*c);
+        //SRK_ASSERT(IsClose(0, diff, AbsRelTol<Scalar>(1, 0.1)));
+    }
+}
+
+bool GetRotatedEllipsoid(
+    const Eigen::Matrix<Scalar, 3, 3>& A,
+    const Eigen::Matrix<Scalar, 3, 1>& b, Scalar c,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
+    Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse)
+{
+    // A=V*D*inv(V)
+    // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, 3, 3>> eigen_solver(A);
+    bool op = eigen_solver.info() == Eigen::Success;
+    SRK_ASSERT(op);
+
+    Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(A);
+    bool op2 = lltOfA.info() != Eigen::NumericalIssue;
+    SRK_ASSERT(op2);
+
+    Eigen::Matrix<Scalar, 3, 3> R = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
+    Eigen::Matrix<Scalar, 3, 3> Rt = R.transpose();
+    Eigen::Matrix<Scalar, 3, 1> beta = Rt * b;
+    Eigen::Matrix<Scalar, 3, 1> dd = eigen_solver.eigenvalues();
+
+    Scalar t1 = 0.25*(
+        suriko::Sqr(beta[0]) / dd[0] +
+        suriko::Sqr(beta[1]) / dd[1] +
+        suriko::Sqr(beta[2]) / dd[2]);
+    Scalar t2 = -c + t1;
+    //SRK_ASSERT(t2 > 0) << "later this constant goes under sqrt";
+    if (t2 <= 0)
+        return false;
+    Scalar phi = t2 / (dd[0] * dd[1] * dd[2]);
+
+    auto& center = *ellipse_center;
+    center[0] = -0.5*beta[0] / dd[0];
+    center[1] = -0.5*beta[1] / dd[1];
+    center[2] = -0.5*beta[2] / dd[2];
+
+    auto& semi = *ellipse_semi_axes;
+    semi[0] = std::sqrt(dd[1] * dd[2] * phi);
+    semi[1] = std::sqrt(dd[0] * dd[2] * phi);
+    semi[2] = std::sqrt(dd[0] * dd[1] * phi);
+
+    *rot_mat_world_from_ellipse = R;
+
+    return true;
 }
 
 namespace internals

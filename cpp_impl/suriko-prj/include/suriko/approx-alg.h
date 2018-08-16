@@ -38,5 +38,11 @@ template <typename F>
 constexpr auto Sqr(F x) -> F { return x*x; }
 
 template <typename F>
+constexpr auto Pow3(F x) -> F { return x*x*x; }
+
+template <typename F>
+constexpr auto Pow4(F x) -> F { return x*x*x*x; }
+
+template <typename F>
 constexpr auto Sign(F x) -> int { return x >= 0 ? 1 : -1; }
 }

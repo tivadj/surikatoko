@@ -1,0 +1,47 @@
+#--logtostderr
+--stderrthreshold=0
+--v=4
+# vmodule doesn't work on Windows
+#--vmodule=bundle*=4
+
+# scaler for pixel points to achieve better numeric stability
+#--f0=1
+--f0=600
+
+--world_xmin=-2
+--world_xmax=2
+--world_ymin=-2
+--world_ymax=2
+--world_zmin=0
+--world_zmax=1
+--world_cell_size_x=0.5
+--world_cell_size_y=0.5
+--world_cell_size_z=0.5
+
+# start=-pi/2+pi/6 stop=2pi/3 step=pi/180*5
+--ang_start=-1.0472
+--ang_end=2.0944
+--ang_step=0.088
+
+#--world_xmin=0
+#--world_xmax=0.4
+#--world_ymin=0
+#--world_ymax=0.4
+#--world_zmin=0
+#--world_zmax=0.4
+#--world_cell_size_x=0.5
+#--world_cell_size_y=0.5
+#--world_cell_size_z=0.5
+
+# slightly more than one step=pi/180*5
+#--ang_start=-1
+#--ang_end=-0.85
+#--ang_step=0.1
+
+--noise_x3D_hi=0
+--noise_R_hi=0.01
+--wait_key_delay=100
+# estimate as n*e^2/f0^2 where n=seen points count, e=reprojection err per seen point in pixels
+# for e=0.01: 81*0.01^2/600^2=2.25e-8
+--allowed_repr_err=2.25e-12
+

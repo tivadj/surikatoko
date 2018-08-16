@@ -17,18 +17,22 @@ set_property(CACHE SURIKO_SCALAR_TYPE_STRING PROPERTY STRINGS f32 f64)
 set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.h
         ${PROJECT_SOURCE_DIR}/include/suriko/bundle-adj-kanatani.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/davison-mono-slam.h
         ${PROJECT_SOURCE_DIR}/include/suriko/eigen-helpers.hpp
         ${PROJECT_SOURCE_DIR}/include/suriko/obs-geom.h
         ${PROJECT_SOURCE_DIR}/include/suriko/mat-serialization.h
         ${PROJECT_SOURCE_DIR}/include/suriko/rt-config.h
         ${PROJECT_SOURCE_DIR}/include/suriko/lin-alg.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/quat.h
         ${PROJECT_SOURCE_DIR}/include/suriko/multi-view-factorization.h
         ${PROJECT_SOURCE_DIR}/include/suriko/virt-world/scene-generator.h
         )
 set(lib_srcs
         ${PROJECT_SOURCE_DIR}/src/bundle-adj-kanatani.cpp
+        ${PROJECT_SOURCE_DIR}/src/davison-mono-slam.cpp
         ${PROJECT_SOURCE_DIR}/src/mat-serialization.cpp
         ${PROJECT_SOURCE_DIR}/src/obs-geom.cpp
+        ${PROJECT_SOURCE_DIR}/src/quat.cpp
         ${PROJECT_SOURCE_DIR}/src/lin-alg.cpp
         ${PROJECT_SOURCE_DIR}/src/multi-view-factorization.cpp
         ${PROJECT_SOURCE_DIR}/src/virt-world/scene-generator.cpp
@@ -42,7 +46,12 @@ target_include_directories(suriko-engine
         PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
 if (MSVC)
-    target_compile_definitions(suriko-engine PRIVATE _USE_MATH_DEFINES) # allow M_PI in "cmath.h"
+    # C1128: number of sections exceeded object file format limit: compile with /bigobj
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /bigobj")
+ 
+    target_compile_definitions(suriko-engine 
+        PRIVATE _USE_MATH_DEFINES # allow M_PI in "cmath.h"
+    )
 endif()
 
 set (SRK_DEBUG ${SURIKO_DEBUG})

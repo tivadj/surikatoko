@@ -1,0 +1,36 @@
+#--logtostderr
+--stderrthreshold=0
+--v=4
+# vmodule doesn't work on Windows
+#--vmodule=bundle*=4
+
+--world_xmin=-20
+--world_xmax=20
+--world_ymin=-10
+--world_ymax=10
+--world_zmin=0
+--world_zmax=1
+--world_cell_size_x=0.5
+--world_cell_size_y=0.5
+--world_cell_size_z=0.5
+
+--viewer_offset_down=5
+--viewer_ascendZ=4
+--viewer_steps_per_side_x=20
+--viewer_steps_per_side_y=10
+
+# true to just test visualizer, no slam is done
+--nodebug_skim_over
+
+
+# NOTE: noise is mandatory
+--noise_x3D_std=0.07
+--noise_R_std=0.03
+# no noise
+#--noise_x3D_std=0
+#--noise_R_std=0
+--nowait_after_each_frame
+--wait_key_delay=0
+
+--nofake_localization
+--nofake_mapping

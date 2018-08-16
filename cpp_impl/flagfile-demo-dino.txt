@@ -1,0 +1,10 @@
+--logtostderr
+--v=4
+# vmodule doesn't work on Windows
+#--vmodule=bundle*=4
+--testdata=E:\dev-efr\workshop\multviewgeom_proj\src_git\testdata
+--f0=600
+# for e=0.01 : 16432*0.01^2/600^2=4.56e-6
+# for e=0.001: 16432*0.01^2/600^2=4.56e-8
+#--allowed_repr_err=1e-10
+--allowed_repr_err=4.56e-8

@@ -81,6 +81,10 @@ struct SalientPointFragment
 /// The space with salient 3D points.
 class FragmentMap
 {
+public:
+    // TODO: how to organize identity of a salient point
+    static void DependsOnSalientPointIdInfrustructure() {}
+private:
     std::vector<SalientPointFragment> salient_points_;
     size_t fragment_id_offset_;
     size_t next_salient_point_id_;
@@ -93,6 +97,7 @@ public:
     void SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
 
     const SalientPointFragment& GetSalientPointNew(size_t salient_point_id) const;
+    const SalientPointFragment& GetSalientPointByInternalOrder(size_t sal_pnt_array_ind) const;
 
     const suriko::Point3& GetSalientPoint(size_t salient_point_id) const;
           suriko::Point3& GetSalientPoint(size_t salient_point_id);
@@ -131,6 +136,8 @@ public:
     // Represents the user generated id of a salient point in synthetic worlds.
     // The value may be used to match salient points. The non null value indicates that synthetic data is processed.
     std::optional<size_t> SyntheticVirtualPointId; // only available for artificially generated scenes where world's 3D points are known
+
+    std::optional<suriko::Point3> DebugSalientPointCoord; // for debugging, saves world position of corresponding salient point
 public:
     CornerTrack() = default;
 
@@ -157,6 +164,7 @@ public:
 
     size_t CornerTracksCount() const;
     size_t ReconstructedCornerTracksCount() const;
+    size_t FramesCount() const;
 
     const suriko::CornerTrack& GetPointTrackById(size_t point_track_id) const;
           suriko::CornerTrack& GetPointTrackById(size_t point_track_id);
@@ -218,6 +226,24 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
                                  const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0)
     -> suriko::Point3;
+
+void PickPointOnEllipsoid(
+    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
+    const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert, Scalar cut_value,
+    const Eigen::Matrix<Scalar, 3, 1>& ray,
+    Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid);
+
+void ExtractEllipsoidFromUncertaintyMat(const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
+    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
+    Eigen::Matrix<Scalar, 3, 3>* A,
+    Eigen::Matrix<Scalar, 3, 1>* b, Scalar* c);
+
+bool GetRotatedEllipsoid(
+    const Eigen::Matrix<Scalar, 3, 3>& A,
+    const Eigen::Matrix<Scalar, 3, 1>& b, Scalar c,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
+    Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse);
 
 namespace internals
 {
