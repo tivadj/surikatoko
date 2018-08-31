@@ -14,10 +14,13 @@ namespace
     constexpr size_t kQuat4 = 4; // q: 4 for quaternion orientation
     constexpr size_t kVelocComps = kEucl3; // v: 3 for velocity
     constexpr size_t kAngVelocComps = kEucl3; // w: 3 for angular velocity
+    constexpr size_t kAccelComps = kEucl3; // a: 3 for acceleration
+    constexpr size_t kAngAccelComps = kEucl3; // alpha: 3 for angular acceleration
 
     void DependsOnOverallPackOrder() {}
     void DependsOnCameraPosPackOrder() {}
     void DependsOnSalientPointPackOrder() {}
+    void DependsOnInputNoisePackOrder() {}
 }
 class CornersMatcherBase
 {
@@ -120,7 +123,7 @@ public:
 
     void GetCameraPosState(CameraPosState* result) const;
 
-    void GetUncertaintCameraOrientation(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
+    void GetUncertainCameraOrientation(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
         Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat) const;
     void GetSalientPointWorldPosAndUncertainty(size_t salient_pnt_ind, 
@@ -136,7 +139,7 @@ private:
 
     struct SalientPointInternal
     {
-        Eigen::Matrix<Scalar, kEucl3, 1> FirstCamPos;
+        Eigen::Matrix<Scalar, kEucl3, 1> FirstCamPosW; // the position of the camera (in world frame) the salient point was first seen
         Scalar AzimuthTheta; // theta=azimuth
         Scalar ElevationPhi; // elevation=latin_phi
         Scalar InverseDistRho; // inverse distance to point=rho
@@ -147,7 +150,9 @@ private:
     void FillRk(size_t matched_corners, EigenDynMat* Rk) const;
     void FillRk2x2(Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* Rk) const;
 
-    void PredictCameraState(gsl::span<const Scalar> cam_state, gsl::span<Scalar> new_cam_state) const;
+    void PredictCameraMotionByKinematicModel(gsl::span<const Scalar> cam_state, gsl::span<Scalar> new_cam_state,
+        const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state = nullptr,
+        bool normalize_quat = true) const;
     void PredictEstimVars(size_t frame_ind, EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const;
 
     void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind, const std::vector<size_t>& matched_track_ids);
@@ -167,7 +172,14 @@ private:
     //
 
     void Deriv_cam_state_by_cam_state(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* result) const;
+
+    void FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> cam_state, Scalar finite_diff_eps,
+        Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* result) const;
+
     void Deriv_cam_state_by_input_noise(Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const;
+
+    void FiniteDiff_cam_state_by_input_noise(Scalar finite_diff_eps,
+        Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const;
 
     void Deriv_Hrowblock_by_estim_vars(size_t obs_sal_pnt_ind, size_t frame_ind,
         const CameraPosState& cam_state, const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,

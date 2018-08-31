@@ -503,7 +503,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
         Eigen::Matrix<Scalar, 3, 1> cam_pos;
         Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
         Eigen::Matrix<Scalar, 4, 1> cam_orient_quat;
-        kalman_slam->GetUncertaintCameraOrientation(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
+        kalman_slam->GetUncertainCameraOrientation(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
         RenderLastCameraUncertEllipsoid(cam_pos, cam_pos_uncert, cam_orient_quat, ellipsoid_cut_thr);
     }
 }
