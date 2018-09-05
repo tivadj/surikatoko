@@ -605,6 +605,19 @@ void PickPointOnEllipsoid(
     *pos_ellipsoid = cam_pos + t * ray;
 }
 
+void PickPointOnEllipsoid(
+    const QuadricEllipsoidWithCenter& ellipsoid,
+    const Eigen::Matrix<Scalar, 3, 1>& ray,
+    Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid)
+{
+    auto den_mat = ray.transpose() * ellipsoid.A * ray;
+    Scalar ratio = ellipsoid.RightSide / den_mat[0];
+    SRK_ASSERT(ratio >= 0);
+
+    Scalar t = std::sqrt(ratio);
+    *pos_ellipsoid = ellipsoid.Center + t * ray;
+}
+
 /// Calculates A,b,c ellipsoid coefficients as in equation xAx+bx+c=0. eg: prop_thr=0.05 for 2sigma.
 void ExtractEllipsoidFromUncertaintyMat(
     const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
@@ -628,8 +641,41 @@ void ExtractEllipsoidFromUncertaintyMat(
         Eigen::Matrix<Scalar, 3, 1> ray{ 0.5, 0.5, 0.5 };
         Eigen::Matrix<Scalar, 3, 1> pos_ellipsoid;
         PickPointOnEllipsoid(gauss_mean, gauss_sigma, ellipsoid_cut_thr, ray, &pos_ellipsoid);
+
         Scalar diff = (pos_ellipsoid.transpose() * (*A) * pos_ellipsoid + b->transpose() * pos_ellipsoid)[0] + (*c);
         //SRK_ASSERT(IsClose(0, diff, AbsRelTol<Scalar>(1, 0.1)));
+        SRK_ASSERT(true);
+    }
+}
+
+/// Calculates A,b,c ellipsoid coefficients as in equation xAx+bx+c=0. eg: prop_thr=0.05 for 2sigma.
+void ExtractEllipsoidFromUncertaintyMat(
+    const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
+    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
+    QuadricEllipsoidWithCenter* ellipsoid)
+{
+    ellipsoid->Center = gauss_mean;
+
+    Eigen::Matrix<Scalar, 3, 3> uncert_inv = gauss_sigma.inverse();
+    ellipsoid->A = uncert_inv;
+
+    Scalar uncert_det = gauss_sigma.determinant();
+    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(gauss_sigma, ellipsoid_cut_thr);
+
+    Scalar c1 = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
+    ellipsoid->RightSide = c1;
+
+    if (VLOG_IS_ON(4))
+    {
+        Eigen::Matrix<Scalar, 3, 1> ray{ 0.5, 0.5, 0.5 };
+        Eigen::Matrix<Scalar, 3, 1> pos_ellipsoid;
+        PickPointOnEllipsoid(*ellipsoid, ray, &pos_ellipsoid);
+
+        Eigen::Matrix<Scalar, 3, 1> arm = pos_ellipsoid - ellipsoid->Center;
+        Eigen::Matrix<Scalar, 1, 1> zero_mat = arm.transpose() *ellipsoid->A * arm;
+        Scalar zero = zero_mat[0] - ellipsoid->RightSide;
+        //SRK_ASSERT(IsClose(0, diff, AbsRelTol<Scalar>(1, 0.1)));
+        SRK_ASSERT(true);
     }
 }
 
@@ -648,7 +694,7 @@ bool GetRotatedEllipsoid(
 
     Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(A);
     bool op2 = lltOfA.info() != Eigen::NumericalIssue;
-    SRK_ASSERT(op2);
+    //SRK_ASSERT(op2);
 
     Eigen::Matrix<Scalar, 3, 3> R = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
     Eigen::Matrix<Scalar, 3, 3> Rt = R.transpose();
@@ -674,6 +720,53 @@ bool GetRotatedEllipsoid(
     semi[0] = std::sqrt(dd[1] * dd[2] * phi);
     semi[1] = std::sqrt(dd[0] * dd[2] * phi);
     semi[2] = std::sqrt(dd[0] * dd[1] * phi);
+
+    *rot_mat_world_from_ellipse = R;
+
+    return true;
+}
+
+bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
+    Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse)
+{
+    // check symmetry
+    // A=V*D*inv(V)
+    // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, 3, 3>> eigen_solver(ellipsoid.A);
+    bool op = eigen_solver.info() == Eigen::Success;
+    SRK_ASSERT(op);
+
+    // check if positive definite
+    Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(ellipsoid.A);
+    bool op2 = lltOfA.info() != Eigen::NumericalIssue;
+    //SRK_ASSERT(op2);
+
+    Eigen::Matrix<Scalar, 3, 3> R = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
+    Eigen::Matrix<Scalar, 3, 3> Rt = R.transpose();
+    Eigen::Matrix<Scalar, 3, 1> m = Rt * ellipsoid.Center;
+    Eigen::Matrix<Scalar, 3, 1> dd = eigen_solver.eigenvalues();
+
+    Eigen::Matrix<Scalar, 1, 1> f1 = ellipsoid.Center.transpose() * ellipsoid.A * ellipsoid.Center;
+    Scalar f2 = ellipsoid.RightSide - f1[0] + 
+        dd[0] * m[0] * m[0] + 
+        dd[1] * m[1] * m[1] + 
+        dd[2] * m[2] * m[2];
+
+    Scalar peer_c = -ellipsoid.RightSide + f1[0];
+    Eigen::Matrix<Scalar, 3, 1> peer_beta = -2 * Rt * ellipsoid.A * ellipsoid.Center;
+        
+    SRK_ASSERT(f2 >= 0) << "later this constant goes under sqrt";
+    //if (f2 <= 0)
+    //    return false;
+
+    *ellipse_center = m;
+
+    auto& semi = *ellipse_semi_axes;
+    semi[0] = std::sqrt(f2 / dd[0]);
+    semi[1] = std::sqrt(f2 / dd[1]);
+    semi[2] = std::sqrt(f2 / dd[2]);
 
     *rot_mat_world_from_ellipse = R;
 

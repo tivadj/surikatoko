@@ -227,6 +227,14 @@ auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
                                  const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0)
     -> suriko::Point3;
 
+/// (x-c)*A*(x-c)=T
+struct QuadricEllipsoidWithCenter
+{
+    Eigen::Matrix<Scalar, 3, 3> A;
+    Eigen::Matrix<Scalar, 3, 1> Center; // c
+    Scalar RightSide; // T
+};
+
 void PickPointOnEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
     const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert, Scalar cut_value,
@@ -238,9 +246,19 @@ void ExtractEllipsoidFromUncertaintyMat(const Eigen::Matrix<Scalar, 3, 1>& gauss
     Eigen::Matrix<Scalar, 3, 3>* A,
     Eigen::Matrix<Scalar, 3, 1>* b, Scalar* c);
 
+void ExtractEllipsoidFromUncertaintyMat(
+    const Eigen::Matrix<Scalar, 3, 1>& gauss_mean,
+    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
+    QuadricEllipsoidWithCenter* ellipsoid);
+
 bool GetRotatedEllipsoid(
     const Eigen::Matrix<Scalar, 3, 3>& A,
     const Eigen::Matrix<Scalar, 3, 1>& b, Scalar c,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
+    Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
+    Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse);
+
+bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid,
     Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
     Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
     Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse);

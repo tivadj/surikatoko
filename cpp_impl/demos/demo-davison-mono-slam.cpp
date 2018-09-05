@@ -115,6 +115,74 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     }
 }
 
+class DemoCornersMatcher : public CornersMatcherBase
+{
+    const std::vector<SE3Transform>& gt_cam_orient_cfw_;
+    const FragmentMap& entire_map_;
+    std::array<size_t, 2> img_size_;
+    const DavisonMonoSlam* kalman_tracker_;
+    bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
+public:
+    DemoCornersMatcher(const DavisonMonoSlam* kalman_tracker, const std::vector<SE3Transform>& gt_cam_orient_cfw, const FragmentMap& entire_map,
+        const std::array<size_t, 2>& img_size)
+        : kalman_tracker_(kalman_tracker),
+        gt_cam_orient_cfw_(gt_cam_orient_cfw),
+        entire_map_(entire_map),
+        img_size_(img_size)
+    {
+    }
+
+    void DetectAndMatchCorners(size_t frame_ind, CornerTrackRepository* track_rep) override
+    {
+        if (suppress_observations_)
+            return;
+
+        // determine current camerra's orientation using the ground truth
+        const SE3Transform& rt_cfw = gt_cam_orient_cfw_[frame_ind];
+
+        // determine which salient points are visible
+        for (const SalientPointFragment& fragment : entire_map_.SalientPoints())
+        {
+            const Point3& salient_point = fragment.Coord.value();
+            suriko::Point3 pnt_camera = SE3Apply(rt_cfw, salient_point);
+            suriko::Point2 pnt_pix = kalman_tracker_->ProjectCameraPoint(pnt_camera);
+            Scalar pix_x = pnt_pix[0];
+            Scalar pix_y = pnt_pix[1];
+            bool hit_wnd =
+                pix_x >= 0 && pix_x < (Scalar)img_size_[0] &&
+                pix_y >= 0 && pix_y < (Scalar)img_size_[1];
+            if (!hit_wnd)
+                continue;
+
+            // now, the point is visible in current frame
+
+            CornerTrack* corner_track = nullptr;
+            if (fragment.SyntheticVirtualPointId.has_value())
+            {
+                // determine points correspondance using synthatic ids
+                track_rep->GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
+            }
+            if (corner_track == nullptr)
+            {
+                suriko::CornerTrack& new_corner_track = track_rep->AddCornerTrackObj();
+                SRK_ASSERT(!new_corner_track.SalientPointId.has_value()) << "new track is not associated with any reconstructed salient point";
+
+                new_corner_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId;
+
+                corner_track = &new_corner_track;
+            }
+
+            suriko::Point2 pix(pix_x, pix_y);
+
+            CornerData& corner_data = corner_track->AddCorner(frame_ind);
+            corner_data.PixelCoord = pix;
+            corner_data.ImageCoord.setConstant(std::numeric_limits<Scalar>::quiet_NaN());
+        }
+    }
+
+    void SetSuppressObservations(bool value) { suppress_observations_ = value; }
+};
+
 #if defined(SRK_HAS_PANGOLIN)
 struct WorkerThreadChat
 {
@@ -128,6 +196,7 @@ struct WorkerThreadChat
     std::mutex resume_worker_mutex;
     std::condition_variable resume_worker_cv;
     bool resume_worker_flag = true; // true for worker to do processing, false to pause and wait for resume request from UI
+    bool resume_worker_suppress_observations = false; // true to 'cover' camera - no detections are made
 
     std::shared_mutex location_and_map_mutex_;
 };
@@ -136,7 +205,7 @@ struct UIThreadParams
 {
     DavisonMonoSlam* kalman_slam;
     Scalar ellipsoid_cut_thr;
-    bool request_resuming_worker_on_each_frame;
+    bool WaitForUserInputAfterEachFrame;
     std::function<size_t()> get_observable_frame_ind_fun;
     const std::vector<SE3Transform>* gt_cam_orient_cfw;
     const std::vector<SE3Transform>* cam_orient_cfw_history;
@@ -306,7 +375,11 @@ void RenderUncertaintyEllipsoid(
 {
     Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(pos_uncert);
     bool op2 = lltOfA.info() != Eigen::NumericalIssue;
-    SRK_ASSERT(op2);
+    if(!op2)
+    {
+        LOG(ERROR) << "failed lltOfA.info() != Eigen::NumericalIssue";
+        return;
+    }
 
     // uncertainty ellipsoid
     Eigen::Matrix<Scalar, 3, 3> A;
@@ -454,7 +527,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr, bool disp
     {
         Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
-        kalman_slam->GetSalientPointWorldPosAndUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+        kalman_slam->GetSalientPointPredictedPosWithUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
         glColor3d(0.7, 0.7, 0.7);
 
@@ -503,7 +576,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
         Eigen::Matrix<Scalar, 3, 1> cam_pos;
         Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
         Eigen::Matrix<Scalar, 4, 1> cam_orient_quat;
-        kalman_slam->GetUncertainCameraOrientation(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
+        kalman_slam->GetCameraPredictedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
         RenderLastCameraUncertEllipsoid(cam_pos, cam_pos_uncert, cam_orient_quat, ellipsoid_cut_thr);
     }
 }
@@ -519,18 +592,28 @@ static void OnForward()
 {
     // check if worker request finishing UI thread
     const auto& ui_params = s_ui_params;
-    if (!ui_params.request_resuming_worker_on_each_frame)
+    if (!ui_params.WaitForUserInputAfterEachFrame)
         return;
 
     // request worker to resume processing
     std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
     ui_params.worker_chat->resume_worker_flag = true;
+    ui_params.worker_chat->resume_worker_suppress_observations = false;
     ui_params.worker_chat->resume_worker_cv.notify_one();
 }
 
 static void OnSkip()
 {
-    VLOG(4) << "OnSkip";
+    // check if worker request finishing UI thread
+    const auto& ui_params = s_ui_params;
+    if (!ui_params.WaitForUserInputAfterEachFrame)
+        return;
+
+    // request worker to resume processing
+    std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
+    ui_params.worker_chat->resume_worker_flag = true;
+    ui_params.worker_chat->resume_worker_suppress_observations = true;
+    ui_params.worker_chat->resume_worker_cv.notify_one();
 }
 
 static void OnKeyEsc()
@@ -629,19 +712,19 @@ void Run()
 
             std::shared_lock<std::shared_mutex> lock(ui_params.worker_chat->location_and_map_mutex_);
             CameraPosState cam_state;
-            ui_params.kalman_slam->GetCameraPosState(&cam_state);
+            ui_params.kalman_slam->GetCameraPredictedPosState(&cam_state);
 
             a_cam_x = cam_state.PosW[0];
             a_cam_y = cam_state.PosW[1];
             a_cam_z = cam_state.PosW[2];
 
             Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_0;
-            ui_params.kalman_slam->GetSalientPointWorldPosAndUncertainty(0, &sal_pnt_0, nullptr);
+            ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(0, &sal_pnt_0, nullptr);
             sal_pnt_0_x = sal_pnt_0[0];
             sal_pnt_0_y = sal_pnt_0[1];
             sal_pnt_0_z = sal_pnt_0[2];
             Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_1;
-            ui_params.kalman_slam->GetSalientPointWorldPosAndUncertainty(1, &sal_pnt_1, nullptr);
+            ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(1, &sal_pnt_1, nullptr);
             sal_pnt_1_x = sal_pnt_1[0];
             sal_pnt_1_y = sal_pnt_1[1];
             sal_pnt_1_z = sal_pnt_1[2];
@@ -726,68 +809,6 @@ void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value a
 }
 #endif
 
-class DemoCornersMatcher : public CornersMatcherBase
-{
-    const std::vector<SE3Transform>& gt_cam_orient_cfw_;
-    const FragmentMap& entire_map_;
-    std::array<size_t, 2> img_size_;
-    const DavisonMonoSlam* kalman_tracker_;
-public:
-    DemoCornersMatcher(const DavisonMonoSlam* kalman_tracker, const std::vector<SE3Transform>& gt_cam_orient_cfw, const FragmentMap& entire_map,
-        const std::array<size_t, 2>& img_size)
-        : kalman_tracker_(kalman_tracker),
-        gt_cam_orient_cfw_(gt_cam_orient_cfw),
-        entire_map_(entire_map),
-        img_size_(img_size)
-    {
-    }
-
-    void DetectAndMatchCorners(size_t frame_ind, CornerTrackRepository* track_rep) override
-    {
-        // determine current camerra's orientation using the ground truth
-        const SE3Transform& rt_cfw = gt_cam_orient_cfw_[frame_ind];
-
-        // determine which salient points are visible
-        for (const SalientPointFragment& fragment : entire_map_.SalientPoints())
-        {
-            const Point3& salient_point = fragment.Coord.value();
-            suriko::Point3 pnt_camera = SE3Apply(rt_cfw, salient_point);
-            suriko::Point2 pnt_pix = kalman_tracker_->ProjectCameraPoint(pnt_camera);
-            Scalar pix_x = pnt_pix[0];
-            Scalar pix_y = pnt_pix[1];
-            bool hit_wnd =
-                pix_x >= 0 && pix_x < (Scalar)img_size_[0] &&
-                pix_y >= 0 && pix_y < (Scalar)img_size_[1];
-            if (!hit_wnd)
-                continue;
-
-            // now, the point is visible in current frame
-
-            CornerTrack* corner_track = nullptr;
-            if (fragment.SyntheticVirtualPointId.has_value())
-            {
-                // determine points correspondance using synthatic ids
-                track_rep->GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
-            }
-            if (corner_track == nullptr)
-            {
-                suriko::CornerTrack& new_corner_track = track_rep->AddCornerTrackObj();
-                SRK_ASSERT(!new_corner_track.SalientPointId.has_value()) << "new track is not associated with any reconstructed salient point";
-
-                new_corner_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId;
-
-                corner_track = &new_corner_track;
-            }
-
-            suriko::Point2 pix(pix_x, pix_y);
-
-            CornerData& corner_data = corner_track->AddCorner(frame_ind);
-            corner_data.PixelCoord = pix;
-            corner_data.ImageCoord.setConstant(std::numeric_limits<Scalar>::quiet_NaN());
-        }
-    }
-};
-
 DEFINE_double(world_xmin, -1.5, "world xmin");
 DEFINE_double(world_xmax, 1.5, "world xmax");
 DEFINE_double(world_ymin, -1.5, "world ymin");
@@ -810,6 +831,8 @@ DEFINE_int32(kalman_update_impl, 1, "");
 DEFINE_double(ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
 DEFINE_bool(wait_after_each_frame, false, "true to wait for keypress after each iteration");
 DEFINE_bool(debug_skim_over, false, "overview the synthetic world without reconstruction");
+DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
+DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
 DEFINE_bool(fake_localization, false, "");
 
 int DavisonMonoSlamDemo(int argc, char* argv[])
@@ -927,12 +950,20 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     std::vector<std::set<size_t>> entire_map_fragment_id_per_frame;
 
+    DavisonMonoSlam::DebugPathEnum debug_path = DavisonMonoSlam::DebugPathEnum::DebugNone;
+    if (FLAGS_kalman_debug_estim_vars_cov)
+        debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugEstimVarsCov;
+    if (FLAGS_kalman_debug_predicted_vars_cov)
+        debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugPredictedVarsCov;
+    DavisonMonoSlam::SetDebugPath(debug_path);
+
     DavisonMonoSlam tracker;
     tracker.between_frames_period_ = 1;
     tracker.cam_intrinsics_ = cam_intrinsics;
     tracker.cam_distort_params_ = cam_distort_params;
     tracker.input_noise_std_ = FLAGS_kalman_input_noise_std;
     tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
+    tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
     tracker.debug_ellipsoid_cut_thr_ = FLAGS_ellipsoid_cut_thr;
     tracker.fake_localization_ = FLAGS_fake_localization;
     tracker.gt_cam_orient_world_to_f_ = [&gt_cam_orient_cfw](size_t f) -> SE3Transform
@@ -963,6 +994,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.ResetState(gt_cam_orient_cfw[0], entire_map.SalientPoints(), FLAGS_kalman_estim_var_init_std);
 
     tracker.PredictEstimVarsHelper();
+    LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
 
     //
     ptrdiff_t observable_frame_ind = -1; // this is visualized by UI, it is one frame less than current frame
@@ -976,7 +1008,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     auto worker_chat = std::make_shared<WorkerThreadChat>();
 
     UIThreadParams ui_params {};
-    ui_params.request_resuming_worker_on_each_frame = FLAGS_wait_after_each_frame;
+    ui_params.WaitForUserInputAfterEachFrame = FLAGS_wait_after_each_frame;
     ui_params.kalman_slam = &tracker;
     ui_params.ellipsoid_cut_thr = FLAGS_ellipsoid_cut_thr;
     ui_params.gt_cam_orient_cfw = &gt_cam_orient_cfw;
@@ -1091,7 +1123,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #if defined(SRK_HAS_OPENCV)
         std::stringstream strbuf;
         strbuf << "f=" << frame_ind;
-        cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
+        cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
         cv::imshow("front-camera", camera_image_rgb);
         cv::waitKey(1); // allow to refresh an opencv view
 #endif
@@ -1134,28 +1166,13 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             << " tracks_count=" << tracker.track_rep_.CornerTracks.size()
             << " ncd=" << new_points.size() << "-" << common_points.size() << "-" << del_points.size();
 
-        enum OpenCVKey
-        {
-            KeyEenter = 13,
-            KeySpace = 32,
-            KeyO = 111,
-            KeyS = 115
-        };
-
         // process the remaining frames
         if (!FLAGS_debug_skim_over && frame_ind >= well_known_frames_count)
         {
-            //bool op = kalman_tracker.IntegrateNewFrameCorners(rt_cfw);
-
-            bool suppress_observations = false;
-            if (key == OpenCVKey::KeyEenter)
-                suppress_observations = false;
-            else if (key == OpenCVKey::KeySpace)
-                suppress_observations = true;
-            tracker.ProcessFrame(frame_ind, suppress_observations, FLAGS_kalman_update_impl);
+            tracker.ProcessFrame(frame_ind);
 
             CameraPosState cam_state;
-            tracker.GetCameraPosState(&cam_state);
+            tracker.GetCameraPredictedPosState(&cam_state);
             SE3Transform actual_cam_wfc(RotMat(cam_state.OrientationWfc), cam_state.PosW);
             SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
             cam_orient_cfw_history.push_back(actual_cam_cfw);
@@ -1171,6 +1188,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             if (worker_chat->exit_worker_flag)
                 break;
         }
+        
+        bool suppress_observations = false;
         if (FLAGS_wait_after_each_frame)
         {
             std::unique_lock<std::mutex> ulk(worker_chat->resume_worker_mutex);
@@ -1178,7 +1197,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             // wait till UI requests to resume processing
             // TODO: if worker blocks, then UI can't request worker to exit; how to coalesce these?
             worker_chat->resume_worker_cv.wait(ulk, [&worker_chat] {return worker_chat->resume_worker_flag; });
+            suppress_observations = worker_chat->resume_worker_suppress_observations;
         }
+        dynamic_cast<DemoCornersMatcher&>(tracker.CornersMatcher()).SetSuppressObservations(suppress_observations);
 #endif
 #if defined(SRK_HAS_OPENCV)
         cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image

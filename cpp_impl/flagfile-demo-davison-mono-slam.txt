@@ -1,6 +1,6 @@
 #--logtostderr
 --stderrthreshold=0
---v=4
+--v=3
 # vmodule doesn't work on Windows
 #--vmodule=bundle*=4
 
@@ -19,25 +19,26 @@
 --viewer_steps_per_side_x=20
 --viewer_steps_per_side_y=10
 
-# true to just test visualizer, no slam is done
---nodebug_skim_over
 
-
-# NOTE: noise is mandatory
---noise_x3D_std=0.005
---noise_R_std=0.005
+#--noise_x3D_std=0.005
+#--noise_R_std=0.005
 # no noise
-#--noise_x3D_std=0
-#--noise_R_std=0
+--noise_x3D_std=0
+--noise_R_std=0
 
---kalman_estim_var_init_std=0.001
---kalman_input_noise_std=0.08
+--kalman_estim_var_init_std=0.1
+--kalman_input_noise_std=0.01
 --kalman_measurm_noise_std=1
 # 1=all,2=one observation, 3=one component of one observation
 --kalman_update_impl=1
+--kalman_debug_estim_vars_cov
+--kalman_debug_predicted_vars_cov
 --nofake_localization
 
---nowait_after_each_frame
-
+# visualizer
 
 --ellipsoid_cut_thr=0.05
+
+# true to just test visualizer, no slam is done
+--nodebug_skim_over
+--nowait_after_each_frame
