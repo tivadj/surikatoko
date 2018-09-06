@@ -71,6 +71,7 @@ class DavisonMonoSlam
     static constexpr size_t kPixPosComps = 2; // rows and columns
 
     static constexpr Scalar kFiniteDiffEpsDebug = (Scalar)1e-5; // used for debugging derivatives
+    static constexpr Scalar kNan = std::numeric_limits<Scalar>::quiet_NaN();
 
     typedef Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> EigenDynMat;
     typedef Eigen::Matrix<Scalar, Eigen::Dynamic, 1> EigenDynVec;
@@ -97,19 +98,10 @@ private:
 
     EigenDynVec predicted_estim_vars_; // x[13+N*6]
     EigenDynMat predicted_estim_vars_covar_; // P[13+N*6, 13+N*6]
-
-    EigenDynMat filter_gain_; // P[13+N*6, 2m] m=number of observed points
-    EigenDynMat measurm_noise_covar_; // R[2m,2m]
 public:
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
     Scalar input_noise_std_ = 1;
     Scalar measurm_noise_std_ = 1;
-
-    /// There are 3 implementations of incorporating m observed corners (corner=pixel, 2x1 mat).
-    /// 1. Stack all corners in one [2m,1] vector. Require inverting one [2m,2m] innovation matrix.
-    /// 2. Process each corner individually. Require inverting m innovation matrices of size [2x2].
-    /// 3. Process [x,y] component of each corner individually. Require inverting 2m scalars.
-    int kalman_update_impl_ = 0;
 
     std::unique_ptr<CornersMatcherBase> corners_matcher_;
     CornerTrackRepository track_rep_; // TODO: tracker shouldn't contain a history of corners per image (use only corners from latest image)
@@ -122,6 +114,41 @@ public:
     std::function <Point3(size_t)> gt_salient_point_by_virtual_point_id_fun_;
     Scalar debug_ellipsoid_cut_thr_ = 0.04; // value 0.05 corresponds to 2sig
     bool fake_localization_ = false; // true to get camera orientation from ground truth
+
+    /// There are 3 implementations of incorporating m observed corners (corner=pixel, 2x1 mat).
+    /// 1. Stack all corners in one [2m,1] vector. Require inverting one [2m,2m] innovation matrix.
+    /// 2. Process each corner individually. Require inverting m innovation matrices of size [2x2].
+    /// 3. Process [x,y] component of each corner individually. Require inverting 2m scalars.
+    int kalman_update_impl_ = 0;
+
+    bool fix_estim_vars_covar_symmetry_ = false;
+private:
+    struct
+    {
+        EigenDynMat R_; // R[2m,2m]
+        EigenDynMat H_; // H[2m,13+N*6]
+
+        EigenDynVec zk_; // [2m,1]
+        EigenDynVec projected_sal_pnts_; // [2m,1]
+
+        EigenDynMat filter_gain_; // P[13+N*6, 2m] m=number of observed points
+        EigenDynMat innov_var_; // [13+N*6, 13+N*6]
+        EigenDynMat innov_var_inv_; // P[13+N*6, 13+N*6]
+        EigenDynMat H_P_; // H*P, [13+N*6, 13+N*6]
+        EigenDynMat Knew_; // H*P, [13+N*6, 13+N*6]
+        EigenDynMat estim_vars_covar_new_; // P[13+N*6, 13+N*6]
+        EigenDynMat K_S_; // K*S, [13+N*6, 2m]
+    } stacked_update_cache_;
+    struct
+    {
+        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> P_Hxy_; // P*Hx or P*Hy, [13+N*6, 2]
+        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> Knew_; // K[13+N*6, 2]
+        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> K_S_; // K*S, [13+N*6, 2]
+    } one_obs_per_update_cache_;
+    struct
+    {
+        EigenDynVec Knew_; // [13+N*6, 1]
+    } one_comp_of_obs_per_update_cache_;
 public:
     DavisonMonoSlam() = default;
 

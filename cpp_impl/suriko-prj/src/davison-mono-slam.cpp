@@ -378,7 +378,9 @@ void DavisonMonoSlam::PredictEstimVars(size_t frame_ind, EigenDynVec* predicted_
     predicted_estim_vars_covar->topLeftCorner<kCamStateComps, kCamStateComps>() = Pvv_new;
     predicted_estim_vars_covar->topRightCorner(kCamStateComps, sal_pnts_vars_count) = Pvm_new;
     predicted_estim_vars_covar->bottomLeftCorner(sal_pnts_vars_count, kCamStateComps) = Pvm_new.transpose();
-    FixSymmetricMat(predicted_estim_vars_covar);
+
+    if (fix_estim_vars_covar_symmetry_)
+        FixSymmetricMat(predicted_estim_vars_covar);
 }
 
 void DavisonMonoSlam::PredictEstimVarsHelper()
@@ -431,37 +433,64 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind)
 
 void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind, const std::vector<size_t>& matched_track_ids)
 {
-    const auto& derive_at_pnt = predicted_estim_vars_;
-
-    CameraPosState cam_state;
-    LoadCameraPosDataFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
-
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_orient_wfc;
-    RotMatFromQuat(gsl::make_span<const Scalar>(cam_state.OrientationWfc.data(), kQuat4), &cam_orient_wfc);
-
     size_t matched_corners = matched_track_ids.size();
     if (matched_corners > 0)
     {
+        // improve predicted estimation with the info from observations
+        std::swap(estim_vars_, predicted_estim_vars_);
+        std::swap(estim_vars_covar_, predicted_estim_vars_covar_);
+
+        if (kSurikoDebug)
+        {
+            predicted_estim_vars_.setConstant(kNan);
+            predicted_estim_vars_covar_.setConstant(kNan);
+        }
+
+        const auto& derive_at_pnt = estim_vars_;
+        const auto& Pprev = estim_vars_covar_;
+
+        CameraPosState cam_state;
+        LoadCameraPosDataFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
+
+        Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_orient_wfc;
+        RotMatFromQuat(gsl::make_span<const Scalar>(cam_state.OrientationWfc.data(), kQuat4), &cam_orient_wfc);
+
+        auto& cache = stacked_update_cache_;
+        
         //
-        EigenDynMat Hk; // [2m,13+6n]
+        //EigenDynMat Hk; // [2m,13+6n]
+        auto& Hk = cache.H_;
         Deriv_H_by_estim_vars(frame_ind, cam_state, cam_orient_wfc, matched_track_ids, derive_at_pnt, &Hk);
 
         // evaluate filter gain
-        auto& Rk = measurm_noise_covar_;
+        //EigenDynMat Rk;
+        auto& Rk = cache.R_;
         FillRk(matched_corners, &Rk);
 
-        const auto& Pprev = predicted_estim_vars_covar_;
-        auto innov_var = Hk * Pprev * Hk.transpose() + Rk; // [2m,2m]
-        EigenDynMat innov_variance_inv = innov_var.inverse();
-        auto& Knew = filter_gain_;
-        Knew = Pprev * Hk.transpose() * innov_variance_inv; // [13+6n,2m]
+        // innovation variance S=H*P*Ht
+        //auto innov_var = Hk * Pprev * Hk.transpose() + Rk; // [2m,2m]
+        cache.H_P_.noalias() = Hk * Pprev;
+        auto& innov_var = cache.innov_var_;
+        innov_var.noalias() = cache.H_P_ * Hk.transpose(); // [2m,2m]
+        innov_var.noalias() += Rk;
+        
+        //EigenDynMat innov_var_inv = innov_var.inverse();
+        auto& innov_var_inv = cache.innov_var_inv_;
+        innov_var_inv.noalias() = innov_var.inverse();
+
+        // K=P*Ht*inv(S)
+        //EigenDynMat Knew = Pprev * Hk.transpose() * innov_var_inv; // [13+6n,2m]
+        auto& Knew = cache.Knew_;
+        Knew.noalias() = cache.H_P_.transpose() * innov_var_inv; // [13+6n,2m]
 
         //
-        Eigen::Matrix<Scalar, Eigen::Dynamic, 1> zk;
+        //Eigen::Matrix<Scalar, Eigen::Dynamic, 1> zk;
+        auto& zk = cache.zk_;
         zk.resize(matched_corners * kPixPosComps, 1);
 
-        Eigen::Matrix<Scalar, Eigen::Dynamic, 1> projected_sal_pnts;
-        projected_sal_pnts.resize(matched_corners * kPixPosComps, 1);
+        //Eigen::Matrix<Scalar, Eigen::Dynamic, 1> projected_sal_pnts;
+        auto& projected_sal_pnts = cache.projected_sal_pnts_;
+        projected_sal_pnts.resizeLike(zk);
 
         for (size_t obs_sal_pnt_ind = 0; obs_sal_pnt_ind < matched_track_ids.size(); ++obs_sal_pnt_ind)
         {
@@ -485,18 +514,32 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             Deriv_hd_by_cam_state_and_sal_pnt(obs_sal_pnt_ind, frame_ind, cam_state, cam_orient_wfc, matched_track_ids, derive_at_pnt, &hd_by_cam_state, &hd_by_sal_pnt);
             SRK_ASSERT(true);
         }
-        Scalar estim_change = (zk - projected_sal_pnts).norm();
-        
+
+        // Xnew=Xold+K(z-obs)
         // update estimated variables
-        EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
-        estim_vars_ = derive_at_pnt + estim_vars_delta;
+        //EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
+        //estim_vars_.noalias() = derive_at_pnt + estim_vars_delta;
+        //estim_vars_ = derive_at_pnt;
+        estim_vars_.noalias() += Knew * (zk - projected_sal_pnts);
 
         // update covariance matrix
-        size_t n = EstimatedVarsCount();
-        auto ident = EigenDynMat::Identity(n, n);
-        //estim_vars_covar_ = (ident - Knew * Hk) * Pprev;
-        estim_vars_covar_ = Pprev - Knew * innov_var * Knew.transpose(); // alternative
-        FixSymmetricMat(&estim_vars_covar_);
+        //size_t n = EstimatedVarsCount();
+        //auto ident = EigenDynMat::Identity(n, n);
+        //estim_vars_covar_.noalias() = (ident - Knew * Hk) * Pprev; // way1
+        //estim_vars_covar_.noalias() = Pprev - Knew * innov_var * Knew.transpose(); // way2, 10% faster than way1
+        
+        cache.K_S_.noalias() = Knew * innov_var;
+
+        //estim_vars_covar_ = Pprev;
+        estim_vars_covar_.noalias() -= cache.K_S_ * Knew.transpose();
+
+        // way1, impl of (I-K*H)P
+        //stacked_update_cache_.tmp1_.noalias() = Knew * Hk;
+        //stacked_update_cache_.tmp1_ -= ident;
+        //estim_vars_covar_.noalias() = -stacked_update_cache_.tmp1_ * Pprev;
+
+        if (fix_estim_vars_covar_symmetry_)
+            FixSymmetricMat(&estim_vars_covar_);
 
         if (kSurikoDebug && gt_cam_orient_world_to_f_ != nullptr) // ground truth
         {
@@ -512,6 +555,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             Scalar d1 = (cam_orient_wfc_gt.T - cam_state_new.PosW).norm();
             Scalar d2 = (cam_orient_wfc_quat - cam_state_new.OrientationWfc).norm();
             Scalar diff_gt = d1 + d2;
+            Scalar estim_change = (zk - projected_sal_pnts).norm();
             VLOG(4) << "diff_gt=" << diff_gt << " zk-obs=" << estim_change;
         }
 
@@ -537,8 +581,14 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind, con
     if (matched_corners > 0)
     {
         // improve predicted estimation with the info from observations
-        estim_vars_ = predicted_estim_vars_;
-        estim_vars_covar_ = predicted_estim_vars_covar_;
+        std::swap(estim_vars_, predicted_estim_vars_);
+        std::swap(estim_vars_covar_, predicted_estim_vars_covar_);
+        
+        if (kSurikoDebug)
+        {
+            predicted_estim_vars_.setConstant(kNan);
+            predicted_estim_vars_covar_.setConstant(kNan);
+        }
 
         Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> Rk;
         FillRk2x2(&Rk);
@@ -576,19 +626,20 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind, con
             Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> mid = 
                 hd_by_cam_state * Pxy * hd_by_sal_pnt.transpose();
 
-            Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> innov_var =
+            Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> innov_var_2x2 =
                 hd_by_cam_state * Pxx * hd_by_cam_state.transpose() +
                 mid + mid.transpose() +
                 hd_by_sal_pnt * Pyy * hd_by_sal_pnt.transpose() +
                 Rk;
-            Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> innov_var_inv = innov_var.inverse();
+            Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> innov_var_inv_2x2 = innov_var_2x2.inverse();
 
             // 2. filter gain [13+6n, 2]: K=(Px*Hx+Py*Hy)*inv(S)
 
-            auto& Knew = filter_gain_;
-            Knew = (Pprev.leftCols<kCamStateComps>() * hd_by_cam_state.transpose() +
-                    Pprev.middleCols<kSalientPointComps>(off) * hd_by_sal_pnt.transpose()
-                   ) * innov_var_inv;
+            one_obs_per_update_cache_.P_Hxy_.noalias() = Pprev.leftCols<kCamStateComps>() * hd_by_cam_state.transpose(); // P*Hx
+            one_obs_per_update_cache_.P_Hxy_.noalias() += Pprev.middleCols<kSalientPointComps>(off) * hd_by_sal_pnt.transpose(); // P*Hy
+
+            auto& Knew = one_obs_per_update_cache_.Knew_;
+            Knew.noalias() = one_obs_per_update_cache_.P_Hxy_ * innov_var_inv_2x2;
 
             // 3. update X and P using info derived from salient point observation
 
@@ -607,31 +658,26 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind, con
             Eigen::Matrix<Scalar, kPixPosComps, 1> hd = ProjectInternalSalientPoint(cam_state, sal_pnt, nullptr);
 
             //
-            EigenDynVec estim_vars_delta = Knew * (corner_pix.Mat() - hd);
+            auto estim_vars_delta = Knew * (corner_pix.Mat() - hd);
+
+            one_obs_per_update_cache_.K_S_.noalias() = Knew * innov_var_2x2; // cache
+            auto estim_vars_covar_delta = one_obs_per_update_cache_.K_S_ * Knew.transpose();
 
             if (kSurikoDebug)
             {
                 Scalar estim_vars_delta_norm = estim_vars_delta.norm();
                 diff_vars_total += estim_vars_delta_norm;
-            }
-
-            //
-            EigenDynMat estim_vars_covar_delta = Knew * innov_var * Knew.transpose(); // new
-            //auto estim_vars_covar_delta = Knew * innov_var * Knew.transpose(); // lazy
-            //auto& estim_vars_covar_delta = one_obs_per_update_cache_.estim_vars_covar_delta_; // cache
-            //estim_vars_covar_delta = Knew * innov_var * Knew.transpose();
-            
-            if (kSurikoDebug)
-            {
+                
                 Scalar estim_vars_covar_delta_norm = estim_vars_covar_delta.norm();
                 diff_cov_total += estim_vars_covar_delta_norm;
             }
 
             //
-            estim_vars_ += estim_vars_delta;
-            estim_vars_covar_ -= estim_vars_covar_delta;
+            estim_vars_.noalias() += estim_vars_delta;
+            estim_vars_covar_.noalias() -= estim_vars_covar_delta;
         }
-        FixSymmetricMat(&estim_vars_covar_);
+        if (fix_estim_vars_covar_symmetry_)
+            FixSymmetricMat(&estim_vars_covar_);
 
         if (kSurikoDebug)
         {
@@ -660,11 +706,18 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
     if (matched_corners > 0)
     {
         // improve predicted estimation with the info from observations
-        estim_vars_ = predicted_estim_vars_;
-        estim_vars_covar_ = predicted_estim_vars_covar_;
+        std::swap(estim_vars_, predicted_estim_vars_);
+        std::swap(estim_vars_covar_, predicted_estim_vars_covar_);
+        
+        if (kSurikoDebug)
+        {
+            predicted_estim_vars_.setConstant(kNan);
+            predicted_estim_vars_covar_.setConstant(kNan);
+        }
 
         Scalar diff_vars_total = 0;
         Scalar diff_cov_total = 0;
+        Scalar measurm_noise_variance = suriko::Sqr(static_cast<Scalar>(measurm_noise_std_)); // R[1,1]
 
         for (size_t obs_sal_pnt_ind = 0; obs_sal_pnt_ind < matched_track_ids.size(); ++obs_sal_pnt_ind)
         {
@@ -676,11 +729,10 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
 
             Point2 corner_pix = corner.value().PixelCoord;
 
-            Scalar measurm_noise_variance = suriko::Sqr(static_cast<Scalar>(measurm_noise_std_)); // R[1,1]
-
             for (size_t obs_comp_ind = 0; obs_comp_ind < kPixPosComps; ++obs_comp_ind)
             {
                 // the point where derivatives are calculated at
+                // attach to the latest state and P
                 const EigenDynVec& derive_at_pnt = estim_vars_;
                 const EigenDynMat& Pprev = estim_vars_covar_;
 
@@ -710,22 +762,20 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
 
                 typedef Eigen::Matrix<Scalar, 1, 1> EigenMat11;
 
-                EigenMat11 mid_mat = obs_comp_by_cam_state * Pxy * obs_comp_by_sal_pnt.transpose();
+                EigenMat11 mid_1x1 = obs_comp_by_cam_state * Pxy * obs_comp_by_sal_pnt.transpose();
 
-                EigenMat11 innov_var_mat =
+                EigenMat11 innov_var_1x1 =
                     obs_comp_by_cam_state * Pxx * obs_comp_by_cam_state.transpose() +
                     obs_comp_by_sal_pnt * Pyy * obs_comp_by_sal_pnt.transpose();
 
-                Scalar innov_var = innov_var_mat[0] + 2 * mid_mat[0] + measurm_noise_variance;
+                Scalar innov_var = innov_var_1x1[0] + 2 * mid_1x1[0] + measurm_noise_variance;
 
                 Scalar innov_var_inv = 1 / innov_var;
 
                 // 2. filter gain [13+6n, 1]: K=(Px*Hx+Py*Hy)*inv(S)
-
-                EigenDynVec Knew = (
-                    Pprev.leftCols<kCamStateComps>() * obs_comp_by_cam_state.transpose() +
-                    Pprev.middleCols<kSalientPointComps>(off) * obs_comp_by_sal_pnt.transpose()
-                ) * innov_var_inv;
+                auto& Knew = one_comp_of_obs_per_update_cache_.Knew_;
+                Knew.noalias() = innov_var_inv * Pprev.leftCols<kCamStateComps>() * obs_comp_by_cam_state.transpose();
+                Knew.noalias() += innov_var_inv * Pprev.middleCols<kSalientPointComps>(off) * obs_comp_by_sal_pnt.transpose();
 
                 //
                 // project salient point into current camera
@@ -737,30 +787,32 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
 
                 // 3. update X and P using info derived from salient point observation
 
-                EigenDynVec estim_vars_delta = Knew * (corner_pix[obs_comp_ind] - hd[obs_comp_ind]);
+                auto estim_vars_delta = Knew * (corner_pix[obs_comp_ind] - hd[obs_comp_ind]);
 
+                // keep outer product K*Kt lazy ([13+6n,1]*[1,13+6n]=[13+6n,13+6n])
+                
+                auto estim_vars_covar_delta = innov_var * (Knew * Knew.transpose()); // [13+6n,13+6n]
+
+                // NOTE: (K*Kt)S is 3 times slower than S*(K*Kt) or (S*K)Kt, S=scalar. Why?
+                //auto estim_vars_covar_delta = (Knew * Knew.transpose()) * innov_var; // [13+6n,13+6n] slow!!!
+                
                 if (kSurikoDebug)
                 {
                     Scalar estim_vars_delta_norm = estim_vars_delta.norm();
                     diff_vars_total += estim_vars_delta_norm;
-                }
 
-                // keep outer product K*Kt lazy ([13+6n,1]*[1,13+6n]=[13+6n,13+6n])
-                EigenDynMat estim_vars_covar_delta = Knew * Knew.transpose() * innov_var; // [13+6n,13+6n]
-                
-                if (kSurikoDebug)
-                {
                     Scalar estim_vars_covar_delta_norm = estim_vars_covar_delta.norm();
                     diff_cov_total += estim_vars_covar_delta_norm;
                 }
 
                 //
-                estim_vars_ += estim_vars_delta;
-                estim_vars_covar_ -= estim_vars_covar_delta;
+                estim_vars_.noalias() += estim_vars_delta;
+                estim_vars_covar_.noalias() -= estim_vars_covar_delta;
             }
         }
 
-        FixSymmetricMat(&estim_vars_covar_);
+        if (fix_estim_vars_covar_symmetry_)
+            FixSymmetricMat(&estim_vars_covar_);
 
         if (kSurikoDebug)
         {
