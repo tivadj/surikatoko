@@ -31,6 +31,7 @@
 --kalman_measurm_noise_std=1
 # 1=all,2=one observation, 3=one component of one observation
 --kalman_update_impl=1
+--nokalman_fix_estim_vars_covar_symmetry
 --kalman_debug_estim_vars_cov
 --kalman_debug_predicted_vars_cov
 --nofake_localization
@@ -38,6 +39,8 @@
 # visualizer
 
 --ellipsoid_cut_thr=0.05
+--visualize_during_processing=true
+--visualize_after_processing=true
 
 # true to just test visualizer, no slam is done
 --nodebug_skim_over

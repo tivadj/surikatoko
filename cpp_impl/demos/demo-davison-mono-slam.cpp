@@ -10,6 +10,7 @@
 #include <corecrt_math_defines.h>
 #include <random>
 #include <tuple>
+#include <chrono>
 #include <thread>
 #include <condition_variable>
 //#include <filesystem>
@@ -828,7 +829,10 @@ DEFINE_double(kalman_estim_var_init_std, 0.001, "");
 DEFINE_double(kalman_input_noise_std, 0.08, "");
 DEFINE_double(kalman_measurm_noise_std, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
+DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_double(ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
+DEFINE_bool(visualize_during_processing, true, "");
+DEFINE_bool(visualize_after_processing, true, "");
 DEFINE_bool(wait_after_each_frame, false, "true to wait for keypress after each iteration");
 DEFINE_bool(debug_skim_over, false, "overview the synthetic world without reconstruction");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
@@ -964,6 +968,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.input_noise_std_ = FLAGS_kalman_input_noise_std;
     tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
     tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
+    tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
     tracker.debug_ellipsoid_cut_thr_ = FLAGS_ellipsoid_cut_thr;
     tracker.fake_localization_ = FLAGS_fake_localization;
     tracker.gt_cam_orient_world_to_f_ = [&gt_cam_orient_cfw](size_t f) -> SE3Transform
@@ -1016,7 +1021,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     ui_params.get_observable_frame_ind_fun = [&observable_frame_ind]() { return observable_frame_ind; };
     ui_params.entire_map = &entire_map;
     ui_params.worker_chat = worker_chat;
-    std::thread ui_thread(SceneVisualizationThread, ui_params);
+    std::thread ui_thread;
+    if (FLAGS_visualize_during_processing)
+        ui_thread = std::thread(SceneVisualizationThread, ui_params);
 #endif
 
     struct ComparePointsInfo
@@ -1036,7 +1043,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     tracker.LogReprojError();
 
-    int key = 0; // result of opencv::waitKey
+    std::optional<std::chrono::duration<double>> prev_frame_process_time;
+    auto frame_total_process_time = std::chrono::duration<double>::zero();
+    size_t frames_processed = 0;
     constexpr size_t well_known_frames_count = 0;
     FragmentMap world_map;
     world_map.SetFragmentIdOffsetInternal(2000'000); // not necessary
@@ -1048,15 +1057,18 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         SE3Transform cam_wfc = SE3Inv(cam_cfw);
 
 #if defined(SRK_HAS_OPENCV)
-        camera_image_rgb.setTo(0);
-        auto project_fun = [&cam_cfw, &tracker](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+        if (FLAGS_visualize_during_processing)
         {
-            suriko::Point3 pnt_cam = SE3Apply(cam_cfw, sal_pnt);
-            suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(pnt_cam);
-            return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
-        };
-        constexpr Scalar f0 = 1;
-        suriko_demos::Draw2DProjectedAxes(f0, project_fun, &camera_image_rgb);
+            camera_image_rgb.setTo(0);
+            auto project_fun = [&cam_cfw, &tracker](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+            {
+                suriko::Point3 pnt_cam = SE3Apply(cam_cfw, sal_pnt);
+                suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(pnt_cam);
+                return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
+            };
+            constexpr Scalar f0 = 1;
+            suriko_demos::Draw2DProjectedAxes(f0, project_fun, &camera_image_rgb);
+        }
 #endif
         size_t new_points_per_frame_count = 0;
         size_t new_track_per_frame_count = 0;
@@ -1079,7 +1091,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             entire_fragment_id_per_frame.insert(fragment.SyntheticVirtualPointId.value());
 
 #if defined(SRK_HAS_OPENCV)
-            camera_image_rgb.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
+            if (FLAGS_visualize_during_processing)
+            {
+                camera_image_rgb.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
+            }
 #endif
 
             if (FLAGS_debug_skim_over || frame_ind < well_known_frames_count)
@@ -1121,11 +1136,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
 
 #if defined(SRK_HAS_OPENCV)
-        std::stringstream strbuf;
-        strbuf << "f=" << frame_ind;
-        cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
-        cv::imshow("front-camera", camera_image_rgb);
-        cv::waitKey(1); // allow to refresh an opencv view
+        if (FLAGS_visualize_during_processing)
+        {
+            std::stringstream strbuf;
+            strbuf << "f=" << frame_ind;
+            cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
+            cv::imshow("front-camera", camera_image_rgb);
+            cv::waitKey(1); // allow to refresh an opencv view
+        }
 #endif
 
         //
@@ -1162,6 +1180,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
 
         VLOG(4) << "f=" << frame_ind
+            << " prevFps=" << (prev_frame_process_time.has_value() ? 1 / prev_frame_process_time.value().count() : 0.0f)
             << " points_count=" << world_map.SalientPointsCount()
             << " tracks_count=" << tracker.track_rep_.CornerTracks.size()
             << " ncd=" << new_points.size() << "-" << common_points.size() << "-" << del_points.size();
@@ -1169,7 +1188,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         // process the remaining frames
         if (!FLAGS_debug_skim_over && frame_ind >= well_known_frames_count)
         {
+            auto t1 = std::chrono::high_resolution_clock::now();
+
             tracker.ProcessFrame(frame_ind);
+
+            auto t2 = std::chrono::high_resolution_clock::now();
+            prev_frame_process_time = t2 - t1;
+            frame_total_process_time += prev_frame_process_time.value();
+            frames_processed += 1;
 
             CameraPosState cam_state;
             tracker.GetCameraPredictedPosState(&cam_state);
@@ -1202,27 +1228,37 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         dynamic_cast<DemoCornersMatcher&>(tracker.CornersMatcher()).SetSuppressObservations(suppress_observations);
 #endif
 #if defined(SRK_HAS_OPENCV)
-        cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
+        if (FLAGS_visualize_during_processing)
+        {
+            cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
+        }
 #endif
     }
     VLOG(4) << "Finished processing all the frames";
+    LOG(INFO) << "avgFps=" << frames_count / frame_total_process_time.count();
 
 #if defined(SRK_HAS_PANGOLIN)
-    VLOG(4) << "Waiting for UI to request the exit";
+    if (FLAGS_visualize_after_processing && !ui_thread.joinable()) // don't create thread second time
+        ui_thread = std::thread(SceneVisualizationThread, ui_params);
+
+    if (ui_thread.joinable())
     {
-        // wait for Pangolin UI to request the exit
-        std::unique_lock<std::mutex> ulk(worker_chat->exit_worker_mutex);
-        worker_chat->exit_worker_cv.wait(ulk, [&worker_chat] {return worker_chat->exit_worker_flag; });
+        VLOG(4) << "Waiting for UI to request the exit";
+        {
+            // wait for Pangolin UI to request the exit
+            std::unique_lock<std::mutex> ulk(worker_chat->exit_worker_mutex);
+            worker_chat->exit_worker_cv.wait(ulk, [&worker_chat] {return worker_chat->exit_worker_flag; });
+        }
+        VLOG(4) << "Got UI notification to exit working thread";
+        {
+            // notify Pangolin UI to finish visualization thread
+            std::lock_guard<std::mutex> lk(worker_chat->exit_ui_mutex);
+            worker_chat->exit_ui_flag = true;
+        }
+        VLOG(4) << "Waiting for UI to perform the exit";
+        ui_thread.join();
+        VLOG(4) << "UI thread has been shut down";
     }
-    VLOG(4) << "Got UI notification to exit working thread";
-    {
-        // notify Pangolin UI to finish visualization thread
-        std::lock_guard<std::mutex> lk(worker_chat->exit_ui_mutex);
-        worker_chat->exit_ui_flag = true;
-    }
-    VLOG(4) << "Waiting for UI to perform the exit";
-    ui_thread.join();
-    VLOG(4) << "UI thread has been shut down";
 #elif defined(SRK_HAS_OPENCV)
     cv::waitKey(0); // 0=wait forever
 #endif
