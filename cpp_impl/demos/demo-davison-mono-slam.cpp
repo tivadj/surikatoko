@@ -4,6 +4,7 @@
 #include <string>
 #include <fstream>
 #include <functional>
+#include <numeric>
 #include <utility>
 #include <cassert>
 #include <cmath>
@@ -199,7 +200,12 @@ struct WorkerThreadChat
     bool resume_worker_flag = true; // true for worker to do processing, false to pause and wait for resume request from UI
     bool resume_worker_suppress_observations = false; // true to 'cover' camera - no detections are made
 
-    std::shared_mutex location_and_map_mutex_;
+    std::mutex tracker_and_ui_mutex_;
+};
+
+struct PlotterDataLogItem
+{
+    Scalar MaxCamPosUncert;
 };
 
 struct UIThreadParams
@@ -210,8 +216,10 @@ struct UIThreadParams
     std::function<size_t()> get_observable_frame_ind_fun;
     const std::vector<SE3Transform>* gt_cam_orient_cfw;
     const std::vector<SE3Transform>* cam_orient_cfw_history;
+    std::deque<PlotterDataLogItem>* plotter_data_log_exchange_buf;
     const FragmentMap* entire_map;
     std::shared_ptr<WorkerThreadChat> worker_chat;
+    bool show_data_logger;
 };
 
 enum class CamDisplayType
@@ -586,6 +594,9 @@ class SceneVisualizationPangolinGui
 {
 public:
     static UIThreadParams s_ui_params;
+private:
+    std::unique_ptr<pangolin::Plotter> plotter_;
+    pangolin::DataLog data_log_;
 public:
 SceneVisualizationPangolinGui() { }
 
@@ -648,17 +659,20 @@ void Run()
         pangolin::ModelViewLookAt(30, -30, 30, 0, 0, 0, pangolin::AxisY)
     );
 
-    constexpr int UI_WIDTH = 180;
+    constexpr int kUiWidth = 280;
+    constexpr int kDataLogHeight = 100;
     bool has_ground_truth = ui_params.gt_cam_orient_cfw != nullptr;
 
     // ui panel to the left 
     pangolin::CreatePanel("ui")
-        .SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(UI_WIDTH))
+        .SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(kUiWidth))
         .ResizeChildren();
+
+    int display_cam_bot = ui_params.show_data_logger ? kDataLogHeight : 0;
 
     // 3d content to the right
     pangolin::View& display_cam = pangolin::CreateDisplay()
-        .SetBounds(0.0, 1.0, pangolin::Attach::Pix(UI_WIDTH), 1.0, -fw / fh) // TODO: why negative aspect?
+        .SetBounds(pangolin::Attach::Pix(display_cam_bot), 1.0, pangolin::Attach::Pix(kUiWidth), 1.0, -fw / fh) // TODO: why negative aspect?
         .SetHandler(new pangolin::Handler3D(view_state_3d));
 
     pangolin::Var<ptrdiff_t> a_frame_ind("ui.frame_ind", -1);
@@ -686,6 +700,22 @@ void Run()
     pangolin::Var<double> sal_pnt_1_z("ui.sal_pnt_1_z", -1);
     pangolin::Var<double> sal_pnt_1_z_gt("ui.sal_pnt_1_z_gt", -1);
 
+    if (ui_params.show_data_logger)
+    {
+        std::vector<std::string> labels;
+        labels.push_back(std::string("cam_cov"));
+        data_log_.SetLabels(labels);
+
+        float time_points_count = 30; // time points spread over plotter's width
+        float maxY = 1; // data value spread over plotter's height
+        plotter_ = std::make_unique<pangolin::Plotter>(&data_log_, 0.0f, time_points_count, 0.0f, maxY, time_points_count, maxY);
+        pangolin::Plotter& plotter = *plotter_.get();
+        plotter.SetBounds(0.0, pangolin::Attach::Pix(kDataLogHeight), pangolin::Attach::Pix(kUiWidth), 1.0);
+        plotter.Track("$i"); // scrolls view as new value appear
+
+        pangolin::DisplayBase().AddDisplay(plotter);
+    }
+
     pangolin::RegisterKeyPressCallback('s', OnSkip);
     pangolin::RegisterKeyPressCallback('f', OnForward);
     pangolin::RegisterKeyPressCallback(pangolin::PANGO_KEY_ESCAPE, OnKeyEsc);
@@ -711,7 +741,6 @@ void Run()
                 a_cam_z_gt = cam_orient_wfc.T[2];
             }
 
-            std::shared_lock<std::shared_mutex> lock(ui_params.worker_chat->location_and_map_mutex_);
             CameraPosState cam_state;
             ui_params.kalman_slam->GetCameraPredictedPosState(&cam_state);
 
@@ -775,6 +804,17 @@ void Run()
                 mid_cam_disp_type,
                 last_cam_disp_type,
                 display_3D_uncertainties);
+
+            // pull data log entries from tracker
+            {
+                std::lock_guard<std::mutex> lk(ui_params.worker_chat->tracker_and_ui_mutex_);
+                while (!ui_params.plotter_data_log_exchange_buf->empty())
+                {
+                    const PlotterDataLogItem& item = ui_params.plotter_data_log_exchange_buf->front();
+                    ui_params.plotter_data_log_exchange_buf->pop_front();
+                    data_log_.Log(static_cast<float>(item.MaxCamPosUncert));
+                }
+            }
         };
 
         {
@@ -810,6 +850,74 @@ void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value a
 }
 #endif
 
+/// Represents a state of the tracker.
+struct TrackerInternalsSlice
+{
+    std::chrono::duration<double> FrameProcessingDur; // frame processing duration
+    Eigen::Matrix<Scalar, 3, 1> CamPosW;
+    Eigen::Matrix<Scalar, 3, 3> CamPosUncert;
+    Eigen::Matrix<Scalar, DavisonMonoSlam::kCamStateComps, DavisonMonoSlam::kCamStateComps> CamStateUncert;
+    Eigen::Matrix<Scalar, 3, 3> SalPntsUncertMedian; // median of uncertainty of all salient points
+    Scalar CurReprojErr;
+};
+
+/// Represents the history of the tracker processing a sequence of frames.
+struct TrackerInternalsHist
+{
+    std::chrono::duration<double> AvgFrameProcessingDur;
+    std::vector<TrackerInternalsSlice> StateSamples;
+};
+
+void CalcAggregateStatisticsInplace(TrackerInternalsHist* hist)
+{
+    size_t frames_count = hist->StateSamples.size();
+
+    using DurT = decltype(hist->AvgFrameProcessingDur);
+    DurT dur = std::accumulate(hist->StateSamples.begin(), hist->StateSamples.end(), DurT::zero(),
+        [](const auto& acc, const auto& i) { return acc + i.FrameProcessingDur; });
+    hist->AvgFrameProcessingDur = dur / frames_count;
+}
+template <typename EigenMat>
+void WriteMatElements(cv::FileStorage& fs, const EigenMat& m)
+{
+    for (decltype(m.size()) i = 0; i < m.size(); ++i)
+        fs << m.data()[i];
+}
+
+bool WriteTrackerInternalsToFile(std::string_view file_name, const TrackerInternalsHist& hist)
+{
+#if defined(SRK_HAS_OPENCV)
+    cv::FileStorage fs;
+    if (!fs.open(file_name.data(), cv::FileStorage::WRITE, "utf8"))
+        return false;
+
+    fs << "FramesCount" << static_cast<int>(hist.StateSamples.size());
+    fs << "AvgFrameProcessingDur" << static_cast<float>(hist.AvgFrameProcessingDur.count()); // seconds
+    fs << "Frames" <<"[";
+
+    for (const auto& item : hist.StateSamples)
+    {
+        fs << "{";
+
+        cv::write(fs, "FrameProcessingDur", item.FrameProcessingDur.count()); // seconds
+        cv::write(fs, "CurReprojErr", item.CurReprojErr);
+
+        Eigen::Map<const Eigen::Matrix<Scalar, 9, 1>> cam_pos_uncert(item.CamPosUncert.data());
+        fs << "CamPosUnc_s" <<"[:";
+        WriteMatElements(fs, cam_pos_uncert);
+        fs << "]";
+
+        fs << "SalPntUncMedian_s" << "[:";
+        WriteMatElements(fs, item.SalPntsUncertMedian);
+        fs << "]";
+
+        fs << "}";
+    }
+    fs << "]";
+#endif
+    return true;
+}
+
 DEFINE_double(world_xmin, -1.5, "world xmin");
 DEFINE_double(world_xmax, 1.5, "world xmax");
 DEFINE_double(world_ymin, -1.5, "world ymin");
@@ -830,14 +938,16 @@ DEFINE_double(kalman_input_noise_std, 0.08, "");
 DEFINE_double(kalman_measurm_noise_std, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
 DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
-DEFINE_double(ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
-DEFINE_bool(visualize_during_processing, true, "");
-DEFINE_bool(visualize_after_processing, true, "");
-DEFINE_bool(wait_after_each_frame, false, "true to wait for keypress after each iteration");
-DEFINE_bool(debug_skim_over, false, "overview the synthetic world without reconstruction");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
 DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
-DEFINE_bool(fake_localization, false, "");
+DEFINE_bool(kalman_fake_localization, false, "");
+DEFINE_double(ui_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
+DEFINE_bool(ui_show_data_logger, true, "Whether to show timeline with uncertainty statistics.");
+DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
+DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without reconstruction");
+DEFINE_bool(ctrl_visualize_during_processing, true, "");
+DEFINE_bool(ctrl_visualize_after_processing, true, "");
+DEFINE_bool(ctrl_collect_tracker_internals, false, "");
 
 int DavisonMonoSlamDemo(int argc, char* argv[])
 {
@@ -851,7 +961,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     bool corrupt_salient_points_with_noise = FLAGS_noise_x3D_std > 0;
     bool corrupt_cam_orient_with_noise = FLAGS_noise_R_std > 0;
     std::vector<SE3Transform> gt_cam_orient_cfw; // ground truth camera orientation transforming into camera from world
-    std::vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mat_per_frame;
 
     WorldBounds wb{};
     wb.XMin = FLAGS_world_xmin;
@@ -969,8 +1078,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
     tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
     tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
-    tracker.debug_ellipsoid_cut_thr_ = FLAGS_ellipsoid_cut_thr;
-    tracker.fake_localization_ = FLAGS_fake_localization;
+    tracker.debug_ellipsoid_cut_thr_ = FLAGS_ui_ellipsoid_cut_thr;
+    tracker.fake_localization_ = FLAGS_kalman_fake_localization;
     tracker.gt_cam_orient_world_to_f_ = [&gt_cam_orient_cfw](size_t f) -> SE3Transform
     {
         SE3Transform c = gt_cam_orient_cfw[f];
@@ -1004,7 +1113,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     //
     ptrdiff_t observable_frame_ind = -1; // this is visualized by UI, it is one frame less than current frame
     std::vector<SE3Transform> cam_orient_cfw_history;
-    
+    std::deque<PlotterDataLogItem> plotter_data_log_item_history;
+    TrackerInternalsHist tracker_internals_hist;
+
 #if defined(SRK_HAS_OPENCV)
     cv::Mat camera_image_rgb = cv::Mat::zeros((int)img_size[1], (int)img_size[0], CV_8UC3);
 #endif
@@ -1013,16 +1124,18 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     auto worker_chat = std::make_shared<WorkerThreadChat>();
 
     UIThreadParams ui_params {};
-    ui_params.WaitForUserInputAfterEachFrame = FLAGS_wait_after_each_frame;
+    ui_params.WaitForUserInputAfterEachFrame = FLAGS_ctrl_wait_after_each_frame;
     ui_params.kalman_slam = &tracker;
-    ui_params.ellipsoid_cut_thr = FLAGS_ellipsoid_cut_thr;
+    ui_params.ellipsoid_cut_thr = FLAGS_ui_ellipsoid_cut_thr;
     ui_params.gt_cam_orient_cfw = &gt_cam_orient_cfw;
     ui_params.cam_orient_cfw_history = &cam_orient_cfw_history;
+    ui_params.plotter_data_log_exchange_buf = &plotter_data_log_item_history;
     ui_params.get_observable_frame_ind_fun = [&observable_frame_ind]() { return observable_frame_ind; };
     ui_params.entire_map = &entire_map;
     ui_params.worker_chat = worker_chat;
+    ui_params.show_data_logger = FLAGS_ui_show_data_logger;
     std::thread ui_thread;
-    if (FLAGS_visualize_during_processing)
+    if (FLAGS_ctrl_visualize_during_processing)
         ui_thread = std::thread(SceneVisualizationThread, ui_params);
 #endif
 
@@ -1041,11 +1154,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     };
     std::vector<ComparePointsInfo> compare_cur_frame_to_prev_frames;
 
-    tracker.LogReprojError();
-
     std::optional<std::chrono::duration<double>> prev_frame_process_time;
-    auto frame_total_process_time = std::chrono::duration<double>::zero();
-    size_t frames_processed = 0;
     constexpr size_t well_known_frames_count = 0;
     FragmentMap world_map;
     world_map.SetFragmentIdOffsetInternal(2000'000); // not necessary
@@ -1057,7 +1166,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         SE3Transform cam_wfc = SE3Inv(cam_cfw);
 
 #if defined(SRK_HAS_OPENCV)
-        if (FLAGS_visualize_during_processing)
+        if (FLAGS_ctrl_visualize_during_processing)
         {
             camera_image_rgb.setTo(0);
             auto project_fun = [&cam_cfw, &tracker](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
@@ -1091,13 +1200,13 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             entire_fragment_id_per_frame.insert(fragment.SyntheticVirtualPointId.value());
 
 #if defined(SRK_HAS_OPENCV)
-            if (FLAGS_visualize_during_processing)
+            if (FLAGS_ctrl_visualize_during_processing)
             {
                 camera_image_rgb.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
             }
 #endif
 
-            if (FLAGS_debug_skim_over || frame_ind < well_known_frames_count)
+            if (FLAGS_ctrl_debug_skim_over || frame_ind < well_known_frames_count)
             {
                 CornerTrack* corner_track = nullptr;
                 tracker.track_rep_.GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
@@ -1136,7 +1245,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
 
 #if defined(SRK_HAS_OPENCV)
-        if (FLAGS_visualize_during_processing)
+        if (FLAGS_ctrl_visualize_during_processing)
         {
             std::stringstream strbuf;
             strbuf << "f=" << frame_ind;
@@ -1186,7 +1295,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             << " ncd=" << new_points.size() << "-" << common_points.size() << "-" << del_points.size();
 
         // process the remaining frames
-        if (!FLAGS_debug_skim_over && frame_ind >= well_known_frames_count)
+        if (!FLAGS_ctrl_debug_skim_over && frame_ind >= well_known_frames_count)
         {
             auto t1 = std::chrono::high_resolution_clock::now();
 
@@ -1194,8 +1303,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
             auto t2 = std::chrono::high_resolution_clock::now();
             prev_frame_process_time = t2 - t1;
-            frame_total_process_time += prev_frame_process_time.value();
-            frames_processed += 1;
 
             CameraPosState cam_state;
             tracker.GetCameraPredictedPosState(&cam_state);
@@ -1203,9 +1310,68 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
             cam_orient_cfw_history.push_back(actual_cam_cfw);
 
+            constexpr auto kCam = DavisonMonoSlam::kCamStateComps;
+            Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
+            tracker.GetCameraPredictedUncertainty(&cam_state_covar);
+
+            if (FLAGS_ctrl_collect_tracker_internals)
+            {
+                auto collect_tracker_internals = [&](TrackerInternalsSlice* slice)
+                {
+                    auto& frame_stats = *slice;
+                    frame_stats.FrameProcessingDur = prev_frame_process_time.value();
+                    frame_stats.CamPosW = cam_state.PosW;
+                    frame_stats.CamPosUncert = cam_state_covar.topLeftCorner<3, 3>();
+                    frame_stats.CamStateUncert = cam_state_covar;
+                    frame_stats.CurReprojErr = tracker.CurrentFrameReprojError();
+
+                    // find median of position uncertainty of all salient points
+
+                    size_t pnts_count = tracker.SalientPointsCount();
+                    static Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> sal_pnt_uncert_hist;
+                    sal_pnt_uncert_hist.resize(pnts_count, kEucl3*kEucl3);
+
+                    for (size_t obs_sal_pnt_ind = 0; obs_sal_pnt_ind < pnts_count; ++obs_sal_pnt_ind)
+                    {
+                        Eigen::Matrix<Scalar, kEucl3, 1> pos;
+                        Eigen::Matrix<Scalar, kEucl3, kEucl3> pos_uncert;
+                        tracker.GetSalientPointPredictedPosWithUncertainty(obs_sal_pnt_ind, &pos, &pos_uncert);
+                        
+                        for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+                            sal_pnt_uncert_hist(obs_sal_pnt_ind, i) = pos_uncert.data()[i];
+                    }
+
+                    // sort each column separately
+                    for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+                    {
+                        auto all_covs = gsl::make_span<Scalar>(&sal_pnt_uncert_hist(0, i), sal_pnt_uncert_hist.rows());
+                        std::sort(all_covs.begin(), all_covs.end());
+                    }
+
+                    size_t median_ind = sal_pnt_uncert_hist.rows() / 2;
+
+                    Eigen::Map<Eigen::Matrix<Scalar, kEucl3*kEucl3, 1>> sal_pnt_uncert_stacked(frame_stats.SalPntsUncertMedian.data());
+                    for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+                        sal_pnt_uncert_stacked[i] = sal_pnt_uncert_hist(median_ind, i);
+                };
+
+
+                TrackerInternalsSlice frame_stats{};
+                collect_tracker_internals(&frame_stats);
+
+                tracker_internals_hist.StateSamples.push_back(frame_stats);
+            }
+
+            // put new data log entries into plotter queue
+            PlotterDataLogItem data_log_item;
+            data_log_item.MaxCamPosUncert = cam_state_covar.diagonal().maxCoeff();
+            {
+                std::lock_guard<std::mutex> lk(ui_params.worker_chat->tracker_and_ui_mutex_);
+                plotter_data_log_item_history.push_back(data_log_item);
+            }
+
             observable_frame_ind = frame_ind;
         }
-        tracker.LogReprojError();
 
 #if defined(SRK_HAS_PANGOLIN)
         {
@@ -1216,7 +1382,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
         
         bool suppress_observations = false;
-        if (FLAGS_wait_after_each_frame)
+        if (FLAGS_ctrl_wait_after_each_frame)
         {
             std::unique_lock<std::mutex> ulk(worker_chat->resume_worker_mutex);
             worker_chat->resume_worker_flag = false; // reset the waiting flag
@@ -1228,17 +1394,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         dynamic_cast<DemoCornersMatcher&>(tracker.CornersMatcher()).SetSuppressObservations(suppress_observations);
 #endif
 #if defined(SRK_HAS_OPENCV)
-        if (FLAGS_visualize_during_processing)
+        if (FLAGS_ctrl_visualize_during_processing)
         {
             cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
         }
 #endif
     }
+
     VLOG(4) << "Finished processing all the frames";
-    LOG(INFO) << "avgFps=" << frames_count / frame_total_process_time.count();
 
 #if defined(SRK_HAS_PANGOLIN)
-    if (FLAGS_visualize_after_processing && !ui_thread.joinable()) // don't create thread second time
+    if (FLAGS_ctrl_visualize_after_processing && !ui_thread.joinable()) // don't create thread second time
         ui_thread = std::thread(SceneVisualizationThread, ui_params);
 
     if (ui_thread.joinable())
@@ -1262,6 +1428,13 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #elif defined(SRK_HAS_OPENCV)
     cv::waitKey(0); // 0=wait forever
 #endif
+
+    CalcAggregateStatisticsInplace(&tracker_internals_hist);
+
+    bool dump_op = WriteTrackerInternalsToFile("davison_tracker_internals.json", tracker_internals_hist);
+    if (FLAGS_ctrl_collect_tracker_internals && !dump_op)
+        LOG(ERROR) << "Can't dump the tracker's internals";
+
     return 0;
 }
 }

@@ -61,9 +61,10 @@ struct CameraPosState
 /// source: book "Structure from Motion using the Extended Kalman Filter" Civera 2011 (further SfM_EKF_Civera)
 class DavisonMonoSlam
 {
+public:
     // [x q v w], x: 3 for position, q: 4 for quaternion orientation, v: 3 for velocity, w: 3 for angular velocity
     static constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
-
+private:
     static constexpr size_t kInputNoiseComps = kVelocComps + kAngVelocComps; // Qk.rows: velocity and angular velocity are updated an each iteration by noise
     static constexpr size_t kSalientPointPolarCompsCount = 3; // [theta elevation rho], theta: 1 for azimuth angle, 1 for elevation angle, rho: 1 for distance
     static constexpr size_t kSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;
@@ -175,9 +176,14 @@ public:
     void GetCameraPredictedPosAndOrientationWithUncertainty(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
         Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat) const;
+
+    void GetCameraPredictedUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
+
     void GetSalientPointPredictedPosWithUncertainty(size_t salient_pnt_ind, 
         Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
+
+    Scalar CurrentFrameReprojError() const;
 
     static void SetDebugPath(DebugPathEnum debug_path);
 private:
@@ -316,8 +322,6 @@ private:
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraPosState& cam_state, const SalientPointInternal& sal_pnt, SalPntProjectionIntermidVars *proj_hist) const;
 
-    Scalar CurrentFrameReprojError() const;
-    
     void FixSymmetricMat(EigenDynMat* sym_mat) const;
 
     static bool DebugPath(DebugPathEnum debug_path);

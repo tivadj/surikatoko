@@ -204,13 +204,13 @@ void DavisonMonoSlam::ResetState(const SE3Transform& cam_pos_cfw, const std::vec
     
     for (size_t i = 0; i < salient_feats.size(); ++i)
     {
-        size_t off = kCamStateComps + i * kSalientPointComps;
-        estim_vars_covar_(off+0, off+0) = estim_var_init_variance;
+        size_t off = SalientPointOffset(i);
+        estim_vars_covar_(off+0, off+0) = 5*estim_var_init_variance;
         estim_vars_covar_(off+1, off+1) = estim_var_init_variance;
-        estim_vars_covar_(off+2, off+2) = estim_var_init_variance;
-        estim_vars_covar_(off+3, off+3) = estim_var_init_variance;
-        estim_vars_covar_(off+4, off+4) = estim_var_init_variance;
-        estim_vars_covar_(off+5, off+5) = estim_var_init_variance;
+        estim_vars_covar_(off+2, off+2) = 0.1 * estim_var_init_variance;
+        estim_vars_covar_(off+3, off+3) = 0;
+        estim_vars_covar_(off+4, off+4) = 0;
+        estim_vars_covar_(off+5, off+5) = 0;
     }
     SRK_ASSERT(estim_vars_covar_.allFinite());
 
@@ -1610,6 +1610,11 @@ void DavisonMonoSlam::GetCameraPredictedPosAndOrientationWithUncertainty(
     q[2] = src_estim_vars[5];
     q[3] = src_estim_vars[6];
     SRK_ASSERT(q.allFinite());
+}
+
+void DavisonMonoSlam::GetCameraPredictedUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const
+{
+    *cam_covar = predicted_estim_vars_covar_.topLeftCorner<kCamStateComps, kCamStateComps>();
 }
 
 void DavisonMonoSlam::LoadSalientPointPredictedPosWithUncertainty(
