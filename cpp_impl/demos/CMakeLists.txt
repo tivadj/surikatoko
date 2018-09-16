@@ -70,7 +70,11 @@ target_link_libraries(demo-multi-view-factorization ${OpenCV_LIBS})
 target_include_directories(demo-multi-view-factorization PRIVATE ${Pangolin_INCLUDE_DIRS})
 target_link_libraries(demo-multi-view-factorization ${Pangolin_LIBRARIES})
 
-add_executable(demo-davison-mono-slam demo-davison-mono-slam.cpp ${test-helpers})
+add_executable(demo-davison-mono-slam
+    davison-mono-slam/demo-davison-mono-slam.cpp
+    davison-mono-slam/demo-davison-mono-slam-ui.h
+    davison-mono-slam/demo-davison-mono-slam-ui.cpp
+    ${test-helpers})
 AddDepsF(demo-davison-mono-slam)
 target_include_directories(demo-davison-mono-slam PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(demo-davison-mono-slam ${OpenCV_LIBS})
