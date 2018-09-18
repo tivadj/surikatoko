@@ -371,7 +371,7 @@ auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Sc
     {
         // direction must be a unity vector
         Scalar dir_len = unity_dir.norm();
-        if (!IsClose(1, dir_len)) return false;
+        SRK_ASSERT(IsClose(1, dir_len)) << "provide valid unity_dir";
 
         // Rotating about some unity direction by zero angle is described by the identity matrix,
         // which we can return here. But the symmetric operation of computing direction and angle from R 
