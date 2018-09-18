@@ -227,6 +227,16 @@ auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
                                  const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0)
     -> suriko::Point3;
 
+/// Constructs SE3 transformation to look from <b>eye</b> point onto the target <b>center</b> point,
+/// which lies on the surface with normal <b>up</b>.
+/// Result camera's orientation is in XYZ=LUF (left-up-right) orientation, like in Hartley&Zisserman book.
+/// Result transformation converts camera points into world (thus WFC=world from camera).
+[[nodiscard]]
+SE3Transform LookAtLufWfc(
+    const Eigen::Matrix<Scalar, 3, 1>& eye,
+    const Eigen::Matrix<Scalar, 3, 1>& center,
+    const Eigen::Matrix<Scalar, 3, 1>& up);
+
 /// (x-c)*A*(x-c)=T
 struct QuadricEllipsoidWithCenter
 {

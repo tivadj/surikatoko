@@ -88,30 +88,15 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
         {
             suriko::Point3 cur_point = suriko::Point3(base1.Mat() + step * step_ind);
 
-            // X is directed to the right, Y - to up
-            Eigen::Matrix<Scalar, 4, 4> cam_from_world = Eigen::Matrix<Scalar, 4, 4>::Identity();
+            auto wfc = LookAtLufWfc(
+                cur_point.Mat() + Eigen::Matrix<Scalar, 3, 1>(viewer_offsetX, viewer_offsetY, ascentZ),
+                cur_point.Mat(),
+                Eigen::Matrix<Scalar, 3, 1>(0, 0, 1));
 
-            // translate to 'look to' point
-            Eigen::Matrix<Scalar, 3, 1> shift = cur_point.Mat();
+            // convert XYZ=LUF (left-up-forward) to XYZ=RDF (right-down-forward)
+            wfc.R *= RotMat(0, 0, 1, M_PI);
 
-            // shift viewer aside
-            shift[0] += viewer_offsetX;
-            shift[1] += viewer_offsetY;
-            shift[2] += ascentZ;
-
-            // minus due to inverse camera orientation (conversion from world to camera)
-            cam_from_world = SE3Mat(Eigen::Matrix<Scalar, 3, 1>(-shift)) * cam_from_world;
-
-            // rotate OY around OZ so that OY points towards center in horizontal plane OZ=ascentZ
-            Eigen::Matrix<Scalar, 3, 1> oz(0, 0, 1);
-            cam_from_world = SE3Mat(RotMat(oz, -skew_ang)) * cam_from_world;
-
-            // look down towards the center 
-            Scalar look_down_ang = std::atan2(ascentZ, viewer_down_offset);
-
-            // +pi/2 to direct not y-forward and z-up but z-forward and y-bottom
-            cam_from_world = SE3Mat(RotMat(1, 0, 0, look_down_ang + M_PI / 2)) * cam_from_world;
-            SE3Transform RT(cam_from_world.topLeftCorner(3, 3), cam_from_world.topRightCorner(3, 1));
+            SE3Transform RT = SE3Inv(wfc);
 
             // now camera is directed x-right, y-bottom, z-forward
             inverse_orient_cams->push_back(RT);

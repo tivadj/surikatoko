@@ -572,6 +572,28 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
     return x3D;
 }
 
+SE3Transform LookAtLufWfc(
+    const Eigen::Matrix<Scalar, 3, 1>& eye,
+    const Eigen::Matrix<Scalar, 3, 1>& center,
+    const Eigen::Matrix<Scalar, 3, 1>& up)
+{
+    // align OZ with view direction
+    Eigen::Matrix<Scalar, 3, 1> forward_dir = center - eye;
+    forward_dir.normalize();
+
+    // align OY to match up vector
+    // cam_up = up - proj(up onto forward_dir)
+    Eigen::Matrix<Scalar, 3, 1> cam_up_dir = up - forward_dir * up.dot(forward_dir); // new OY
+    cam_up_dir.normalize();
+
+    SE3Transform world_from_cam;
+    world_from_cam.R.middleCols<1>(0) = cam_up_dir.cross(forward_dir);
+    world_from_cam.R.middleCols<1>(1) = cam_up_dir;
+    world_from_cam.R.middleCols<1>(2) = forward_dir;
+    world_from_cam.T = eye;
+    return world_from_cam;
+}
+
 Scalar GetUncertaintyEllipsoidProbabilityCutValue(
     const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma,
     Scalar portion_of_max_prob)
