@@ -442,8 +442,11 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 
         if (kSurikoDebug)
         {
-            predicted_estim_vars_.setConstant(kNan);
-            predicted_estim_vars_covar_.setConstant(kNan);
+            //predicted_estim_vars_.setConstant(kNan);
+            //predicted_estim_vars_covar_.setConstant(kNan);
+            // TODO: fix me; initialize predicted, because UI reads it without sync!
+            predicted_estim_vars_ = estim_vars_;
+            predicted_estim_vars_covar_ = estim_vars_covar_;
         }
 
         const auto& derive_at_pnt = estim_vars_;
@@ -586,8 +589,11 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind, con
         
         if (kSurikoDebug)
         {
-            predicted_estim_vars_.setConstant(kNan);
-            predicted_estim_vars_covar_.setConstant(kNan);
+            //predicted_estim_vars_.setConstant(kNan);
+            //predicted_estim_vars_covar_.setConstant(kNan);
+            // TODO: fix me; initialize predicted, because UI reads it without sync!
+            predicted_estim_vars_ = estim_vars_;
+            predicted_estim_vars_covar_ = estim_vars_covar_;
         }
 
         Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> Rk;
@@ -711,8 +717,11 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
         
         if (kSurikoDebug)
         {
-            predicted_estim_vars_.setConstant(kNan);
-            predicted_estim_vars_covar_.setConstant(kNan);
+            //predicted_estim_vars_.setConstant(kNan);
+            //predicted_estim_vars_covar_.setConstant(kNan);
+            // TODO: fix me; initialize predicted, because UI reads it without sync!
+            predicted_estim_vars_ = estim_vars_;
+            predicted_estim_vars_covar_ = estim_vars_covar_;
         }
 
         Scalar diff_vars_total = 0;

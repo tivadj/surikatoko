@@ -14,8 +14,10 @@ auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::spa
 {
     // source : "A Recipe on the Parameterization of Rotation Matrices", Terzakis, 2012
     // formula 24
-    //quat = np.zeros(4, dtype = type(R(0, 0]))
-    if (R(1, 1) > -R(2, 2) && R(0, 0) > -R(1, 1) && R(0, 0) > -R(2, 2))
+    
+    // note, the original routing is modified by changing strict comparison with equality comparison
+    // to cover all the cases (eg.when R has zeros on the diagonal)
+    if (R(1, 1) >= -R(2, 2) && R(0, 0) >= -R(1, 1) && R(0, 0) >= -R(2, 2))
     {
         Scalar sum = 1 + R(0, 0) + R(1, 1) + R(2, 2);
         SRK_ASSERT(sum >= 0);
@@ -25,7 +27,7 @@ auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::spa
         quat[2] = 0.5 * (R(0, 2) - R(2, 0)) / root;
         quat[3] = 0.5 * (R(1, 0) - R(0, 1)) / root;
     }
-    else if (R(1, 1) < -R(2, 2) && R(0, 0) > R(1, 1) && R(0, 0) > R(2, 2))
+    else if (R(1, 1) <= -R(2, 2) && R(0, 0) >= R(1, 1) && R(0, 0) >= R(2, 2))
     {
         Scalar sum = 1 + R(0, 0) - R(1, 1) - R(2, 2);
         SRK_ASSERT(sum >= 0);
@@ -35,7 +37,7 @@ auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::spa
         quat[2] = 0.5 * (R(1, 0) + R(0, 1)) / root;
         quat[3] = 0.5 * (R(2, 0) + R(0, 2)) / root;
     }
-    else if (R(1, 1) > R(2, 2) && R(0, 0) < R(1, 1) && R(0, 0) < -R(2, 2))
+    else if (R(1, 1) >= R(2, 2) && R(0, 0) <= R(1, 1) && R(0, 0) <= -R(2, 2))
     {
         Scalar sum = 1 - R(0, 0) + R(1, 1) - R(2, 2);
         SRK_ASSERT(sum >= 0);
@@ -45,7 +47,7 @@ auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::spa
         quat[2] = 0.5 * root;
         quat[3] = 0.5 * (R(2, 1) + R(1, 2)) / root;
     }
-    else if (R(1, 1) < R(2, 2) && R(0, 0) < -R(1, 1) && R(0, 0) < -R(2, 2))
+    else if (R(1, 1) <= R(2, 2) && R(0, 0) <= -R(1, 1) && R(0, 0) <= -R(2, 2))
     {
         Scalar sum = 1 - R(0, 0) - R(1, 1) + R(2, 2);
         SRK_ASSERT(sum >= 0);
@@ -55,7 +57,8 @@ auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::spa
         quat[2] = 0.5 * (R(2, 1) + R(1, 2)) / root;
         quat[3] = 0.5 * root;
     }
-    else AssertFalse();
+    else
+        AssertFalse();
 }
 
 auto QuatFromRotationMat(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::span<Scalar> quat, std::string* err_msg) -> bool

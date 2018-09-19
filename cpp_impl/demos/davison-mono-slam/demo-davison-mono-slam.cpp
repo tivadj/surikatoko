@@ -47,7 +47,10 @@ using namespace suriko::internals;
 using namespace suriko::virt_world;
 
 void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps_per_side_x, size_t steps_per_side_y,
-    Scalar viewer_down_offset, Scalar ascentZ, std::vector<SE3Transform>* inverse_orient_cams)
+    suriko::Point3 eye_offset, 
+    suriko::Point3 center_offset,
+    const Eigen::Matrix<Scalar, 3, 1>& up,
+    std::vector<SE3Transform>* inverse_orient_cams)
 {
     std::array<suriko::Point3,5> look_at_base_points = {
         suriko::Point3(wb.XMax, wb.YMin, wb.ZMin),
@@ -65,10 +68,6 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
         steps_per_side_y
     };
 
-    Scalar skew_ang = (Scalar)std::atan2(std::abs(wb.XMax - wb.XMin), std::abs(wb.YMax - wb.YMin));
-    Scalar viewer_offsetX = viewer_down_offset * std::sin(skew_ang);
-    Scalar viewer_offsetY = -viewer_down_offset * std::cos(skew_ang);
-
     for (size_t base_point_ind = 0; base_point_ind < look_at_base_points.size()-1; ++base_point_ind)
     {
         suriko::Point3 base1 = look_at_base_points[base_point_ind];
@@ -76,17 +75,21 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
         size_t steps_per_side = viewer_steps_per_side[base_point_ind];
 
         Eigen::Matrix<Scalar, 3, 1> step = (base2.Mat() - base1.Mat()) / steps_per_side;
-        
-        for (size_t step_ind=0; step_ind<steps_per_side; ++step_ind)
+
+        // to avoid repeating the adjacent point of two consecutive segments, for each segment,
+        // the last point is not included because
+        // it will be included as the first point of the next segment
+        for (size_t step_ind = 0; step_ind < steps_per_side; ++step_ind)
         {
             suriko::Point3 cur_point = suriko::Point3(base1.Mat() + step * step_ind);
 
             auto wfc = LookAtLufWfc(
-                cur_point.Mat() + Eigen::Matrix<Scalar, 3, 1>(viewer_offsetX, viewer_offsetY, ascentZ),
-                cur_point.Mat(),
-                Eigen::Matrix<Scalar, 3, 1>(0, 0, 1));
+                cur_point.Mat() + eye_offset.Mat(),
+                cur_point.Mat() + center_offset.Mat(),
+                up);
 
             SE3Transform RT = SE3Inv(wfc);
+
             inverse_orient_cams->push_back(RT);
         }
     }
@@ -243,8 +246,15 @@ DEFINE_double(world_zmax, 1, "world zmax");
 DEFINE_double(world_cell_size_x, 0.5, "cell size x");
 DEFINE_double(world_cell_size_y, 0.5, "cell size y");
 DEFINE_double(world_cell_size_z, 0.5, "cell size z");
-DEFINE_double(viewer_offset_down, 7, "viewer's offset from viewed point in the down direction");
-DEFINE_double(viewer_ascendZ, 7, "viewer's offset in the up direction");
+DEFINE_double(viewer_eye_offset_x, 4, "");
+DEFINE_double(viewer_eye_offset_y, -2.5, "");
+DEFINE_double(viewer_eye_offset_z, 7, "");
+DEFINE_double(viewer_center_offset_x, 0, "");
+DEFINE_double(viewer_center_offset_y, 0, "");
+DEFINE_double(viewer_center_offset_z, 0, "");
+DEFINE_double(viewer_up_x, 0, "");
+DEFINE_double(viewer_up_y, 0, "");
+DEFINE_double(viewer_up_z, 1, "");
 DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
 DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
 DEFINE_double(noise_R_std, 0.005, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
@@ -347,7 +357,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cam_distort_params.K1 = 0;
     cam_distort_params.K2 = 0;
 
-    GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y, FLAGS_viewer_offset_down, FLAGS_viewer_ascendZ, &gt_cam_orient_cfw);
+    suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
+    suriko::Point3 viewer_center_offset(FLAGS_viewer_center_offset_x, FLAGS_viewer_center_offset_y, FLAGS_viewer_center_offset_z);
+    Eigen::Matrix<Scalar, 3, 1> up(FLAGS_viewer_up_x, FLAGS_viewer_up_y, FLAGS_viewer_up_z);
+    GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y,
+        viewer_eye_offset, viewer_center_offset, up, &gt_cam_orient_cfw);
 
     std::vector<SE3Transform> gt_cam_orient_wfc;
     std::transform(gt_cam_orient_cfw.begin(), gt_cam_orient_cfw.end(), std::back_inserter(gt_cam_orient_wfc), [](auto& t) { return SE3Inv(t); });
