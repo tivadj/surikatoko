@@ -8,8 +8,8 @@ c1=cams(:,2);
 c2=cams(:,3);
 
 figure(1)
-title('cam unc')
 plot(time,c0,'r')
+title('cam unc')
 hold on
 plot(time,c1,'g')
 plot(time,c2,'b')
@@ -21,8 +21,8 @@ sps1=sps(:,5);
 sps2=sps(:,9);
 
 figure(2)
-title('sal pnt median unc')
 plot(time,sps0,'r')
+title('sal pnt median unc')
 hold on
 plot(time,sps1,'g')
 plot(time,sps2,'b')

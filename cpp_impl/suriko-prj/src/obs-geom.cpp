@@ -327,7 +327,7 @@ bool IsIdentity(const Eigen::Matrix<Scalar, 3, 3>& M, Scalar rtol, Scalar atol, 
     return true;
 }
 
-bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
+bool IsOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
     Scalar rtol = 1.0e-3;
     Scalar atol = 1.0e-3;
     bool is_ident = (R.transpose() * R).isIdentity(atol);
@@ -341,9 +341,20 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
         }
         return false;
     }
+    return true;
+}
+
+bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
+    bool is_ortho = IsOrthogonal(R, msg);
+    if (!is_ortho)
+        return false;
+
     Scalar rdet = R.determinant();
-    bool is_one = IsClose(1, rdet, rtol, atol);
-    if (!is_one)
+
+    Scalar rtol = 1.0e-3;
+    Scalar atol = 1.0e-3;
+    bool det_one = IsClose(1, rdet, rtol, atol);
+    if (!det_one)
     {
         if (msg != nullptr)
         {
@@ -701,54 +712,7 @@ void ExtractEllipsoidFromUncertaintyMat(
     }
 }
 
-bool GetRotatedEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 3>& A,
-    const Eigen::Matrix<Scalar, 3, 1>& b, Scalar c,
-    Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
-    Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
-    Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse)
-{
-    // A=V*D*inv(V)
-    // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
-    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, 3, 3>> eigen_solver(A);
-    bool op = eigen_solver.info() == Eigen::Success;
-    SRK_ASSERT(op);
-
-    Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(A);
-    bool op2 = lltOfA.info() != Eigen::NumericalIssue;
-    //SRK_ASSERT(op2);
-
-    Eigen::Matrix<Scalar, 3, 3> R = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
-    Eigen::Matrix<Scalar, 3, 3> Rt = R.transpose();
-    Eigen::Matrix<Scalar, 3, 1> beta = Rt * b;
-    Eigen::Matrix<Scalar, 3, 1> dd = eigen_solver.eigenvalues();
-
-    Scalar t1 = 0.25*(
-        suriko::Sqr(beta[0]) / dd[0] +
-        suriko::Sqr(beta[1]) / dd[1] +
-        suriko::Sqr(beta[2]) / dd[2]);
-    Scalar t2 = -c + t1;
-    //SRK_ASSERT(t2 > 0) << "later this constant goes under sqrt";
-    if (t2 <= 0)
-        return false;
-    Scalar phi = t2 / (dd[0] * dd[1] * dd[2]);
-
-    auto& center = *ellipse_center;
-    center[0] = -0.5*beta[0] / dd[0];
-    center[1] = -0.5*beta[1] / dd[1];
-    center[2] = -0.5*beta[2] / dd[2];
-
-    auto& semi = *ellipse_semi_axes;
-    semi[0] = std::sqrt(dd[1] * dd[2] * phi);
-    semi[1] = std::sqrt(dd[0] * dd[2] * phi);
-    semi[2] = std::sqrt(dd[0] * dd[1] * phi);
-
-    *rot_mat_world_from_ellipse = R;
-
-    return true;
-}
-
-bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid,
+bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid, bool can_throw,
     Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
     Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
     Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse)
@@ -766,33 +730,53 @@ bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid,
     //SRK_ASSERT(op2);
 
     Eigen::Matrix<Scalar, 3, 3> R = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
+    bool is_ortho = IsOrthogonal(R);
+    SRK_ASSERT(is_ortho); // further relying on inv(R)=Rt
     Eigen::Matrix<Scalar, 3, 3> Rt = R.transpose();
-    Eigen::Matrix<Scalar, 3, 1> m = Rt * ellipsoid.Center;
+    Eigen::Matrix<Scalar, 3, 1> center = Rt * ellipsoid.Center;
     Eigen::Matrix<Scalar, 3, 1> dd = eigen_solver.eigenvalues();
 
+    Eigen::Matrix<Scalar, 3, 3> rrt = R * eigen_solver.eigenvalues().asDiagonal() * Rt;
+
     Eigen::Matrix<Scalar, 1, 1> f1 = ellipsoid.Center.transpose() * ellipsoid.A * ellipsoid.Center;
-    Scalar f2 = ellipsoid.RightSide - f1[0] + 
-        dd[0] * m[0] * m[0] + 
-        dd[1] * m[1] * m[1] + 
-        dd[2] * m[2] * m[2];
+    Scalar f2 =
+        dd[0] * center[0] * center[0] +
+        dd[1] * center[1] * center[1] +
+        dd[2] * center[2] * center[2];
+    Scalar right_side = ellipsoid.RightSide - f1[0] + f2;
 
-    Scalar peer_c = -ellipsoid.RightSide + f1[0];
-    Eigen::Matrix<Scalar, 3, 1> peer_beta = -2 * Rt * ellipsoid.A * ellipsoid.Center;
-        
-    SRK_ASSERT(f2 >= 0) << "later this constant goes under sqrt";
-    //if (f2 <= 0)
-    //    return false;
+    if (can_throw)
+        SRK_ASSERT(right_side >= 0) << "later this constant goes under sqrt";
+    else
+    {
+        if (right_side <= 0)
+            return false;
+    }
 
-    *ellipse_center = m;
+    *ellipse_center = center;
 
     auto& semi = *ellipse_semi_axes;
-    semi[0] = std::sqrt(f2 / dd[0]);
-    semi[1] = std::sqrt(f2 / dd[1]);
-    semi[2] = std::sqrt(f2 / dd[2]);
+    semi[0] = std::sqrt(right_side / dd[0]);
+    semi[1] = std::sqrt(right_side / dd[1]);
+    semi[2] = std::sqrt(right_side / dd[2]);
 
     *rot_mat_world_from_ellipse = R;
 
     return true;
+}
+
+bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov)
+{
+    Eigen::Matrix<Scalar, 3, 1> pos(0, 0, 0);
+
+    QuadricEllipsoidWithCenter ellipsoid;
+    ExtractEllipsoidFromUncertaintyMat(pos, pos_cov, 0.05, &ellipsoid);
+
+    Eigen::Matrix<Scalar, 3, 1> center1;
+    Eigen::Matrix<Scalar, 3, 1> semi_axes1;
+    Eigen::Matrix<Scalar, 3, 3> rot_mat_world_from_ellipse1;
+    bool suc = GetRotatedEllipsoid(ellipsoid, false, &center1, &semi_axes1, &rot_mat_world_from_ellipse1);
+    return suc;
 }
 
 namespace internals
@@ -803,7 +787,7 @@ namespace internals
         Eigen::Matrix<Scalar, 3, 3> identity3 = Eigen::Matrix<Scalar, 3, 3>::Identity();
         if (rot_mat == nullptr)
             rot_mat = &identity3;
-        
+    
         Eigen::Matrix<Scalar, 3, 1> zero_translation(0, 0, 0);
         if (translation == nullptr)
             translation = &zero_translation;

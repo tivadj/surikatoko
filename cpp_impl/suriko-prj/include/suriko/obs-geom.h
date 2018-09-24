@@ -187,6 +187,10 @@ auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Sc
 [[nodiscard]]
 auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool;
 
+/// Checks if Rt*R=I.
+[[nodiscard]]
+bool IsOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg = nullptr);
+
 /// Checks if Rt*R=I and det(R)=1.
 [[nodiscard]]
 bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg = nullptr);
@@ -261,17 +265,12 @@ void ExtractEllipsoidFromUncertaintyMat(
     const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
     QuadricEllipsoidWithCenter* ellipsoid);
 
-bool GetRotatedEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 3>& A,
-    const Eigen::Matrix<Scalar, 3, 1>& b, Scalar c,
+bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid, bool can_throw,
     Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
     Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
     Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse);
 
-bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid,
-    Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
-    Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
-    Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse);
+bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov);
 
 namespace internals
 {

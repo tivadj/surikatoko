@@ -168,7 +168,8 @@ void RenderEllipsoid(
 void RenderUncertaintyEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& pos,
     const Eigen::Matrix<Scalar, 3, 3>& pos_uncert,
-    Scalar ellipsoid_cut_thr)
+    Scalar ellipsoid_cut_thr,
+    bool ui_swallow_exc)
 {
     Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(pos_uncert);
     bool op2 = lltOfA.info() != Eigen::NumericalIssue;
@@ -178,21 +179,22 @@ void RenderUncertaintyEllipsoid(
         return;
     }
 
-    // uncertainty ellipsoid
-    Eigen::Matrix<Scalar, 3, 3> A;
-    Eigen::Matrix<Scalar, 3, 1> b;
-    Scalar c;
-    ExtractEllipsoidFromUncertaintyMat(pos, pos_uncert, ellipsoid_cut_thr, &A, &b, &c);
+    QuadricEllipsoidWithCenter ellipsoid;
+    ExtractEllipsoidFromUncertaintyMat(pos, pos_uncert, ellipsoid_cut_thr, &ellipsoid);
 
-    Eigen::Matrix<Scalar, 3, 1> center;
-    Eigen::Matrix<Scalar, 3, 1> semi_axes;
-    Eigen::Matrix<Scalar, 3, 3> rot_mat_world_from_ellipse;
-    bool op = GetRotatedEllipsoid(A, b, c, &center, &semi_axes, &rot_mat_world_from_ellipse);
-    if (!op)
-        return;
+    Eigen::Matrix<Scalar, 3, 1> center1;
+    Eigen::Matrix<Scalar, 3, 1> semi_axes1;
+    Eigen::Matrix<Scalar, 3, 3> rot_mat_world_from_ellipse1;
+    bool op1 = GetRotatedEllipsoid(ellipsoid, !ui_swallow_exc, &center1, &semi_axes1, &rot_mat_world_from_ellipse1);
+    if (!op1)
+    {
+        if (ui_swallow_exc)
+            return;
+        else SRK_ASSERT(op1);
+    }
 
     // draw projection of ellipsoid
-    RenderEllipsoid(center, semi_axes, rot_mat_world_from_ellipse);
+    RenderEllipsoid(center1, semi_axes1, rot_mat_world_from_ellipse1);
 }
 
 bool RenderUncertaintyEllipsoidBySampling(const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
@@ -307,17 +309,19 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
 void RenderLastCameraUncertEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
     const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert,
-    const Eigen::Matrix<Scalar, 4, 1>& cam_orient_quat_wfc, Scalar ellipsoid_cut_thr)
+    const Eigen::Matrix<Scalar, 4, 1>& cam_orient_quat_wfc, Scalar ellipsoid_cut_thr, bool ui_swallow_exc)
 {
     Eigen::Matrix<Scalar, 3, 3> cam_orient_wfc;
     RotMatFromQuat(gsl::make_span<const Scalar>(cam_orient_quat_wfc.data(), 4), &cam_orient_wfc);
 
-    RenderUncertaintyEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr);
+    RenderUncertaintyEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, ui_swallow_exc);
     //bool op = RenderUncertaintyEllipsoidBySampling(cam_pos, cam_pos_uncert, ellipsoid_cut_thr);
     int z = 0;
 }
 
-void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr, bool display_3D_uncertainties)
+void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
+    bool display_3D_uncertainties,
+    bool ui_swallow_exc)
 {
     size_t sal_pnt_count = kalman_slam->SalientPointsCount();
     for (size_t sal_pnt_ind = 0; sal_pnt_ind < sal_pnt_count; ++sal_pnt_ind)
@@ -330,7 +334,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr, bool disp
 
         if (display_3D_uncertainties)
         {
-            RenderUncertaintyEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr);
+            RenderUncertaintyEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, ui_swallow_exc);
             //bool op = RenderUncertaintyEllipsoidBySampling(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr);
         }
 
@@ -344,12 +348,13 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
     CamDisplayType last_cam_disp_type,
-    bool display_3D_uncertainties)
+    bool display_3D_uncertainties,
+    bool ui_swallow_exc)
 {
     // world axes
     RenderAxes(0.5);
 
-    RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties);
+    RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, ui_swallow_exc);
 
     if (ui_params.gt_cam_orient_cfw != nullptr)
     {
@@ -374,7 +379,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
         Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
         Eigen::Matrix<Scalar, 4, 1> cam_orient_quat;
         kalman_slam->GetCameraPredictedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
-        RenderLastCameraUncertEllipsoid(cam_pos, cam_pos_uncert, cam_orient_quat, ellipsoid_cut_thr);
+        RenderLastCameraUncertEllipsoid(cam_pos, cam_pos_uncert, cam_orient_quat, ellipsoid_cut_thr, ui_swallow_exc);
     }
 }
 
@@ -446,6 +451,7 @@ void SceneVisualizationPangolinGui::Run()
     constexpr int kUiWidth = 280;
     constexpr int kDataLogHeight = 100;
     bool has_ground_truth = ui_params.gt_cam_orient_cfw != nullptr;
+    bool ui_swallow_exc = ui_params.ui_swallow_exc;
 
     // ui panel to the left 
     pangolin::CreatePanel("ui")
@@ -587,7 +593,8 @@ void SceneVisualizationPangolinGui::Run()
                 display_trajectory,
                 mid_cam_disp_type,
                 last_cam_disp_type,
-                display_3D_uncertainties);
+                display_3D_uncertainties,
+                ui_swallow_exc);
 
             // pull data log entries from tracker
             {

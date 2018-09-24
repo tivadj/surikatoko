@@ -246,6 +246,8 @@ DEFINE_double(world_zmax, 1, "world zmax");
 DEFINE_double(world_cell_size_x, 0.5, "cell size x");
 DEFINE_double(world_cell_size_y, 0.5, "cell size y");
 DEFINE_double(world_cell_size_z, 0.5, "cell size z");
+DEFINE_double(world_noise_R_std, 0.005, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
+DEFINE_double(world_noise_x3D_std, 0.005, "Standard deviation of noise distribution for salient points, 0=no noise (eg: 0.1)");
 DEFINE_double(viewer_eye_offset_x, 4, "");
 DEFINE_double(viewer_eye_offset_y, -2.5, "");
 DEFINE_double(viewer_eye_offset_z, 7, "");
@@ -257,18 +259,20 @@ DEFINE_double(viewer_up_y, 0, "");
 DEFINE_double(viewer_up_z, 1, "");
 DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
 DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
-DEFINE_double(noise_R_std, 0.005, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
-DEFINE_double(noise_x3D_std, 0.005, "Standard deviation of noise distribution for salient points, 0=no noise (eg: 0.1)");
 DEFINE_double(kalman_estim_var_init_std, 0.001, "");
 DEFINE_double(kalman_input_noise_std, 0.08, "");
+DEFINE_double(kalman_sal_pnt_init_inv_dist, 1, "");
+DEFINE_double(kalman_sal_pnt_init_inv_dist_std, 1, "");
 DEFINE_double(kalman_measurm_noise_std, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
 DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
 DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
 DEFINE_bool(kalman_fake_localization, false, "");
+DEFINE_bool(kalman_fake_sal_pnt_init_inv_dist, false, "");
 DEFINE_double(ui_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
 DEFINE_bool(ui_show_data_logger, true, "Whether to show timeline with uncertainty statistics.");
+DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
 DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
 DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without reconstruction");
 DEFINE_bool(ctrl_visualize_during_processing, true, "");
@@ -280,12 +284,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
     google::InitGoogleLogging(argv[0]);
 
-    LOG(INFO) << "noise_x3D_std=" << FLAGS_noise_x3D_std;
-    LOG(INFO) << "noise_R_std=" << FLAGS_noise_R_std;
+    LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
+    LOG(INFO) << "world_noise_R_std=" << FLAGS_world_noise_R_std;
 
     //
-    bool corrupt_salient_points_with_noise = FLAGS_noise_x3D_std > 0;
-    bool corrupt_cam_orient_with_noise = FLAGS_noise_R_std > 0;
+    bool corrupt_salient_points_with_noise = FLAGS_world_noise_x3D_std > 0;
+    bool corrupt_cam_orient_with_noise = FLAGS_world_noise_R_std > 0;
     std::vector<SE3Transform> gt_cam_orient_cfw; // ground truth camera orientation transforming into camera from world
 
     WorldBounds wb{};
@@ -305,7 +309,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     std::unique_ptr<std::normal_distribution<Scalar>> x3D_noise_dis;
     if (corrupt_salient_points_with_noise)
-        x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0, FLAGS_noise_x3D_std);
+        x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0, FLAGS_world_noise_x3D_std);
 
     size_t next_virtual_point_id = 6000'000 + 1;
     FragmentMap entire_map;
@@ -368,7 +372,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     if (corrupt_cam_orient_with_noise)
     {
-        std::normal_distribution<Scalar> cam_orient_noise_dis(0, FLAGS_noise_R_std);
+        std::normal_distribution<Scalar> cam_orient_noise_dis(0, FLAGS_world_noise_R_std);
         for (SE3Transform& cam_orient : gt_cam_orient_cfw)
         {
             Eigen::Matrix<Scalar, 3, 1> dir;
@@ -405,6 +409,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.cam_intrinsics_ = cam_intrinsics;
     tracker.cam_distort_params_ = cam_distort_params;
     tracker.input_noise_std_ = FLAGS_kalman_input_noise_std;
+    tracker.sal_pnt_init_inv_dist_ = FLAGS_kalman_sal_pnt_init_inv_dist;
+    tracker.sal_pnt_init_inv_dist_std_ = FLAGS_kalman_sal_pnt_init_inv_dist_std;
     tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
     tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
     tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
@@ -435,7 +441,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.SetCornersMatcher(std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size));
 
     // hack: put full prior knowledge into the tracker
-    tracker.ResetState(gt_cam_orient_cfw[0], entire_map.SalientPoints(), FLAGS_kalman_estim_var_init_std);
+    bool init_sal_pnts = false;
+    tracker.ResetState(gt_cam_orient_cfw[0], entire_map.SalientPoints(), FLAGS_kalman_estim_var_init_std, init_sal_pnts);
+    tracker.ResetSalientPoints(gt_cam_orient_cfw[0], entire_map.SalientPoints(), FLAGS_kalman_fake_sal_pnt_init_inv_dist);
 
     tracker.PredictEstimVarsHelper();
     LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
@@ -464,6 +472,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     ui_params.entire_map = &entire_map;
     ui_params.worker_chat = worker_chat;
     ui_params.show_data_logger = FLAGS_ui_show_data_logger;
+    ui_params.ui_swallow_exc = FLAGS_ui_swallow_exc;
     std::thread ui_thread;
     if (FLAGS_ctrl_visualize_during_processing)
         ui_thread = std::thread(SceneVisualizationThread, ui_params);

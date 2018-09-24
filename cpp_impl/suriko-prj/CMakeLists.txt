@@ -25,6 +25,7 @@ set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/lin-alg.h
         ${PROJECT_SOURCE_DIR}/include/suriko/quat.h
         ${PROJECT_SOURCE_DIR}/include/suriko/multi-view-factorization.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/rand-stuff.h
         ${PROJECT_SOURCE_DIR}/include/suriko/virt-world/scene-generator.h
         )
 set(lib_srcs

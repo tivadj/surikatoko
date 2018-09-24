@@ -45,6 +45,7 @@ struct UIThreadParams
     const FragmentMap* entire_map;
     std::shared_ptr<WorkerThreadChat> worker_chat;
     bool show_data_logger;
+    bool ui_swallow_exc;
 };
 
 class SceneVisualizationPangolinGui
