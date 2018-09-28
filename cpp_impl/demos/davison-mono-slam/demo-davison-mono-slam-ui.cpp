@@ -538,21 +538,28 @@ void SceneVisualizationPangolinGui::Run()
             a_cam_y = cam_state.PosW[1];
             a_cam_z = cam_state.PosW[2];
 
-            Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_0;
-            ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(0, &sal_pnt_0, nullptr);
-            sal_pnt_0_x = sal_pnt_0[0];
-            sal_pnt_0_y = sal_pnt_0[1];
-            sal_pnt_0_z = sal_pnt_0[2];
-            Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_1;
-            ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(1, &sal_pnt_1, nullptr);
-            sal_pnt_1_x = sal_pnt_1[0];
-            sal_pnt_1_y = sal_pnt_1[1];
-            sal_pnt_1_z = sal_pnt_1[2];
+            size_t sal_pnts_count = ui_params.kalman_slam->SalientPointsCount();
+            if (sal_pnts_count > 0)
+            {
+                Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_0;
+                ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(0, &sal_pnt_0, nullptr);
+                sal_pnt_0_x = sal_pnt_0[0];
+                sal_pnt_0_y = sal_pnt_0[1];
+                sal_pnt_0_z = sal_pnt_0[2];
+            }
+            if (sal_pnts_count > 1)
+            {
+                Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_1;
+                ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(1, &sal_pnt_1, nullptr);
+                sal_pnt_1_x = sal_pnt_1[0];
+                sal_pnt_1_y = sal_pnt_1[1];
+                sal_pnt_1_z = sal_pnt_1[2];
+            }
 
             if (has_ground_truth)
             {
                 FragmentMap::DependsOnSalientPointIdInfrustructure();
-                if (ui_params.entire_map->SalientPointsCount() > 0)
+                if (sal_pnts_count > 0)
                 {
                     const SalientPointFragment& sal_pnt_0_gt = ui_params.entire_map->GetSalientPointByInternalOrder(0);
                     sal_pnt_0_x_gt = sal_pnt_0_gt.Coord.value()[0];
@@ -560,7 +567,7 @@ void SceneVisualizationPangolinGui::Run()
                     sal_pnt_0_z_gt = sal_pnt_0_gt.Coord.value()[2];
                 }
 
-                if (ui_params.entire_map->SalientPointsCount() > 1)
+                if (sal_pnts_count > 1)
                 {
                     const SalientPointFragment& sal_pnt_1_gt = ui_params.entire_map->GetSalientPointByInternalOrder(1);
                     sal_pnt_1_x_gt = sal_pnt_1_gt.Coord.value()[0];

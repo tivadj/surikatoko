@@ -76,6 +76,7 @@ struct SalientPointFragment
 {
     std::optional<size_t> SyntheticVirtualPointId;
     std::optional<suriko::Point3> Coord; // TODO: when it is null?
+    void* UserObj = nullptr; // ptr to salient object in tracker object
 };
 
 /// The space with salient 3D points.
@@ -97,6 +98,8 @@ public:
     void SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);
 
     const SalientPointFragment& GetSalientPointNew(size_t salient_point_id) const;
+          SalientPointFragment& GetSalientPointNew(size_t salient_point_id);
+
     const SalientPointFragment& GetSalientPointByInternalOrder(size_t sal_pnt_array_ind) const;
 
     const suriko::Point3& GetSalientPoint(size_t salient_point_id) const;
@@ -107,7 +110,7 @@ public:
     size_t SalientPointsCount() const { return salient_points_.size(); }
     const std::vector<SalientPointFragment>& SalientPoints() const { return salient_points_; }
           std::vector<SalientPointFragment>& SalientPoints()       { return salient_points_; }
-    void GetSalientPointsIds(std::vector<size_t>* salient_points_ids);
+    void GetSalientPointsIds(std::vector<size_t>* salient_points_ids) const;
 
     void SetFragmentIdOffsetInternal(size_t fragment_id_offset);
 private:

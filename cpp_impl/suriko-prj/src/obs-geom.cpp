@@ -88,6 +88,13 @@ const SalientPointFragment& FragmentMap::GetSalientPointNew(size_t salient_point
     return salient_points_[ind];
 }
 
+SalientPointFragment& FragmentMap::GetSalientPointNew(size_t salient_point_id)
+{
+    size_t ind = SalientPointIdToInd(salient_point_id);
+    CHECK(ind < salient_points_.size());
+    return salient_points_[ind];
+}
+
 const SalientPointFragment& FragmentMap::GetSalientPointByInternalOrder(size_t sal_pnt_array_ind) const
 {
     return salient_points_[sal_pnt_array_ind];
@@ -141,7 +148,7 @@ size_t FragmentMap::SalientPointIndToId(size_t salient_point_ind) const
     return salient_point_ind + fragment_id_offset_ + 1;
 }
 
-void FragmentMap::GetSalientPointsIds(std::vector<size_t>* salient_points_ids)
+void FragmentMap::GetSalientPointsIds(std::vector<size_t>* salient_points_ids) const
 {
     for (size_t i=0; i<salient_points_.size(); ++i)
     {

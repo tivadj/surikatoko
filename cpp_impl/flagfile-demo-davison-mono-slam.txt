@@ -1,47 +1,63 @@
 #--logtostderr
 --stderrthreshold=0
---v=3
+--v=4
 # vmodule doesn't work on Windows
 #--vmodule=bundle*=4
 
 --world_xmin=-1.5
 --world_xmax=1.5
 --world_ymin=-1.5
---world_ymax=1.5
+--world_ymax=-0.4
 --world_zmin=0
---world_zmax=1
+--world_zmax=0.0001
 --world_cell_size_x=0.5
 --world_cell_size_y=0.5
 --world_cell_size_z=0.5
+#--world_noise_x3D_std=0.005
+#--world_noise_R_std=0.005
+--world_noise_x3D_std=0
+--world_noise_R_std=0
 
---viewer_offset_down=7
---viewer_ascendZ=7
---viewer_steps_per_side_x=20
+--viewer_center_offset_x=0
+--viewer_center_offset_y=0
+--viewer_center_offset_z=0
+--viewer_eye_offset_x=3
+--viewer_eye_offset_y=-2
+--viewer_eye_offset_z=7
+--viewer_up_x=0
+--viewer_up_y=0
+--viewer_up_z=1
+--viewer_steps_per_side_x=10
 --viewer_steps_per_side_y=10
 
 
-#--noise_x3D_std=0.005
-#--noise_R_std=0.005
-# no noise
---noise_x3D_std=0
---noise_R_std=0
-
---kalman_estim_var_init_std=0.1
---kalman_input_noise_std=0.01
+--kalman_estim_var_init_std=0.005
+--kalman_input_noise_std=0.1
 --kalman_measurm_noise_std=1
+--kalman_sal_pnt_init_inv_dist=1
+--kalman_sal_pnt_init_inv_dist_std=5
 # 1=all,2=one observation, 3=one component of one observation
 --kalman_update_impl=1
---nokalman_fix_estim_vars_covar_symmetry
+--kalman_max_new_blobs_in_first_frame=3
+--kalman_max_new_blobs_per_frame=1
+--kalman_fix_estim_vars_covar_symmetry=false
 --kalman_debug_estim_vars_cov
 --kalman_debug_predicted_vars_cov
---nofake_localization
+--kalman_fake_localization=false
+--kalman_fake_sal_pnt_init_inv_dist=true
 
-# visualizer
 
---ellipsoid_cut_thr=0.05
---visualize_during_processing=true
---visualize_after_processing=true
+# Visualizer
+
+--ui_ellipsoid_cut_thr=0.05
+--ui_show_data_logger=true
+--ui_swallow_exc=false
+
+# Controller
 
 # true to just test visualizer, no slam is done
---nodebug_skim_over
---nowait_after_each_frame
+--ctrl_debug_skim_over=false
+--ctrl_wait_after_each_frame=true
+--ctrl_visualize_during_processing=true
+--ctrl_visualize_after_processing=true
+--ctrl_collect_tracker_internals=true

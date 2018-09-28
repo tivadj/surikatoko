@@ -97,13 +97,24 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
 
 class DemoCornersMatcher : public CornersMatcherBase
 {
+    struct BlobInfo
+    {
+        suriko::Point2 Coord;
+        DavisonMonoSlam::SalPntId SalPntIdInTracker;
+        std::optional<Scalar> GTDepth; // ground truth depth to salient point in virtual environments
+        size_t FragmentId; // the id of a fragment in entire map
+    };
     const std::vector<SE3Transform>& gt_cam_orient_cfw_;
-    const FragmentMap& entire_map_;
+    FragmentMap& entire_map_;
     std::array<size_t, 2> img_size_;
     const DavisonMonoSlam* kalman_tracker_;
     bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
+    std::vector<BlobInfo> detected_blobs; // blobs detected in current frame
 public:
-    DemoCornersMatcher(const DavisonMonoSlam* kalman_tracker, const std::vector<SE3Transform>& gt_cam_orient_cfw, const FragmentMap& entire_map,
+    std::optional<size_t> max_new_blobs_per_frame_;
+    std::optional<size_t> max_new_blobs_in_first_frame_;
+public:
+    DemoCornersMatcher(const DavisonMonoSlam* kalman_tracker, const std::vector<SE3Transform>& gt_cam_orient_cfw, FragmentMap& entire_map,
         const std::array<size_t, 2>& img_size)
         : kalman_tracker_(kalman_tracker),
         gt_cam_orient_cfw_(gt_cam_orient_cfw),
@@ -112,17 +123,23 @@ public:
     {
     }
 
-    void DetectAndMatchCorners(size_t frame_ind, CornerTrackRepository* track_rep) override
+    void AnalyzeFrame(size_t frame_ind) override
     {
+        detected_blobs.clear();
+
         if (suppress_observations_)
             return;
 
         // determine current camerra's orientation using the ground truth
         const SE3Transform& rt_cfw = gt_cam_orient_cfw_[frame_ind];
 
-        // determine which salient points are visible
-        for (const SalientPointFragment& fragment : entire_map_.SalientPoints())
+        std::vector<size_t> salient_points_ids;
+        entire_map_.GetSalientPointsIds(&salient_points_ids);
+
+        for (size_t frag_id : salient_points_ids)
         {
+            const SalientPointFragment& fragment = entire_map_.GetSalientPointNew(frag_id);
+
             const Point3& salient_point = fragment.Coord.value();
             suriko::Point3 pnt_camera = SE3Apply(rt_cfw, salient_point);
             suriko::Point2 pnt_pix = kalman_tracker_->ProjectCameraPoint(pnt_camera);
@@ -134,30 +151,105 @@ public:
             if (!hit_wnd)
                 continue;
 
-            // now, the point is visible in current frame
-
-            CornerTrack* corner_track = nullptr;
-            if (fragment.SyntheticVirtualPointId.has_value())
+            DavisonMonoSlam::SalPntId sal_pnt_id {};
+            if (fragment.UserObj != nullptr)
             {
-                // determine points correspondance using synthatic ids
-                track_rep->GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
-            }
-            if (corner_track == nullptr)
-            {
-                suriko::CornerTrack& new_corner_track = track_rep->AddCornerTrackObj();
-                SRK_ASSERT(!new_corner_track.SalientPointId.has_value()) << "new track is not associated with any reconstructed salient point";
-
-                new_corner_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId;
-
-                corner_track = &new_corner_track;
+                // got salient point which hits the current frame and had been seen before
+                // auto sal_pnt_id = reinterpret_cast<DavisonMonoSlam::SalPntId>(fragment.UserObj);
+                std::memcpy(&sal_pnt_id, &fragment.UserObj, sizeof(decltype(fragment.UserObj)));
+                static_assert(sizeof fragment.UserObj >= sizeof sal_pnt_id);
             }
 
-            suriko::Point2 pix(pix_x, pix_y);
-
-            CornerData& corner_data = corner_track->AddCorner(frame_ind);
-            corner_data.PixelCoord = pix;
-            corner_data.ImageCoord.setConstant(std::numeric_limits<Scalar>::quiet_NaN());
+            BlobInfo blob_info;
+            blob_info.Coord = pnt_pix;
+            blob_info.SalPntIdInTracker = sal_pnt_id;
+            blob_info.GTDepth = pnt_camera.Mat().norm();
+            blob_info.FragmentId = frag_id;
+            detected_blobs.push_back(blob_info);
         }
+    }
+
+    void MatchSalientPoints(size_t frame_ind,
+        const std::set<SalPntId>& prev_sal_pnts,
+        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
+    {
+        if (suppress_observations_)
+            return;
+
+        for (size_t i=0; i < detected_blobs.size(); ++i)
+        {
+            BlobInfo blob_info = detected_blobs[i];
+
+            DavisonMonoSlam::SalPntId sal_pnt_id = blob_info.SalPntIdInTracker;
+            if (auto it = prev_sal_pnts.find(sal_pnt_id); it == prev_sal_pnts.end())
+            {
+                // this salient has been tracked earlier, but the tracker is not interested in it now
+                continue;
+            }
+
+            // the tracker is interested in this blob
+            size_t blob_id = i;
+            auto sal_pnt_to_coord = std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_id });
+            matched_sal_pnts->push_back(sal_pnt_to_coord);
+        }
+    }
+
+    void RecruitNewSalientPoints(size_t frame_ind,
+        const std::set<SalPntId>& matched_sal_pnts,
+        std::vector<CornersMatcherBlobId>* new_blob_ids) override
+    {
+        if (suppress_observations_)
+            return;
+
+        std::optional<size_t> max_blobs = std::nullopt;
+        if (frame_ind == 0)
+        {
+            if (max_new_blobs_in_first_frame_.has_value())
+                max_blobs = max_new_blobs_in_first_frame_;
+        }
+        else
+        {
+            if (max_new_blobs_per_frame_.has_value())
+                max_blobs = max_new_blobs_per_frame_;
+        }
+        
+        for (size_t i = 0; i < detected_blobs.size(); ++i)
+        {
+            if (max_blobs.has_value() && new_blob_ids->size() >= max_blobs)
+                break;
+
+            BlobInfo blob_info = detected_blobs[i];
+
+            DavisonMonoSlam::SalPntId sal_pnt_id = blob_info.SalPntIdInTracker;
+            if (auto it = matched_sal_pnts.find(sal_pnt_id); it != matched_sal_pnts.end())
+            {
+                // this salient point is already matched and can't be treated as new
+                continue;
+            }
+
+            // the tracker is interested in this blob
+            size_t blob_id = i;
+            new_blob_ids->push_back(CornersMatcherBlobId {blob_id});
+        }
+    }
+
+    void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id) override
+    {
+        size_t frag_id = detected_blobs[blob_id.Ind].FragmentId;
+        SalientPointFragment& frag = entire_map_.GetSalientPointNew(frag_id);
+        
+        static_assert(sizeof sal_pnt_id <= sizeof frag.UserObj, "SalPntId must fit into UserObject");
+        std::memcpy(&frag.UserObj, &sal_pnt_id, sizeof(sal_pnt_id));
+    }
+
+    suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) override
+    {
+        return detected_blobs[blob_id.Ind].Coord.Mat();
+    }
+    
+    std::optional<Scalar> GetSalientPointGroundTruthDepth(CornersMatcherBlobId blob_id) override
+    {
+        return detected_blobs[blob_id.Ind].GTDepth;
     }
 
     void SetSuppressObservations(bool value) { suppress_observations_ = value; }
@@ -171,7 +263,7 @@ struct TrackerInternalsSlice
     Eigen::Matrix<Scalar, 3, 1> CamPosW;
     Eigen::Matrix<Scalar, 3, 3> CamPosUncert;
     Eigen::Matrix<Scalar, DavisonMonoSlam::kCamStateComps, DavisonMonoSlam::kCamStateComps> CamStateUncert;
-    Eigen::Matrix<Scalar, 3, 3> SalPntsUncertMedian; // median of uncertainty of all salient points
+    std::optional<Eigen::Matrix<Scalar, 3, 3>> SalPntsUncertMedian; // median of uncertainty of all salient points; null if there are 0 salient points
     Scalar CurReprojErr;
 };
 
@@ -226,9 +318,12 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const TrackerIntern
         WriteMatElements(fs, cam_pos_uncert);
         fs << "]";
 
-        fs << "SalPntUncMedian_s" << "[:";
-        WriteMatElements(fs, item.SalPntsUncertMedian);
-        fs << "]";
+        if (item.SalPntsUncertMedian.has_value())
+        {
+            fs << "SalPntUncMedian_s" << "[:";
+            WriteMatElements(fs, item.SalPntsUncertMedian.value());
+            fs << "]";
+        }
 
         fs << "}";
     }
@@ -265,6 +360,8 @@ DEFINE_double(kalman_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist_std, 1, "");
 DEFINE_double(kalman_measurm_noise_std, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
+DEFINE_double(kalman_max_new_blobs_in_first_frame, 7, "");
+DEFINE_double(kalman_max_new_blobs_per_frame, 1, "");
 DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
 DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
@@ -404,18 +501,21 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugPredictedVarsCov;
     DavisonMonoSlam::SetDebugPath(debug_path);
 
-    DavisonMonoSlam tracker;
+    DavisonMonoSlam tracker{};
     tracker.between_frames_period_ = 1;
     tracker.cam_intrinsics_ = cam_intrinsics;
     tracker.cam_distort_params_ = cam_distort_params;
-    tracker.input_noise_std_ = FLAGS_kalman_input_noise_std;
     tracker.sal_pnt_init_inv_dist_ = FLAGS_kalman_sal_pnt_init_inv_dist;
     tracker.sal_pnt_init_inv_dist_std_ = FLAGS_kalman_sal_pnt_init_inv_dist_std;
+    tracker.SetCamera(gt_cam_orient_cfw[0], FLAGS_kalman_estim_var_init_std);
+    tracker.SetInputNoiseStd(FLAGS_kalman_input_noise_std);
     tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
+
     tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
     tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
     tracker.debug_ellipsoid_cut_thr_ = FLAGS_ui_ellipsoid_cut_thr;
     tracker.fake_localization_ = FLAGS_kalman_fake_localization;
+    tracker.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
     tracker.gt_cam_orient_world_to_f_ = [&gt_cam_orient_cfw](size_t f) -> SE3Transform
     {
         SE3Transform c = gt_cam_orient_cfw[f];
@@ -438,15 +538,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
         AssertFalse();
     };
-    tracker.SetCornersMatcher(std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size));
-
-    // hack: put full prior knowledge into the tracker
-    bool init_sal_pnts = false;
-    tracker.ResetState(gt_cam_orient_cfw[0], entire_map.SalientPoints(), FLAGS_kalman_estim_var_init_std, init_sal_pnts);
-    tracker.ResetSalientPoints(gt_cam_orient_cfw[0], entire_map.SalientPoints(), FLAGS_kalman_fake_sal_pnt_init_inv_dist);
 
     tracker.PredictEstimVarsHelper();
     LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
+
+    auto corners_matcher = std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size);
+    corners_matcher->max_new_blobs_in_first_frame_ = FLAGS_kalman_max_new_blobs_in_first_frame;
+    corners_matcher->max_new_blobs_per_frame_ = FLAGS_kalman_max_new_blobs_per_frame;
+    tracker.SetCornersMatcher(std::move(corners_matcher));
 
     //
     TrackerInternalsHist tracker_internals_hist;
@@ -497,6 +596,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     constexpr size_t well_known_frames_count = 0;
     FragmentMap world_map;
     world_map.SetFragmentIdOffsetInternal(2000'000); // not necessary
+    CornerTrackRepository track_rep;
 
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
     {
@@ -548,7 +648,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             if (FLAGS_ctrl_debug_skim_over || frame_ind < well_known_frames_count)
             {
                 CornerTrack* corner_track = nullptr;
-                tracker.track_rep_.GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
+                track_rep.GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
 
                 if (corner_track == nullptr)
                 {
@@ -560,7 +660,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                     new_points_per_frame_count += 1;
 
                     //
-                    suriko::CornerTrack& new_corner_track = tracker.track_rep_.AddCornerTrackObj();
+                    suriko::CornerTrack& new_corner_track = track_rep.AddCornerTrackObj();
                     new_corner_track.SalientPointId = salient_point_id;
                     new_corner_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId;
 
@@ -630,7 +730,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         VLOG(4) << "f=" << frame_ind
             << " prevFps=" << (prev_frame_process_time.has_value() ? 1 / prev_frame_process_time.value().count() : 0.0f)
             << " points_count=" << world_map.SalientPointsCount()
-            << " tracks_count=" << tracker.track_rep_.CornerTracks.size()
+            << " tracks_count=" << track_rep.CornerTracks.size()
             << " ncd=" << new_points.size() << "-" << common_points.size() << "-" << del_points.size();
 
         // process the remaining frames
@@ -669,31 +769,35 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                     // find median of position uncertainty of all salient points
 
                     size_t pnts_count = tracker.SalientPointsCount();
-                    static Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> sal_pnt_uncert_hist;
-                    sal_pnt_uncert_hist.resize(pnts_count, kEucl3*kEucl3);
-
-                    for (size_t obs_sal_pnt_ind = 0; obs_sal_pnt_ind < pnts_count; ++obs_sal_pnt_ind)
+                    if (pnts_count > 0)
                     {
-                        Eigen::Matrix<Scalar, kEucl3, 1> pos;
-                        Eigen::Matrix<Scalar, kEucl3, kEucl3> pos_uncert;
-                        tracker.GetSalientPointPredictedPosWithUncertainty(obs_sal_pnt_ind, &pos, &pos_uncert);
-                        
+                        static Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> sal_pnt_uncert_hist;
+                        sal_pnt_uncert_hist.resize(pnts_count, kEucl3*kEucl3);
+
+                        for (size_t obs_sal_pnt_ind = 0; obs_sal_pnt_ind < pnts_count; ++obs_sal_pnt_ind)
+                        {
+                            Eigen::Matrix<Scalar, kEucl3, 1> pos;
+                            Eigen::Matrix<Scalar, kEucl3, kEucl3> pos_uncert;
+                            tracker.GetSalientPointPredictedPosWithUncertainty(obs_sal_pnt_ind, &pos, &pos_uncert);
+
+                            for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+                                sal_pnt_uncert_hist(obs_sal_pnt_ind, i) = pos_uncert.data()[i];
+                        }
+
+                        // sort each column separately
                         for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
-                            sal_pnt_uncert_hist(obs_sal_pnt_ind, i) = pos_uncert.data()[i];
+                        {
+                            auto all_covs = gsl::make_span<Scalar>(&sal_pnt_uncert_hist(0, i), sal_pnt_uncert_hist.rows());
+                            std::sort(all_covs.begin(), all_covs.end());
+                        }
+
+                        size_t median_ind = sal_pnt_uncert_hist.rows() / 2;
+
+                        frame_stats.SalPntsUncertMedian = Eigen::Matrix<Scalar, kEucl3, kEucl3, 1>{};
+                        Eigen::Map<Eigen::Matrix<Scalar, kEucl3*kEucl3, 1>> sal_pnt_uncert_stacked(frame_stats.SalPntsUncertMedian.value().data());
+                        for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+                            sal_pnt_uncert_stacked[i] = sal_pnt_uncert_hist(median_ind, i);
                     }
-
-                    // sort each column separately
-                    for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
-                    {
-                        auto all_covs = gsl::make_span<Scalar>(&sal_pnt_uncert_hist(0, i), sal_pnt_uncert_hist.rows());
-                        std::sort(all_covs.begin(), all_covs.end());
-                    }
-
-                    size_t median_ind = sal_pnt_uncert_hist.rows() / 2;
-
-                    Eigen::Map<Eigen::Matrix<Scalar, kEucl3*kEucl3, 1>> sal_pnt_uncert_stacked(frame_stats.SalPntsUncertMedian.data());
-                    for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
-                        sal_pnt_uncert_stacked[i] = sal_pnt_uncert_hist(median_ind, i);
                 };
 
 
