@@ -38,8 +38,9 @@
 --kalman_sal_pnt_init_inv_dist_std=5
 # 1=all,2=one observation, 3=one component of one observation
 --kalman_update_impl=1
---kalman_max_new_blobs_in_first_frame=3
+--kalman_max_new_blobs_in_first_frame=10
 --kalman_max_new_blobs_per_frame=1
+--kalman_match_blob_prob=0.3
 --kalman_fix_estim_vars_covar_symmetry=false
 --kalman_debug_estim_vars_cov
 --kalman_debug_predicted_vars_cov
@@ -51,13 +52,13 @@
 
 --ui_ellipsoid_cut_thr=0.05
 --ui_show_data_logger=true
---ui_swallow_exc=false
+--ui_swallow_exc=true
 
 # Controller
 
 # true to just test visualizer, no slam is done
---ctrl_debug_skim_over=false
 --ctrl_wait_after_each_frame=true
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true
+--ctrl_debug_skim_over=false

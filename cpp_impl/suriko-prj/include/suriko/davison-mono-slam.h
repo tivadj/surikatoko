@@ -19,6 +19,14 @@ namespace
     constexpr size_t kAccelComps = kEucl3; // a: 3 for acceleration
     constexpr size_t kAngAccelComps = kEucl3; // alpha: 3 for angular acceleration
     constexpr size_t kPixPosComps = 2; // rows and columns
+
+    // [x q v w], x: 3 for position, q: 4 for quaternion orientation, v: 3 for velocity, w: 3 for angular velocity
+    constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
+    constexpr size_t kInputNoiseComps = kVelocComps + kAngVelocComps; // Qk.rows: velocity and angular velocity are updated an each iteration by noise
+    constexpr size_t kSalientPointPolarCompsCount = 3; // [theta elevation rho], theta: 1 for azimuth angle, 1 for elevation angle, rho: 1 for distance
+    constexpr size_t kRhoComps = 1; // inverse distance
+    constexpr size_t kSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;
+
     void DependsOnOverallPackOrder() {}
     void DependsOnCameraPosPackOrder() {}
     void DependsOnSalientPointPackOrder() {}
@@ -53,6 +61,7 @@ struct SalPntId
 
     SalPntId() = default;
     SalPntId(SalPntInternal* sal_pnt) : sal_pnt_internal_(sal_pnt) {}
+    operator bool() const { return sal_pnt_internal_ != nullptr; }
 };
 bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal_ < y.sal_pnt_as_bits_internal_; }
 }
@@ -70,7 +79,7 @@ public:
     virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id) {}
 
     virtual void MatchSalientPoints(size_t frame_ind,
-        const std::set<SalPntId>& prev_sal_pnts,
+        const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) {}
 
     virtual void RecruitNewSalientPoints(size_t frame_ind,
@@ -110,20 +119,58 @@ struct CameraPosState
     Eigen::Matrix<Scalar, kAngVelocComps, 1> AngularVelocityC; // in camera frame
 };
 
+/// Represents a state of the tracker.
+struct DavisonMonoSlamTrackerInternalsSlice
+{
+    std::chrono::duration<double> FrameProcessingDur; // frame processing duration
+    Eigen::Matrix<Scalar, 3, 1> CamPosW;
+    Eigen::Matrix<Scalar, 3, 3> CamPosUncert;
+    Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> CamStateUncert;
+    std::optional<Eigen::Matrix<Scalar, 3, 3>> SalPntsUncertMedian; // median of uncertainty of all salient points; null if there are 0 salient points
+    Scalar CurReprojErr;
+    size_t EstimatedSalPnts; // number of tracking salient points (which are stored in estimated variables array)
+    size_t NewSalPnts; // number of new salient points allocated in current frame
+    size_t CommonSalPnts; // number of same salient points in the previous and current frame
+    size_t DeletedSalPnts; // number of deleted salient points in current frame
+};
+
+/// Represents the history of the tracker processing a sequence of frames.
+struct DavisonMonoSlamTrackerInternalsHist
+{
+    std::chrono::duration<double> AvgFrameProcessingDur;
+    std::vector<DavisonMonoSlamTrackerInternalsSlice> StateSamples;
+};
+
+class DavisonMonoSlam;
+
+/// Base class for logging statistics of tracker.
+class DavisonMonoSlamInternalsLogger
+{
+    using Clock = std::chrono::high_resolution_clock;
+    DavisonMonoSlam* tracker_ = nullptr;
+    DavisonMonoSlamTrackerInternalsSlice cur_stats_;
+    DavisonMonoSlamTrackerInternalsHist hist_;
+    Clock::time_point frame_start_time_point_;
+    Clock::time_point frame_finish_time_point_;
+public:
+    DavisonMonoSlamInternalsLogger(DavisonMonoSlam* tracker);
+    virtual ~DavisonMonoSlamInternalsLogger() = default;
+
+    virtual void StartNewFrameStats();
+    virtual void FinishFrameStats();
+    virtual void NotifyNewComDelSalPnts(size_t new_count, size_t common_count, size_t deleted_count);
+    virtual void NotifyEstimatedSalPnts(size_t estimated_sal_pnts_count);
+
+    DavisonMonoSlamTrackerInternalsHist& BuildStats();
+};
+
 /// Implementation of MonoSlam by Andrew Davison https://www.doc.ic.ac.uk/~ajd/Scene/index.html
 /// The algorithm uses Kalman filter to estimate camera's location and map features (salient points).
 /// source: book "Structure from Motion using the Extended Kalman Filter" Civera 2011 (further SfM_EKF_Civera)
 class DavisonMonoSlam
 {
 public:
-    // [x q v w], x: 3 for position, q: 4 for quaternion orientation, v: 3 for velocity, w: 3 for angular velocity
-    static constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
-private:
-    static constexpr size_t kInputNoiseComps = kVelocComps + kAngVelocComps; // Qk.rows: velocity and angular velocity are updated an each iteration by noise
-    static constexpr size_t kSalientPointPolarCompsCount = 3; // [theta elevation rho], theta: 1 for azimuth angle, 1 for elevation angle, rho: 1 for distance
-    static constexpr size_t kRhoComps = 1; // inverse distance
-    static constexpr size_t kSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;
-
+    static constexpr size_t kCamStateComps = kCamStateComps;
     static constexpr Scalar kFiniteDiffEpsDebug = (Scalar)1e-5; // used for debugging derivatives
 
     typedef Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> EigenDynMat;
@@ -148,7 +195,8 @@ private:
 
     EigenDynVec estim_vars_; // x[13+N*6], camera position plus all salient points
     EigenDynMat estim_vars_covar_; // P[13+N*6, 13+N*6], state's covariance matrix
-    std::vector<std::unique_ptr<SalPntInternal>> sal_pnts_;
+    std::vector<std::unique_ptr<SalPntInternal>> sal_pnts_; // the set of tracked salient points
+    std::set<SalPntId> sal_pnts_as_ids_; // the set ids of tracked salient points
     std::set<SalPntId> latest_frame_sal_pnts_; // contains subset of salient points which were tracked in the latest frame
 
     Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps> input_noise_covar_; // Qk[6,6] input noise covariance matrix
@@ -162,7 +210,6 @@ public:
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
 
-    std::unique_ptr<CornersMatcherBase> corners_matcher_;
     // camera
     CameraIntrinsicParams cam_intrinsics_{};
     RadialDistortionParams cam_distort_params_{};
@@ -181,6 +228,9 @@ public:
     int kalman_update_impl_ = 0;
 
     bool fix_estim_vars_covar_symmetry_ = false;
+private:
+    std::unique_ptr<CornersMatcherBase> corners_matcher_;
+    std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger_;
 private:
     struct
     {
@@ -225,10 +275,11 @@ public:
 
     suriko::Point2 ProjectCameraPoint(const suriko::Point3& pnt_camera) const;
 
-    void LogReprojError() const;
-
     void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
     CornersMatcherBase& CornersMatcher();
+
+    void SetStatsLogger(std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger);
+    DavisonMonoSlamInternalsLogger* StatsLogger() const;
 
     size_t SalientPointsCount() const;
     size_t EstimatedVarsCount() const;
@@ -424,5 +475,6 @@ inline DavisonMonoSlam::DebugPathEnum operator&(DavisonMonoSlam::DebugPathEnum a
 {
     return static_cast<DavisonMonoSlam::DebugPathEnum>(static_cast<int>(a) & static_cast<int>(b));
 }
+
 
 }

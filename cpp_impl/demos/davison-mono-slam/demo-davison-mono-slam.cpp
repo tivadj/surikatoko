@@ -95,24 +95,28 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     }
 }
 
+struct BlobInfo
+{
+    suriko::Point2 Coord;
+    DavisonMonoSlam::SalPntId SalPntIdInTracker;
+    std::optional<Scalar> GTDepth; // ground truth depth to salient point in virtual environments
+    size_t FragmentId; // the id of a fragment in entire map
+};
+
 class DemoCornersMatcher : public CornersMatcherBase
 {
-    struct BlobInfo
-    {
-        suriko::Point2 Coord;
-        DavisonMonoSlam::SalPntId SalPntIdInTracker;
-        std::optional<Scalar> GTDepth; // ground truth depth to salient point in virtual environments
-        size_t FragmentId; // the id of a fragment in entire map
-    };
     const std::vector<SE3Transform>& gt_cam_orient_cfw_;
     FragmentMap& entire_map_;
     std::array<size_t, 2> img_size_;
     const DavisonMonoSlam* kalman_tracker_;
     bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
-    std::vector<BlobInfo> detected_blobs; // blobs detected in current frame
+    std::vector<BlobInfo> detected_blobs_; // blobs detected in current frame
 public:
     std::optional<size_t> max_new_blobs_per_frame_;
     std::optional<size_t> max_new_blobs_in_first_frame_;
+    std::optional<float> match_blob_prob_ = 1; // [0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched;
+    std::mt19937 gen_{292};
+    std::uniform_real_distribution<float> uniform_distr_{};
 public:
     DemoCornersMatcher(const DavisonMonoSlam* kalman_tracker, const std::vector<SE3Transform>& gt_cam_orient_cfw, FragmentMap& entire_map,
         const std::array<size_t, 2>& img_size)
@@ -125,7 +129,7 @@ public:
 
     void AnalyzeFrame(size_t frame_ind) override
     {
-        detected_blobs.clear();
+        detected_blobs_.clear();
 
         if (suppress_observations_)
             return;
@@ -165,25 +169,34 @@ public:
             blob_info.SalPntIdInTracker = sal_pnt_id;
             blob_info.GTDepth = pnt_camera.Mat().norm();
             blob_info.FragmentId = frag_id;
-            detected_blobs.push_back(blob_info);
+            detected_blobs_.push_back(blob_info);
         }
     }
 
     void MatchSalientPoints(size_t frame_ind,
-        const std::set<SalPntId>& prev_sal_pnts,
+        const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
         if (suppress_observations_)
             return;
-
-        for (size_t i=0; i < detected_blobs.size(); ++i)
+        
+        for (size_t i=0; i < detected_blobs_.size(); ++i)
         {
-            BlobInfo blob_info = detected_blobs[i];
+            bool allow_match = true;
+            if (match_blob_prob_.has_value())
+            {
+                float rv = uniform_distr_(gen_);
+                allow_match = rv < match_blob_prob_.value();
+            }
+            if (!allow_match)
+                continue;
+
+            BlobInfo blob_info = detected_blobs_[i];
 
             DavisonMonoSlam::SalPntId sal_pnt_id = blob_info.SalPntIdInTracker;
-            if (auto it = prev_sal_pnts.find(sal_pnt_id); it == prev_sal_pnts.end())
+            if (auto it = tracking_sal_pnts.find(sal_pnt_id); it == tracking_sal_pnts.end())
             {
-                // this salient has been tracked earlier, but the tracker is not interested in it now
+                // match only salient points which have been tracked earlier
                 continue;
             }
 
@@ -213,12 +226,12 @@ public:
                 max_blobs = max_new_blobs_per_frame_;
         }
         
-        for (size_t i = 0; i < detected_blobs.size(); ++i)
+        for (size_t i = 0; i < detected_blobs_.size(); ++i)
         {
             if (max_blobs.has_value() && new_blob_ids->size() >= max_blobs)
                 break;
 
-            BlobInfo blob_info = detected_blobs[i];
+            BlobInfo blob_info = detected_blobs_[i];
 
             DavisonMonoSlam::SalPntId sal_pnt_id = blob_info.SalPntIdInTracker;
             if (auto it = matched_sal_pnts.find(sal_pnt_id); it != matched_sal_pnts.end())
@@ -226,6 +239,10 @@ public:
                 // this salient point is already matched and can't be treated as new
                 continue;
             }
+
+            // if salient point is associated with a blob then prevent associating new salient point with such a blob
+            if (blob_info.SalPntIdInTracker)
+                continue;
 
             // the tracker is interested in this blob
             size_t blob_id = i;
@@ -235,7 +252,7 @@ public:
 
     void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id) override
     {
-        size_t frag_id = detected_blobs[blob_id.Ind].FragmentId;
+        size_t frag_id = detected_blobs_[blob_id.Ind].FragmentId;
         SalientPointFragment& frag = entire_map_.GetSalientPointNew(frag_id);
         
         static_assert(sizeof sal_pnt_id <= sizeof frag.UserObj, "SalPntId must fit into UserObject");
@@ -244,45 +261,18 @@ public:
 
     suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) override
     {
-        return detected_blobs[blob_id.Ind].Coord.Mat();
+        return detected_blobs_[blob_id.Ind].Coord.Mat();
     }
     
     std::optional<Scalar> GetSalientPointGroundTruthDepth(CornersMatcherBlobId blob_id) override
     {
-        return detected_blobs[blob_id.Ind].GTDepth;
+        return detected_blobs_[blob_id.Ind].GTDepth;
     }
 
     void SetSuppressObservations(bool value) { suppress_observations_ = value; }
+
+    const std::vector<BlobInfo>& DetectedBlobs() const { return detected_blobs_; }
 };
-
-
-/// Represents a state of the tracker.
-struct TrackerInternalsSlice
-{
-    std::chrono::duration<double> FrameProcessingDur; // frame processing duration
-    Eigen::Matrix<Scalar, 3, 1> CamPosW;
-    Eigen::Matrix<Scalar, 3, 3> CamPosUncert;
-    Eigen::Matrix<Scalar, DavisonMonoSlam::kCamStateComps, DavisonMonoSlam::kCamStateComps> CamStateUncert;
-    std::optional<Eigen::Matrix<Scalar, 3, 3>> SalPntsUncertMedian; // median of uncertainty of all salient points; null if there are 0 salient points
-    Scalar CurReprojErr;
-};
-
-/// Represents the history of the tracker processing a sequence of frames.
-struct TrackerInternalsHist
-{
-    std::chrono::duration<double> AvgFrameProcessingDur;
-    std::vector<TrackerInternalsSlice> StateSamples;
-};
-
-void CalcAggregateStatisticsInplace(TrackerInternalsHist* hist)
-{
-    size_t frames_count = hist->StateSamples.size();
-
-    using DurT = decltype(hist->AvgFrameProcessingDur);
-    DurT dur = std::accumulate(hist->StateSamples.begin(), hist->StateSamples.end(), DurT::zero(),
-        [](const auto& acc, const auto& i) { return acc + i.FrameProcessingDur; });
-    hist->AvgFrameProcessingDur = dur / frames_count;
-}
 
 #if defined(SRK_HAS_OPENCV)
 template <typename EigenMat>
@@ -293,7 +283,7 @@ void WriteMatElements(cv::FileStorage& fs, const EigenMat& m)
 }
 #endif
 
-bool WriteTrackerInternalsToFile(std::string_view file_name, const TrackerInternalsHist& hist)
+bool WriteTrackerInternalsToFile(std::string_view file_name, const DavisonMonoSlamTrackerInternalsHist& hist)
 {
 #if !defined(SRK_HAS_OPENCV)
     return false;
@@ -310,8 +300,12 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const TrackerIntern
     {
         fs << "{";
 
-        cv::write(fs, "FrameProcessingDur", item.FrameProcessingDur.count()); // seconds
         cv::write(fs, "CurReprojErr", item.CurReprojErr);
+        cv::write(fs, "EstimatedSalPnts", static_cast<int>(item.EstimatedSalPnts));
+        cv::write(fs, "NewSalPnts", static_cast<int>(item.NewSalPnts));
+        cv::write(fs, "CommonSalPnts", static_cast<int>(item.CommonSalPnts));
+        cv::write(fs, "DeletedSalPnts", static_cast<int>(item.DeletedSalPnts));
+        cv::write(fs, "FrameProcessingDur", item.FrameProcessingDur.count()); // seconds
 
         Eigen::Map<const Eigen::Matrix<Scalar, 9, 1>> cam_pos_uncert(item.CamPosUncert.data());
         fs << "CamPosUnc_s" <<"[:";
@@ -362,6 +356,7 @@ DEFINE_double(kalman_measurm_noise_std, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
 DEFINE_double(kalman_max_new_blobs_in_first_frame, 7, "");
 DEFINE_double(kalman_max_new_blobs_per_frame, 1, "");
+DEFINE_double(kalman_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
 DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
 DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
@@ -492,14 +487,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     size_t frames_count = gt_cam_orient_cfw.size();
     LOG(INFO) << "frames_count=" << frames_count;
 
-    std::vector<std::set<size_t>> entire_map_fragment_id_per_frame;
-
     DavisonMonoSlam::DebugPathEnum debug_path = DavisonMonoSlam::DebugPathEnum::DebugNone;
     if (FLAGS_kalman_debug_estim_vars_cov)
         debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugEstimVarsCov;
     if (FLAGS_kalman_debug_predicted_vars_cov)
         debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugPredictedVarsCov;
     DavisonMonoSlam::SetDebugPath(debug_path);
+
+    DavisonMonoSlam tracker_tmp1;
 
     DavisonMonoSlam tracker{};
     tracker.between_frames_period_ = 1;
@@ -541,14 +536,19 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     tracker.PredictEstimVarsHelper();
     LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
+    
+    {
+        auto corners_matcher = std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size);
+        corners_matcher->max_new_blobs_in_first_frame_ = FLAGS_kalman_max_new_blobs_in_first_frame;
+        corners_matcher->max_new_blobs_per_frame_ = FLAGS_kalman_max_new_blobs_per_frame;
+        corners_matcher->match_blob_prob_ = FLAGS_kalman_match_blob_prob;
+        tracker.SetCornersMatcher(std::move(corners_matcher));
+    }
 
-    auto corners_matcher = std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size);
-    corners_matcher->max_new_blobs_in_first_frame_ = FLAGS_kalman_max_new_blobs_in_first_frame;
-    corners_matcher->max_new_blobs_per_frame_ = FLAGS_kalman_max_new_blobs_per_frame;
-    tracker.SetCornersMatcher(std::move(corners_matcher));
-
-    //
-    TrackerInternalsHist tracker_internals_hist;
+    if (FLAGS_ctrl_collect_tracker_internals)
+    {
+        tracker.SetStatsLogger(std::make_unique<DavisonMonoSlamInternalsLogger>(&tracker));
+    }
 
 #if defined(SRK_HAS_OPENCV)
     cv::Mat camera_image_rgb = cv::Mat::zeros((int)img_size[1], (int)img_size[0], CV_8UC3);
@@ -557,7 +557,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     // across threads shared data
     auto worker_chat = std::make_shared<WorkerThreadChat>();
     ptrdiff_t observable_frame_ind = -1; // this is visualized by UI, it is one frame less than current frame
-    std::vector<SE3Transform> cam_orient_cfw_history;
+    std::vector<SE3Transform> cam_orient_cfw_history; // the actual trajectory of the tracker
     std::deque<PlotterDataLogItem> plotter_data_log_item_history;
 
     UIThreadParams ui_params {};
@@ -577,25 +577,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         ui_thread = std::thread(SceneVisualizationThread, ui_params);
 #endif
 
-    struct ComparePointsInfo
-    {
-        size_t NewPoints = 0;
-        size_t CommonPoints = 0;
-        size_t DeletedPoints = 0;
-
-        ComparePointsInfo(size_t new_points, size_t common_points, size_t deleted_points)
-            : NewPoints(new_points),
-            CommonPoints(common_points),
-            DeletedPoints(deleted_points)
-        {
-        }
-    };
-    std::vector<ComparePointsInfo> compare_cur_frame_to_prev_frames;
-
-    std::optional<std::chrono::duration<double>> prev_frame_process_time;
-    constexpr size_t well_known_frames_count = 0;
-    FragmentMap world_map;
-    world_map.SetFragmentIdOffsetInternal(2000'000); // not necessary
+    std::optional<std::chrono::duration<double>> frame_process_time;
     CornerTrackRepository track_rep;
 
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
@@ -603,6 +585,48 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         // orient camera
         const SE3Transform& cam_cfw = gt_cam_orient_cfw[frame_ind];
         SE3Transform cam_wfc = SE3Inv(cam_cfw);
+
+        auto& corners_matcher = dynamic_cast<DemoCornersMatcher&>(tracker.CornersMatcher());
+        corners_matcher.AnalyzeFrame(frame_ind);
+
+        // process the frame
+        if (!FLAGS_ctrl_debug_skim_over)
+        {
+            auto t1 = std::chrono::high_resolution_clock::now();
+
+            tracker.ProcessFrame(frame_ind);
+
+            auto t2 = std::chrono::high_resolution_clock::now();
+            frame_process_time = t2 - t1;
+
+            CameraPosState cam_state;
+            tracker.GetCameraPredictedPosState(&cam_state);
+            SE3Transform actual_cam_wfc(RotMat(cam_state.OrientationWfc), cam_state.PosW);
+            SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
+#if defined(SRK_HAS_PANGOLIN)
+            cam_orient_cfw_history.push_back(actual_cam_cfw);
+#endif
+
+#if defined(SRK_HAS_PANGOLIN)
+            constexpr auto kCam = DavisonMonoSlam::kCamStateComps;
+            Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
+            tracker.GetCameraPredictedUncertainty(&cam_state_covar);
+
+            // put new data log entries into plotter queue
+            PlotterDataLogItem data_log_item;
+            data_log_item.MaxCamPosUncert = cam_state_covar.diagonal().maxCoeff();
+            {
+                std::lock_guard<std::mutex> lk(ui_params.worker_chat->tracker_and_ui_mutex_);
+                plotter_data_log_item_history.push_back(data_log_item);
+            }
+
+            observable_frame_ind = frame_ind;
+#endif
+        }
+
+        VLOG(4) << "f=" << frame_ind
+            << " fps=" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f)
+            << " tracks_count=" << tracker.SalientPointsCount();
 
 #if defined(SRK_HAS_OPENCV)
         if (FLAGS_ctrl_visualize_during_processing)
@@ -616,76 +640,15 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             };
             constexpr Scalar f0 = 1;
             suriko_demos::Draw2DProjectedAxes(f0, project_fun, &camera_image_rgb);
-        }
-#endif
-        size_t new_points_per_frame_count = 0;
-        size_t new_track_per_frame_count = 0;
-        std::set<size_t> entire_fragment_id_per_frame;
 
-        // determine which salient points are visible
-        for (const SalientPointFragment& fragment : entire_map.SalientPoints())
-        {
-            const Point3& salient_point = fragment.Coord.value();
-            suriko::Point3 pnt_camera = SE3Apply(cam_cfw, salient_point);
-            suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(pnt_camera);
-            Scalar pix_x = pnt_pix[0];
-            Scalar pix_y = pnt_pix[1];
-            bool hit_wnd =
-                pix_x >= 0 && pix_x < (Scalar)img_size[0] &&
-                pix_y >= 0 && pix_y < (Scalar)img_size[1];
-            if (!hit_wnd)
-                continue;
-
-            entire_fragment_id_per_frame.insert(fragment.SyntheticVirtualPointId.value());
-
-#if defined(SRK_HAS_OPENCV)
-            if (FLAGS_ctrl_visualize_during_processing)
+            //
+            for (const BlobInfo& blob_info : corners_matcher.DetectedBlobs())
             {
+                Scalar pix_x = blob_info.Coord[0];
+                Scalar pix_y = blob_info.Coord[1];
                 camera_image_rgb.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
             }
-#endif
 
-            if (FLAGS_ctrl_debug_skim_over || frame_ind < well_known_frames_count)
-            {
-                CornerTrack* corner_track = nullptr;
-                track_rep.GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
-
-                if (corner_track == nullptr)
-                {
-                    // add new salient points
-                    size_t salient_point_id = 0;
-                    SalientPointFragment& new_frag = world_map.AddSalientPoint(fragment.Coord, &salient_point_id);
-                    new_frag.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId; // force id of subset fragment to be identical to fragment id from entire map
-
-                    new_points_per_frame_count += 1;
-
-                    //
-                    suriko::CornerTrack& new_corner_track = track_rep.AddCornerTrackObj();
-                    new_corner_track.SalientPointId = salient_point_id;
-                    new_corner_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId;
-
-                    corner_track = &new_corner_track;
-
-                    new_track_per_frame_count += 1;
-                }
-
-                if (!corner_track->DebugSalientPointCoord.has_value())
-                    corner_track->DebugSalientPointCoord = salient_point;
-
-                suriko::Point2 pix(pix_x, pix_y);
-
-                CornerData& corner_data = corner_track->AddCorner(frame_ind);
-                corner_data.PixelCoord = pix;
-                //corner_data.ImageCoord = K_inv * pix.AsHomog();
-                Scalar s1 = std::numeric_limits<Scalar>::signaling_NaN();
-                Scalar s2 = std::numeric_limits<Scalar>::quiet_NaN();
-                corner_data.ImageCoord.setConstant(s1);
-            }
-        }
-
-#if defined(SRK_HAS_OPENCV)
-        if (FLAGS_ctrl_visualize_during_processing)
-        {
             std::stringstream strbuf;
             strbuf << "f=" << frame_ind;
             cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
@@ -693,132 +656,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             cv::waitKey(1); // allow to refresh an opencv view
         }
 #endif
-
-        //
-        entire_map_fragment_id_per_frame.push_back(std::move(entire_fragment_id_per_frame));
-
-        std::vector<size_t> new_points;
-        std::vector<size_t> common_points;
-        std::vector<size_t> del_points;
-        if (frame_ind > 0)
-        {
-            const std::set<size_t>& s1 = entire_map_fragment_id_per_frame[frame_ind - 1];
-            const std::set<size_t>& s2 = entire_map_fragment_id_per_frame[frame_ind];
-            std::set_difference(s2.begin(), s2.end(), s1.begin(), s1.end(), std::back_inserter(new_points));
-            std::set_intersection(s1.begin(), s1.end(), s2.begin(), s2.end(), std::back_inserter(common_points));
-            std::set_difference(s1.begin(), s1.end(), s2.begin(), s2.end(), std::back_inserter(del_points));
-        }
-        else
-        {
-            std::copy(entire_map_fragment_id_per_frame[0].begin(), entire_map_fragment_id_per_frame[0].end(), std::back_inserter(new_points));
-        }
-
-        compare_cur_frame_to_prev_frames.clear();
-        for (size_t i=0; i<frame_ind; ++i)
-        {
-            new_points.clear();
-            common_points.clear();
-            del_points.clear();
-            const std::set<size_t>& s1 = entire_map_fragment_id_per_frame[i];
-            const std::set<size_t>& s2 = entire_map_fragment_id_per_frame[frame_ind];
-            std::set_difference(s2.begin(), s2.end(), s1.begin(), s1.end(), std::back_inserter(new_points));
-            std::set_intersection(s1.begin(), s1.end(), s2.begin(), s2.end(), std::back_inserter(common_points));
-            std::set_difference(s1.begin(), s1.end(), s2.begin(), s2.end(), std::back_inserter(del_points));
-            compare_cur_frame_to_prev_frames.push_back(ComparePointsInfo(new_points.size(), common_points.size(), del_points.size()));
-        }
-
-        VLOG(4) << "f=" << frame_ind
-            << " prevFps=" << (prev_frame_process_time.has_value() ? 1 / prev_frame_process_time.value().count() : 0.0f)
-            << " points_count=" << world_map.SalientPointsCount()
-            << " tracks_count=" << track_rep.CornerTracks.size()
-            << " ncd=" << new_points.size() << "-" << common_points.size() << "-" << del_points.size();
-
-        // process the remaining frames
-        if (!FLAGS_ctrl_debug_skim_over && frame_ind >= well_known_frames_count)
-        {
-            auto t1 = std::chrono::high_resolution_clock::now();
-
-            tracker.ProcessFrame(frame_ind);
-
-            auto t2 = std::chrono::high_resolution_clock::now();
-            prev_frame_process_time = t2 - t1;
-
-            CameraPosState cam_state;
-            tracker.GetCameraPredictedPosState(&cam_state);
-            SE3Transform actual_cam_wfc(RotMat(cam_state.OrientationWfc), cam_state.PosW);
-            SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
-#if defined(SRK_HAS_PANGOLIN)
-            cam_orient_cfw_history.push_back(actual_cam_cfw);
-#endif
-
-            constexpr auto kCam = DavisonMonoSlam::kCamStateComps;
-            Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
-            tracker.GetCameraPredictedUncertainty(&cam_state_covar);
-
-            if (FLAGS_ctrl_collect_tracker_internals)
-            {
-                auto collect_tracker_internals = [&](TrackerInternalsSlice* slice)
-                {
-                    auto& frame_stats = *slice;
-                    frame_stats.FrameProcessingDur = prev_frame_process_time.value();
-                    frame_stats.CamPosW = cam_state.PosW;
-                    frame_stats.CamPosUncert = cam_state_covar.topLeftCorner<3, 3>();
-                    frame_stats.CamStateUncert = cam_state_covar;
-                    frame_stats.CurReprojErr = tracker.CurrentFrameReprojError();
-
-                    // find median of position uncertainty of all salient points
-
-                    size_t pnts_count = tracker.SalientPointsCount();
-                    if (pnts_count > 0)
-                    {
-                        static Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> sal_pnt_uncert_hist;
-                        sal_pnt_uncert_hist.resize(pnts_count, kEucl3*kEucl3);
-
-                        for (size_t obs_sal_pnt_ind = 0; obs_sal_pnt_ind < pnts_count; ++obs_sal_pnt_ind)
-                        {
-                            Eigen::Matrix<Scalar, kEucl3, 1> pos;
-                            Eigen::Matrix<Scalar, kEucl3, kEucl3> pos_uncert;
-                            tracker.GetSalientPointPredictedPosWithUncertainty(obs_sal_pnt_ind, &pos, &pos_uncert);
-
-                            for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
-                                sal_pnt_uncert_hist(obs_sal_pnt_ind, i) = pos_uncert.data()[i];
-                        }
-
-                        // sort each column separately
-                        for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
-                        {
-                            auto all_covs = gsl::make_span<Scalar>(&sal_pnt_uncert_hist(0, i), sal_pnt_uncert_hist.rows());
-                            std::sort(all_covs.begin(), all_covs.end());
-                        }
-
-                        size_t median_ind = sal_pnt_uncert_hist.rows() / 2;
-
-                        frame_stats.SalPntsUncertMedian = Eigen::Matrix<Scalar, kEucl3, kEucl3, 1>{};
-                        Eigen::Map<Eigen::Matrix<Scalar, kEucl3*kEucl3, 1>> sal_pnt_uncert_stacked(frame_stats.SalPntsUncertMedian.value().data());
-                        for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
-                            sal_pnt_uncert_stacked[i] = sal_pnt_uncert_hist(median_ind, i);
-                    }
-                };
-
-
-                TrackerInternalsSlice frame_stats{};
-                collect_tracker_internals(&frame_stats);
-
-                tracker_internals_hist.StateSamples.push_back(frame_stats);
-            }
-
-#if defined(SRK_HAS_PANGOLIN)
-            // put new data log entries into plotter queue
-            PlotterDataLogItem data_log_item;
-            data_log_item.MaxCamPosUncert = cam_state_covar.diagonal().maxCoeff();
-            {
-                std::lock_guard<std::mutex> lk(ui_params.worker_chat->tracker_and_ui_mutex_);
-                plotter_data_log_item_history.push_back(data_log_item);
-            }
-
-            observable_frame_ind = frame_ind;
-#endif
-        }
 
 #if defined(SRK_HAS_PANGOLIN)
         {
@@ -846,7 +683,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
         }
 #endif
-    }
+    } // for each frame
 
     VLOG(4) << "Finished processing all the frames";
 
@@ -876,9 +713,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cv::waitKey(0); // 0=wait forever
 #endif
 
-    CalcAggregateStatisticsInplace(&tracker_internals_hist);
+        //
+    const DavisonMonoSlamTrackerInternalsHist& internal_stats = tracker.StatsLogger()->BuildStats();
 
-    bool dump_op = WriteTrackerInternalsToFile("davison_tracker_internals.json", tracker_internals_hist);
+    bool dump_op = WriteTrackerInternalsToFile("davison_tracker_internals.json", internal_stats);
     if (FLAGS_ctrl_collect_tracker_internals && !dump_op)
         LOG(ERROR) << "Can't dump the tracker's internals";
 

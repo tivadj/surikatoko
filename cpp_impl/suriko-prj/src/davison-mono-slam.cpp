@@ -1,4 +1,5 @@
 #include <random>
+#include <numeric> // accumulate
 #include "suriko/davison-mono-slam.h"
 #include <glog/logging.h>
 #include "suriko/approx-alg.h"
@@ -38,6 +39,102 @@ auto SpanAu(EigenMat& m, size_t count) -> gsl::span<typename EigenMat::Scalar>
     typedef typename EigenMat::Scalar S;
     // fails: m.data()=const double* and it doesn't match gsl::span<double>
     return gsl::make_span<S>(m.data(), static_cast<typename gsl::span<S>::index_type>(count));
+}
+
+DavisonMonoSlamInternalsLogger::DavisonMonoSlamInternalsLogger(DavisonMonoSlam* tracker)
+    :tracker_(tracker)
+{
+}
+
+void DavisonMonoSlamInternalsLogger::StartNewFrameStats()
+{
+    cur_stats_ = DavisonMonoSlamTrackerInternalsSlice{};
+
+    // the last operation is to start a timer to reduce overhead of logger
+    frame_start_time_point_ = std::chrono::high_resolution_clock::now();
+}
+
+void DavisonMonoSlamInternalsLogger::FinishFrameStats()
+{
+    // the first operation is to stop a timer to reduce overhead of logger
+    frame_finish_time_point_ = std::chrono::high_resolution_clock::now();
+    cur_stats_.FrameProcessingDur = frame_finish_time_point_ - frame_start_time_point_;
+    cur_stats_.CurReprojErr = tracker_->CurrentFrameReprojError();
+
+    //
+    CameraPosState cam_state;
+    tracker_->GetCameraPredictedPosState(&cam_state);
+
+    constexpr auto kCam = DavisonMonoSlam::kCamStateComps;
+    Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
+    tracker_->GetCameraPredictedUncertainty(&cam_state_covar);
+
+    cur_stats_.CamPosW = cam_state.PosW;
+    cur_stats_.CamPosUncert = cam_state_covar.topLeftCorner<3, 3>();
+    cur_stats_.CamStateUncert = cam_state_covar;
+
+    // find median of position uncertainty of all salient points
+
+    size_t pnts_count = tracker_->SalientPointsCount();
+    if (pnts_count > 0)
+    {
+        static Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> sal_pnt_uncert_hist;
+        sal_pnt_uncert_hist.resize(pnts_count, kEucl3*kEucl3);
+
+        for (size_t obs_sal_pnt_ind = 0; obs_sal_pnt_ind < pnts_count; ++obs_sal_pnt_ind)
+        {
+            Eigen::Matrix<Scalar, kEucl3, 1> pos;
+            Eigen::Matrix<Scalar, kEucl3, kEucl3> pos_uncert;
+            tracker_->GetSalientPointPredictedPosWithUncertainty(obs_sal_pnt_ind, &pos, &pos_uncert);
+
+            for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+                sal_pnt_uncert_hist(obs_sal_pnt_ind, i) = pos_uncert.data()[i];
+        }
+
+        // sort each column separately
+        for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+        {
+            auto all_covs = gsl::make_span<Scalar>(&sal_pnt_uncert_hist(0, i), sal_pnt_uncert_hist.rows());
+            std::sort(all_covs.begin(), all_covs.end());
+        }
+
+        size_t median_ind = sal_pnt_uncert_hist.rows() / 2;
+
+        cur_stats_.SalPntsUncertMedian = Eigen::Matrix<Scalar, kEucl3, kEucl3, 1>{};
+        Eigen::Map<Eigen::Matrix<Scalar, kEucl3*kEucl3, 1>> sal_pnt_uncert_stacked(cur_stats_.SalPntsUncertMedian.value().data());
+        for (decltype(sal_pnt_uncert_hist.cols()) i = 0; i < sal_pnt_uncert_hist.cols(); ++i)
+            sal_pnt_uncert_stacked[i] = sal_pnt_uncert_hist(median_ind, i);
+    }
+    
+    hist_.StateSamples.push_back(cur_stats_);
+}
+
+void DavisonMonoSlamInternalsLogger::NotifyNewComDelSalPnts(size_t new_count, size_t common_count, size_t deleted_count)
+{
+    cur_stats_.NewSalPnts = new_count;
+    cur_stats_.CommonSalPnts = common_count;
+    cur_stats_.DeletedSalPnts = deleted_count;
+}
+
+void DavisonMonoSlamInternalsLogger::NotifyEstimatedSalPnts(size_t estimated_sal_pnts_count)
+{
+    cur_stats_.EstimatedSalPnts = estimated_sal_pnts_count;
+}
+
+void CalcAggregateStatisticsInplace(DavisonMonoSlamTrackerInternalsHist* hist)
+{
+    size_t frames_count = hist->StateSamples.size();
+
+    using DurT = decltype(hist->AvgFrameProcessingDur);
+    DurT dur = std::accumulate(hist->StateSamples.begin(), hist->StateSamples.end(), DurT::zero(),
+        [](const auto& acc, const auto& i) { return acc + i.FrameProcessingDur; });
+    hist->AvgFrameProcessingDur = dur / frames_count;
+}
+
+DavisonMonoSlamTrackerInternalsHist& DavisonMonoSlamInternalsLogger::BuildStats()
+{
+    CalcAggregateStatisticsInplace(&hist_);
+    return hist_;
 }
 
 // static
@@ -419,10 +516,12 @@ void DavisonMonoSlam::PredictEstimVarsHelper()
 
 void DavisonMonoSlam::ProcessFrame(size_t frame_ind)
 {
+    if (stats_logger_ != nullptr) stats_logger_->StartNewFrameStats();
+
     corners_matcher_->AnalyzeFrame(frame_ind);
 
     std::vector<std::pair<SalPntId, CornersMatcherBlobId>> matched_sal_pnts;
-    corners_matcher_->MatchSalientPoints(frame_ind, latest_frame_sal_pnts_, &matched_sal_pnts);
+    corners_matcher_->MatchSalientPoints(frame_ind, sal_pnts_as_ids_, &matched_sal_pnts);
 
     latest_frame_sal_pnts_.clear();
     for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
@@ -473,6 +572,12 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind)
         predicted_estim_vars_covar_.resizeLike(estim_vars_covar_);
     }
 
+    if (stats_logger_ != nullptr)
+    {
+        stats_logger_->NotifyNewComDelSalPnts(new_blobs.size(), matched_sal_pnts.size(), 0);
+        stats_logger_->NotifyEstimatedSalPnts(SalientPointsCount());
+    }
+
     // make predictions
     PredictEstimVars(&predicted_estim_vars_, &predicted_estim_vars_covar_);
 
@@ -481,6 +586,8 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind)
     {
         CheckCameraAndSalientPointsCovs(predicted_estim_vars_, predicted_estim_vars_covar_);
     }
+
+    if (stats_logger_ != nullptr) stats_logger_->FinishFrameStats();
 }
 
 void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind)
@@ -1051,7 +1158,11 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState&
     sal_pnt.EstimVarsInd = sal_pnt_var_ind;
     sal_pnt.SalPntIndDebug = old_sal_pnts_count;
     sal_pnt.PixelCoordInLatestFrame = hd;
-    return SalPntId(sal_pnts_.back().get());
+    
+    SalPntId sal_pnt_id = SalPntId(sal_pnts_.back().get());
+    sal_pnts_as_ids_.insert(sal_pnt_id);
+
+    return sal_pnt_id;
 }
 
 void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2 corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const
@@ -1909,10 +2020,14 @@ CornersMatcherBase& DavisonMonoSlam::CornersMatcher()
     return *corners_matcher_.get();
 }
 
-void DavisonMonoSlam::LogReprojError() const
+void DavisonMonoSlam::SetStatsLogger(std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger)
 {
-    Scalar err = CurrentFrameReprojError();
-    VLOG(4) << "ReprojError=" << err;
+    stats_logger_.swap(stats_logger);
+}
+
+DavisonMonoSlamInternalsLogger* DavisonMonoSlam::StatsLogger() const
+{
+    return stats_logger_.get();
 }
 
 Scalar DavisonMonoSlam::CurrentFrameReprojError() const
