@@ -29,24 +29,27 @@ plot(time,sps2,'b')
 hold off
 %%
 figure(3)
-subplot(4,1,1)
+subplot(5,1,1)
 plot(time,[data.Frames.CurReprojErr],'k')
 title('ReprErr')
 
-subplot(4,1,2)
+subplot(5,1,2)
+plot(time,[data.Frames.EstimatedSalPnts],'k')
+title('Estimated salient points count')
+
+subplot(5,1,3)
 plot(time,[data.Frames.NewSalPnts],'r')
 hold on
 plot(time,[data.Frames.CommonSalPnts],'g')
 plot(time,[data.Frames.DeletedSalPnts],'b')
-plot(time,[data.Frames.EstimatedSalPnts],'k')
 hold off
 legend('New','Com','Del','Estim')
-title('NewComDel & Estimated salient points count')
+title('NewComDel salient points count')
 
-subplot(4,1,3)
+subplot(5,1,4)
 plot(time,[data.Frames.FrameProcessingDur]*1000,'k')
 title('t,ms')
 
-subplot(4,1,4)
+subplot(5,1,5)
 plot(time,1./[data.Frames.FrameProcessingDur],'k')
 title('fps')

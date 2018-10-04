@@ -8,6 +8,10 @@
 #include <gsl/span>
 #include "suriko/obs-geom.h"
 
+#if defined(SRK_HAS_OPENCV)
+#include <opencv2/core/core.hpp> // cv::Mat
+#endif
+
 namespace suriko {
 namespace
 {
@@ -41,12 +45,20 @@ struct CornersMatcherBlobId
 
 namespace
 {
+}
+
 /// Represents 3D salient points.
 struct SalPntInternal
 {
     size_t EstimVarsInd; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
     size_t SalPntIndDebug; // order of the salient point in the sequence of salient points
     Eigen::Matrix<Scalar, kPixPosComps, 1> PixelCoordInLatestFrame; // distorted coordinates in the first camera
+
+    Eigen::Matrix<int, kPixPosComps, 1> PatchTemplateTopLeft;
+
+    // Rectangular portion of the gray image corresponding to salient point, projected in current frame.
+    // The coord of the corner corresponds to the center of the image template.
+    cv::Mat PatchTemplateInFirstFrame;
 };
 
 /// Represents publicly transferable key to refer to a salient point.
@@ -63,8 +75,7 @@ struct SalPntId
     SalPntId(SalPntInternal* sal_pnt) : sal_pnt_internal_(sal_pnt) {}
     operator bool() const { return sal_pnt_internal_ != nullptr; }
 };
-bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal_ < y.sal_pnt_as_bits_internal_; }
-}
+inline bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal_ < y.sal_pnt_as_bits_internal_; }
 
 /// We separate the tracking of existing salient points, for which the position in the latest
 /// frame is known, from occasional search for extra salient points.
@@ -75,20 +86,24 @@ bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal_ < y.
 class CornersMatcherBase
 {
 public:
-    virtual void AnalyzeFrame(size_t frame_ind) {}
-    virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id) {}
+    virtual void AnalyzeFrame(size_t frame_ind, const cv::Mat& image_gray) {}
+    virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const cv::Mat& image_gray) {}
+    virtual void OnSalientPointIsMatchedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id) {}
 
     virtual void MatchSalientPoints(size_t frame_ind,
+        const cv::Mat& image_gray,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) {}
 
     virtual void RecruitNewSalientPoints(size_t frame_ind,
-        const std::set<SalPntId>& matched_sal_pnts,
+        const cv::Mat& image_gray,
+        const std::set<SalPntId>& tracking_sal_pnts,
+        const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         std::vector<CornersMatcherBlobId>* new_blob_ids) {}
 
-    virtual suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) { return suriko::Point2(kNan, kNan); };
+    virtual suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
 
-    virtual std::optional<Scalar> GetSalientPointGroundTruthDepth(CornersMatcherBlobId blob_id) { return std::optional<Scalar>(); };
+    virtual std::optional<Scalar> GetSalientPointGroundTruthDepth(CornersMatcherBlobId blob_id) { return std::nullopt; };
 
     virtual ~CornersMatcherBase() = default;
 };
@@ -269,19 +284,12 @@ public:
     
     void SetInputNoiseStd(Scalar input_noise_std);
     
-    void ProcessFrame(size_t frame_ind);
+    void ProcessFrame(size_t frame_ind, const cv::Mat& image_gray);
 
     void PredictEstimVarsHelper();
 
     suriko::Point2 ProjectCameraPoint(const suriko::Point3& pnt_camera) const;
 
-    void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
-    CornersMatcherBase& CornersMatcher();
-
-    void SetStatsLogger(std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger);
-    DavisonMonoSlamInternalsLogger* StatsLogger() const;
-
-    size_t SalientPointsCount() const;
     size_t EstimatedVarsCount() const;
 
     void GetCameraPredictedPosState(CameraPosState* result) const;
@@ -292,11 +300,26 @@ public:
 
     void GetCameraPredictedUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
 
+    Eigen::Matrix<Scalar, kPixPosComps, 1> GetSalPntPixelCoord(SalPntId sal_pnt_id) const;
+
     void GetSalientPointPredictedPosWithUncertainty(size_t salient_pnt_ind, 
         Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     Scalar CurrentFrameReprojError() const;
+
+    size_t SalientPointsCount() const;
+
+    const std::set<SalPntId>& GetSalientPoints() const;
+
+    inline SalPntInternal& GetSalPnt(SalPntId id);
+    inline const SalPntInternal& GetSalPnt(SalPntId id) const;
+
+    void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
+    CornersMatcherBase& CornersMatcher();
+
+    void SetStatsLogger(std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger);
+    DavisonMonoSlamInternalsLogger* StatsLogger() const;
 
     static void SetDebugPath(DebugPathEnum debug_path);
 private:
@@ -341,8 +364,8 @@ private:
     Eigen::Matrix<Scalar, kQuat4, 1> EstimVarsCamQuat() const;
     Eigen::Matrix<Scalar, kAngVelocComps, 1> EstimVarsCamAngularVelocity() const;
     size_t SalientPointOffset(size_t sal_pnt_ind) const;
-    inline SalPntInternal& GetSalPnt(SalPntId id);
-    inline const SalPntInternal& GetSalPnt(SalPntId id) const;
+    //inline SalPntInternal& GetSalPnt(SalPntId id);
+    //inline const SalPntInternal& GetSalPnt(SalPntId id) const;
 
     void LoadCameraPosDataFromArray(gsl::span<const Scalar> src, CameraPosState* result) const;
 

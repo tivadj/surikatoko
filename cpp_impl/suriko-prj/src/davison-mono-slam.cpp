@@ -514,20 +514,21 @@ void DavisonMonoSlam::PredictEstimVarsHelper()
     PredictEstimVars(&predicted_estim_vars_, &predicted_estim_vars_covar_);
 }
 
-void DavisonMonoSlam::ProcessFrame(size_t frame_ind)
+void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const cv::Mat& image_gray)
 {
     if (stats_logger_ != nullptr) stats_logger_->StartNewFrameStats();
 
-    corners_matcher_->AnalyzeFrame(frame_ind);
+    corners_matcher_->AnalyzeFrame(frame_ind, image_gray);
 
     std::vector<std::pair<SalPntId, CornersMatcherBlobId>> matched_sal_pnts;
-    corners_matcher_->MatchSalientPoints(frame_ind, sal_pnts_as_ids_, &matched_sal_pnts);
+    corners_matcher_->MatchSalientPoints(frame_ind, image_gray, sal_pnts_as_ids_, &matched_sal_pnts);
 
     latest_frame_sal_pnts_.clear();
     for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
     {
         Point2 coord = corners_matcher_->GetBlobCoord(blob_id);
         GetSalPnt(sal_pnt_id).PixelCoordInLatestFrame = coord.Mat();
+        corners_matcher_->OnSalientPointIsMatchedToBlobId(sal_pnt_id, blob_id);
         latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
 
@@ -547,7 +548,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind)
 
     // eagerly try allocate new salient points
     std::vector<CornersMatcherBlobId> new_blobs;
-    this->corners_matcher_->RecruitNewSalientPoints(frame_ind, latest_frame_sal_pnts_, &new_blobs);
+    this->corners_matcher_->RecruitNewSalientPoints(frame_ind, image_gray, sal_pnts_as_ids_, matched_sal_pnts, &new_blobs);
     if (!new_blobs.empty())
     {
         CameraPosState cam_state;
@@ -564,7 +565,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind)
             }
             SalPntId sal_pnt_id = AddSalientPoint(cam_state, coord.Mat(), pnt_dist_gt);
             latest_frame_sal_pnts_.insert(sal_pnt_id);
-            corners_matcher_->OnSalientPointIsAssignedToBlobId(sal_pnt_id, blob_id);
+            corners_matcher_->OnSalientPointIsAssignedToBlobId(sal_pnt_id, blob_id, image_gray);
         }
 
         // now the estimated variables are changed, the dependent predicted variables must be updated too
@@ -600,8 +601,8 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 
         if (kSurikoDebug)
         {
-            //predicted_estim_vars_.setConstant(kNan);
-            //predicted_estim_vars_covar_.setConstant(kNan);
+            predicted_estim_vars_.setConstant(kNan);
+            predicted_estim_vars_covar_.setConstant(kNan);
             // TODO: fix me; initialize predicted, because UI reads it without sync!
             //predicted_estim_vars_ = estim_vars_;
             //predicted_estim_vars_covar_ = estim_vars_covar_;
@@ -1165,6 +1166,11 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState&
     return sal_pnt_id;
 }
 
+Eigen::Matrix<Scalar, kPixPosComps, 1> DavisonMonoSlam::GetSalPntPixelCoord(SalPntId sal_pnt_id) const
+{
+    return GetSalPnt(sal_pnt_id).PixelCoordInLatestFrame;
+}
+
 void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2 corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const
 {
     Scalar ud = corner_pix[0];
@@ -1614,6 +1620,11 @@ void DavisonMonoSlam::FiniteDiff_hd_by_sal_pnt_state(const CameraPosState& cam_s
 size_t DavisonMonoSlam::SalientPointsCount() const
 {
     return sal_pnts_.size();
+}
+
+const std::set<SalPntId>& DavisonMonoSlam::GetSalientPoints() const
+{
+    return sal_pnts_as_ids_;
 }
 
 size_t DavisonMonoSlam::EstimatedVarsCount() const

@@ -81,4 +81,5 @@ target_link_libraries (suriko-engine PRIVATE Eigen3::Eigen)
 target_link_libraries(suriko-engine PRIVATE GuidelineGSL)
 target_link_libraries(suriko-engine PRIVATE glog::glog)
 
-
+target_include_directories(suriko-engine PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(suriko-engine ${OpenCV_LIBS})
