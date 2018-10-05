@@ -25,9 +25,9 @@
 #include "suriko/approx-alg.h"
 #include "suriko/davison-mono-slam.h"
 #include "suriko/virt-world/scene-generator.h"
+#include "suriko/quat.h"
 #include "../stat-helpers.h"
 #include "../visualize-helpers.h"
-#include "suriko/quat.h"
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/core/core.hpp> // cv::Mat
@@ -38,7 +38,7 @@
 
 #include "demo-davison-mono-slam-ui.h"
 
-// PROVIDE DATASOURCE FOR DEMO
+// PROVIDE DATA SOURCE FOR DEMO
 #define DEMO_DATA_SOURCE kImageSeqDir
 
 namespace suriko_demos_davison_mono_slam
@@ -606,8 +606,10 @@ DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
 DEFINE_bool(kalman_fake_localization, false, "");
 DEFINE_bool(kalman_fake_sal_pnt_init_inv_dist, false, "");
 DEFINE_double(ui_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
-DEFINE_bool(ui_show_data_logger, true, "Whether to show timeline with uncertainty statistics.");
 DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
+DEFINE_int32(ui_loop_prolong_period_ms, 3000, "");
+DEFINE_int32(ui_tight_loop_relaxing_delay_ms, 100, "");
+DEFINE_bool(ctrl_multi_threaded_mode, false, "true for UI to work in a separated dedicated thread; false for UI to work inside worker's thread");
 DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
 DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without reconstruction");
 DEFINE_bool(ctrl_visualize_during_processing, true, "");
@@ -627,7 +629,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
     google::InitGoogleLogging(argv[0]);
 
-#if DEMO_DATA_SOURCE == kVirtualScene
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
     LOG(INFO) << "world_noise_R_std=" << FLAGS_world_noise_R_std;
 
@@ -756,6 +758,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     DavisonMonoSlam::SetDebugPath(debug_path);
 
     DavisonMonoSlam tracker{};
+    tracker.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
     tracker.between_frames_period_ = 1;
     tracker.cam_intrinsics_ = cam_intrinsics;
     tracker.cam_distort_params_ = cam_distort_params;
@@ -767,7 +770,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
     tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
     tracker.debug_ellipsoid_cut_thr_ = FLAGS_ui_ellipsoid_cut_thr;
-#if DEMO_DATA_SOURCE == kVirtualScene
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     tracker.SetCamera(gt_cam_orient_cfw[0], FLAGS_kalman_estim_var_init_std);
     tracker.fake_localization_ = FLAGS_kalman_fake_localization;
     tracker.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
@@ -798,7 +801,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.PredictEstimVarsHelper();
     LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
 
-#if DEMO_DATA_SOURCE == kVirtualScene
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     {
         auto corners_matcher = std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size);
         corners_matcher->max_new_blobs_in_first_frame_ = FLAGS_kalman_max_new_blobs_in_first_frame;
@@ -806,7 +809,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         corners_matcher->match_blob_prob_ = FLAGS_kalman_match_blob_prob;
         tracker.SetCornersMatcher(std::move(corners_matcher));
     }
-#elif DEMO_DATA_SOURCE == kImageSeqDir
+#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
     {
         auto corners_matcher = std::make_unique<ImagePatchCornersMatcher>(&tracker);
         corners_matcher->SetPatchWidth(FLAGS_kalman_templ_width);
@@ -828,35 +831,44 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     auto worker_chat = std::make_shared<WorkerThreadChat>();
     ptrdiff_t observable_frame_ind = -1; // this is visualized by UI, it is one frame less than current frame
     std::vector<SE3Transform> cam_orient_cfw_history; // the actual trajectory of the tracker
-    std::deque<PlotterDataLogItem> plotter_data_log_item_history;
 
     UIThreadParams ui_params {};
-    ui_params.WaitForUserInputAfterEachFrame = FLAGS_ctrl_wait_after_each_frame;
+    ui_params.wait_for_user_input_after_each_frame = FLAGS_ctrl_wait_after_each_frame;
     ui_params.kalman_slam = &tracker;
     ui_params.ellipsoid_cut_thr = FLAGS_ui_ellipsoid_cut_thr;
     ui_params.cam_orient_cfw_history = &cam_orient_cfw_history;
-    ui_params.plotter_data_log_exchange_buf = &plotter_data_log_item_history;
     ui_params.get_observable_frame_ind_fun = [&observable_frame_ind]() { return observable_frame_ind; };
     ui_params.worker_chat = worker_chat;
-    ui_params.show_data_logger = FLAGS_ui_show_data_logger;
     ui_params.ui_swallow_exc = FLAGS_ui_swallow_exc;
-#if DEMO_DATA_SOURCE == kVirtualScene
+    ui_params.ui_tight_loop_relaxing_delay = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     ui_params.entire_map = &entire_map;
     ui_params.gt_cam_orient_cfw = &gt_cam_orient_cfw;
 #endif
 
     std::thread ui_thread;
+    const bool defer_ui_construction = true;
+    SceneVisualizationPangolinGui pangolin_gui(defer_ui_construction);
     if (FLAGS_ctrl_visualize_during_processing)
-        ui_thread = std::thread(SceneVisualizationThread, ui_params);
+    {
+        if (FLAGS_ctrl_multi_threaded_mode)
+            ui_thread = std::thread(SceneVisualizationThread, ui_params);
+        else
+        {
+            SceneVisualizationPangolinGui::s_ui_params_ = ui_params;
+            pangolin_gui.ui_loop_prolong_period_ = std::chrono::milliseconds(FLAGS_ui_loop_prolong_period_ms);
+            pangolin_gui.ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
+            pangolin_gui.InitUI();
+        }
+    }
 #endif
 
-    std::optional<std::chrono::duration<double>> frame_process_time;
-    CornerTrackRepository track_rep;
+    std::optional<std::chrono::duration<double>> frame_process_time; // time it took to process current frame by tracker
 
-#if DEMO_DATA_SOURCE == kVirtualScene
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     cv::Mat image_gray;
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
-#elif DEMO_DATA_SOURCE == kImageSeqDir
+#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
     LOG(INFO) << "imageseq_dir=" << FLAGS_imageseq_dir;
 
     size_t frame_ind = -1;
@@ -864,11 +876,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     for (const auto& dir_entry : dir)
 #endif
     {
-#if DEMO_DATA_SOURCE == kVirtualScene
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
         // orient camera
         const SE3Transform& cam_cfw = gt_cam_orient_cfw[frame_ind];
         SE3Transform cam_wfc = SE3Inv(cam_cfw);
-#elif DEMO_DATA_SOURCE == kImageSeqDir
+#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
         ++frame_ind;
         auto image_file_path = dir_entry.path();
         auto path_str = image_file_path.string();
@@ -904,15 +916,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
             tracker.GetCameraPredictedUncertainty(&cam_state_covar);
 
-            // put new data log entries into plotter queue
-            PlotterDataLogItem data_log_item;
-            data_log_item.MaxCamPosUncert = cam_state_covar.diagonal().maxCoeff();
-            {
-                std::lock_guard<std::mutex> lk(ui_params.worker_chat->tracker_and_ui_mutex_);
-                plotter_data_log_item_history.push_back(data_log_item);
-            }
-
             observable_frame_ind = frame_ind;
+
+            if (FLAGS_ctrl_visualize_during_processing && !FLAGS_ctrl_multi_threaded_mode)
+                pangolin_gui.RenderFrameAndProlongUILoopOnUserInput();
 #endif
         }
 
@@ -923,7 +930,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #if defined(SRK_HAS_OPENCV)
         if (FLAGS_ctrl_visualize_during_processing)
         {
-#if DEMO_DATA_SOURCE == kVirtualScene
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
             camera_image_rgb.setTo(0);
             auto project_fun = [&cam_cfw, &tracker](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
             {
@@ -949,7 +956,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             std::stringstream strbuf;
             strbuf << "f=" << frame_ind;
             cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
-#elif DEMO_DATA_SOURCE == kImageSeqDir
+#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
             image_rgb.copyTo(camera_image_rgb);
             auto w = FLAGS_kalman_templ_width;
             for (SalPntId sal_pnt_id : tracker.GetSalientPoints())
@@ -998,26 +1005,38 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     VLOG(4) << "Finished processing all the frames";
 
 #if defined(SRK_HAS_PANGOLIN)
-    if (FLAGS_ctrl_visualize_after_processing && !ui_thread.joinable()) // don't create thread second time
-        ui_thread = std::thread(SceneVisualizationThread, ui_params);
-
-    if (ui_thread.joinable())
+    if (FLAGS_ctrl_visualize_after_processing)
     {
-        VLOG(4) << "Waiting for UI to request the exit";
+        if (FLAGS_ctrl_multi_threaded_mode)
         {
-            // wait for Pangolin UI to request the exit
-            std::unique_lock<std::mutex> ulk(worker_chat->exit_worker_mutex);
-            worker_chat->exit_worker_cv.wait(ulk, [&worker_chat] {return worker_chat->exit_worker_flag; });
+            if (!ui_thread.joinable())  // don't create thread second time
+            {
+                ui_thread = std::thread(SceneVisualizationThread, ui_params);
+            }
+
+            if (ui_thread.joinable())
+            {
+                VLOG(4) << "Waiting for UI to request the exit";
+                {
+                    // wait for Pangolin UI to request the exit
+                    std::unique_lock<std::mutex> ulk(worker_chat->exit_worker_mutex);
+                    worker_chat->exit_worker_cv.wait(ulk, [&worker_chat] {return worker_chat->exit_worker_flag; });
+                }
+                VLOG(4) << "Got UI notification to exit working thread";
+                {
+                    // notify Pangolin UI to finish visualization thread
+                    std::lock_guard<std::mutex> lk(worker_chat->exit_ui_mutex);
+                    worker_chat->exit_ui_flag = true;
+                }
+                VLOG(4) << "Waiting for UI to perform the exit";
+                ui_thread.join();
+                VLOG(4) << "UI thread has been shut down";
+            }
         }
-        VLOG(4) << "Got UI notification to exit working thread";
+        else
         {
-            // notify Pangolin UI to finish visualization thread
-            std::lock_guard<std::mutex> lk(worker_chat->exit_ui_mutex);
-            worker_chat->exit_ui_flag = true;
+            pangolin_gui.Run();
         }
-        VLOG(4) << "Waiting for UI to perform the exit";
-        ui_thread.join();
-        VLOG(4) << "UI thread has been shut down";
     }
 #elif defined(SRK_HAS_OPENCV)
     cv::waitKey(0); // 0=wait forever

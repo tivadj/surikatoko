@@ -30,6 +30,23 @@
 --viewer_steps_per_side_x=10
 --viewer_steps_per_side_y=10
 
+# virtual scene
+#--camera_image_width=800
+#--camera_image_height=600
+#--camera_princip_point_x=400
+#--camera_princip_point_y=300
+#--camera_focal_length_pix_x=880.282
+#--camera_focal_length_pix_y=661.376
+
+# input=sequence of images
+--imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM/
+--camera_image_width=320
+--camera_image_height=240
+--camera_princip_point_x=162
+--camera_princip_point_y=125
+--camera_focal_length_pix_x=195
+--camera_focal_length_pix_y=195
+
 
 --kalman_estim_var_init_std=0.005
 --kalman_input_noise_std=0.1
@@ -46,18 +63,22 @@
 --kalman_debug_predicted_vars_cov
 --kalman_fake_localization=false
 --kalman_fake_sal_pnt_init_inv_dist=true
+--kalman_templ_width=21
+--kalman_stop_on_sal_pnt_moved_too_far=false
 
 
 # Visualizer
 
 --ui_ellipsoid_cut_thr=0.05
---ui_show_data_logger=true
 --ui_swallow_exc=true
+--ui_loop_prolong_period_ms=1000
+--ui_tight_loop_relaxing_delay_ms=10
 
 # Controller
 
 # true to just test visualizer, no slam is done
---ctrl_wait_after_each_frame=true
+--ctrl_multi_threaded_mode=false
+--ctrl_wait_after_each_frame=false
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true

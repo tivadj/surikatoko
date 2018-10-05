@@ -86,6 +86,8 @@ inline bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_interna
 class CornersMatcherBase
 {
 public:
+    virtual ~CornersMatcherBase() = default;
+
     virtual void AnalyzeFrame(size_t frame_ind, const cv::Mat& image_gray) {}
     virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const cv::Mat& image_gray) {}
     virtual void OnSalientPointIsMatchedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id) {}
@@ -104,8 +106,6 @@ public:
     virtual suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
 
     virtual std::optional<Scalar> GetSalientPointGroundTruthDepth(CornersMatcherBlobId blob_id) { return std::nullopt; };
-
-    virtual ~CornersMatcherBase() = default;
 };
 
 /// ax=f/dx and ay=f/dy 
@@ -216,9 +216,11 @@ private:
 
     Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps> input_noise_covar_; // Qk[6,6] input noise covariance matrix
 
+    std::shared_mutex predicted_estim_vars_mutex_;
     EigenDynVec predicted_estim_vars_; // x[13+N*6]
     EigenDynMat predicted_estim_vars_covar_; // P[13+N*6, 13+N*6]
 public:
+    bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
     Scalar input_noise_std_ = 1;
     Scalar measurm_noise_std_ = 1;
@@ -296,7 +298,7 @@ public:
 
     void GetCameraPredictedPosAndOrientationWithUncertainty(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
-        Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat) const;
+        Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat);
 
     void GetCameraPredictedUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
 
@@ -304,7 +306,7 @@ public:
 
     void GetSalientPointPredictedPosWithUncertainty(size_t salient_pnt_ind, 
         Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
-        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
+        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
 
     Scalar CurrentFrameReprojError() const;
 

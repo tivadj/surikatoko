@@ -532,6 +532,10 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const cv::Mat& image_gray)
         latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
 
+    std::unique_lock<std::shared_mutex> lk(predicted_estim_vars_mutex_, std::defer_lock);
+    if (in_multi_threaded_mode_)
+        lk.lock();
+
     switch (kalman_update_impl_)
     {
     default:
@@ -582,6 +586,9 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const cv::Mat& image_gray)
     // make predictions
     PredictEstimVars(&predicted_estim_vars_, &predicted_estim_vars_covar_);
 
+    if (in_multi_threaded_mode_)
+        lk.unlock();
+
     static bool debug_predicted_vars = false;
     if (debug_predicted_vars || DebugPath(DebugPathEnum::DebugPredictedVarsCov))
     {
@@ -598,12 +605,14 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         // improve predicted estimation with the info from observations
         std::swap(estim_vars_, predicted_estim_vars_);
         std::swap(estim_vars_covar_, predicted_estim_vars_covar_);
+        //estim_vars_ = predicted_estim_vars_;
+        //estim_vars_covar_ = predicted_estim_vars_covar_;
 
         if (kSurikoDebug)
         {
+            // iventially these will be set up later in the prediction step
             predicted_estim_vars_.setConstant(kNan);
             predicted_estim_vars_covar_.setConstant(kNan);
-            // TODO: fix me; initialize predicted, because UI reads it without sync!
             //predicted_estim_vars_ = estim_vars_;
             //predicted_estim_vars_covar_ = estim_vars_covar_;
         }
@@ -1862,10 +1871,14 @@ void DavisonMonoSlam::LoadCameraPosDataFromArray(gsl::span<const Scalar> src, Ca
 void DavisonMonoSlam::GetCameraPredictedPosAndOrientationWithUncertainty(
     Eigen::Matrix<Scalar, kEucl3, 1>* cam_pos,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* cam_pos_uncert,
-    Eigen::Matrix<Scalar, kQuat4, 1>* cam_orient_quat) const
+    Eigen::Matrix<Scalar, kQuat4, 1>* cam_orient_quat)
 {
     const auto& src_estim_vars = predicted_estim_vars_;
     const auto& src_estim_vars_covar = predicted_estim_vars_covar_;
+    
+    std::shared_lock<std::shared_mutex> lk(predicted_estim_vars_mutex_, std::defer_lock);
+    if (in_multi_threaded_mode_)
+        lk.lock();
 
     DependsOnCameraPosPackOrder();
 
@@ -1997,10 +2010,13 @@ void DavisonMonoSlam::LoadSalientPointPredictedPosWithUncertainty(
 
 void DavisonMonoSlam::GetSalientPointPredictedPosWithUncertainty(size_t salient_pnt_ind,
     Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
-    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const
+    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert)
 {
     const auto& src_estim_vars = predicted_estim_vars_;
     const auto& src_estim_vars_covar = predicted_estim_vars_covar_;
+    std::shared_lock<std::shared_mutex> lk(predicted_estim_vars_mutex_, std::defer_lock);
+    if (in_multi_threaded_mode_)
+        lk.lock();
     LoadSalientPointPredictedPosWithUncertainty(src_estim_vars, src_estim_vars_covar, salient_pnt_ind, pos_mean, pos_uncert);
 }
 

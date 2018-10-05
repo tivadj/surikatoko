@@ -8,7 +8,7 @@
 #if defined(SRK_HAS_PANGOLIN)
 namespace suriko_demos_davison_mono_slam
 {
-using std::literals::chrono_literals::operator""ms;
+using namespace std::literals::chrono_literals;
 
 enum class CamDisplayType
 {
@@ -356,7 +356,8 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
 
     RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, ui_swallow_exc);
 
-    if (ui_params.gt_cam_orient_cfw != nullptr)
+    bool has_ground_truth = ui_params.gt_cam_orient_cfw != nullptr;
+    if (has_ground_truth)
     {
         std::array<float, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
         CamDisplayType gt_last_camera = CamDisplayType::None;
@@ -383,55 +384,17 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
     }
 }
 
-UIThreadParams SceneVisualizationPangolinGui::s_ui_params;
+UIThreadParams SceneVisualizationPangolinGui::s_ui_params_;
+bool SceneVisualizationPangolinGui::got_user_input_ = false;
 
-SceneVisualizationPangolinGui::SceneVisualizationPangolinGui()
+SceneVisualizationPangolinGui::SceneVisualizationPangolinGui(bool defer_ui_construction)
 {
+    if (!defer_ui_construction)
+        InitUI();
 }
 
-void SceneVisualizationPangolinGui::OnForward()
+void SceneVisualizationPangolinGui::InitUI()
 {
-    // check if worker request finishing UI thread
-    const auto& ui_params = s_ui_params;
-    if (!ui_params.WaitForUserInputAfterEachFrame)
-        return;
-
-    // request worker to resume processing
-    std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
-    ui_params.worker_chat->resume_worker_flag = true;
-    ui_params.worker_chat->resume_worker_suppress_observations = false;
-    ui_params.worker_chat->resume_worker_cv.notify_one();
-}
-
-void SceneVisualizationPangolinGui::OnSkip()
-{
-    // check if worker request finishing UI thread
-    const auto& ui_params = s_ui_params;
-    if (!ui_params.WaitForUserInputAfterEachFrame)
-        return;
-
-    // request worker to resume processing
-    std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
-    ui_params.worker_chat->resume_worker_flag = true;
-    ui_params.worker_chat->resume_worker_suppress_observations = true;
-    ui_params.worker_chat->resume_worker_cv.notify_one();
-}
-
-void SceneVisualizationPangolinGui::OnKeyEsc()
-{
-    // check if worker request finishing UI thread
-    const auto& ui_params = s_ui_params;
-    {
-        std::lock_guard<std::mutex> lk(ui_params.worker_chat->exit_worker_mutex);
-        ui_params.worker_chat->exit_worker_flag = true;
-    }
-    ui_params.worker_chat->exit_worker_cv.notify_one();
-}
-
-void SceneVisualizationPangolinGui::Run()
-{
-    const auto& ui_params = s_ui_params;
-
     constexpr float fw = 640;
     constexpr float fh = 480;
     constexpr int w = (int)fw;
@@ -443,178 +406,134 @@ void SceneVisualizationPangolinGui::Run()
     float center_x = fw / 2;
     float center_y = fh / 2;
 
-    pangolin::OpenGlRenderState view_state_3d(
+    view_state_3d_ = std::make_unique<pangolin::OpenGlRenderState>(
         pangolin::ProjectionMatrix(w, h, 420, 420, center_x, center_y, 0.2, 100),
         pangolin::ModelViewLookAt(30, -30, 30, 0, 0, 0, pangolin::AxisY)
     );
 
     constexpr int kUiWidth = 280;
-    constexpr int kDataLogHeight = 100;
-    bool has_ground_truth = ui_params.gt_cam_orient_cfw != nullptr;
-    bool ui_swallow_exc = ui_params.ui_swallow_exc;
 
     // ui panel to the left 
     pangolin::CreatePanel("ui")
         .SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(kUiWidth))
         .ResizeChildren();
 
-    int display_cam_bot = ui_params.show_data_logger ? kDataLogHeight : 0;
-
     // 3d content to the right
-    pangolin::View& display_cam = pangolin::CreateDisplay()
-        .SetBounds(pangolin::Attach::Pix(display_cam_bot), 1.0, pangolin::Attach::Pix(kUiWidth), 1.0, -fw / fh) // TODO: why negative aspect?
-        .SetHandler(new pangolin::Handler3D(view_state_3d));
+    int display_cam_bot = 0;
+    display_cam = &pangolin::CreateDisplay()
+        .SetBounds(pangolin::Attach::Pix(display_cam_bot), 1.0, pangolin::Attach::Pix(kUiWidth), 1.0, -fw / fh); // TODO: why negative aspect?
 
-    pangolin::Var<ptrdiff_t> a_frame_ind("ui.frame_ind", -1);
-    pangolin::Var<bool> cb_displ_traj("ui.displ_trajectory", true, true);
-    pangolin::Var<int> slider_mid_cam_type("ui.mid_cam_type", 1, 0, 2);
-    pangolin::Var<bool> cb_displ_mid_cam_type("ui.displ_3D_uncert", true, true);
+    handler3d_ = std::make_unique<Handler3DImpl>(*view_state_3d_);
+    handler3d_->owner_ = this;
+    display_cam->SetHandler(handler3d_.get());
 
-    pangolin::Var<double> a_cam_x("ui.cam_x", -1);
-    pangolin::Var<double> a_cam_x_gt("ui.cam_x_gt", -1);
-    pangolin::Var<double> a_cam_y("ui.cam_y", -1);
-    pangolin::Var<double> a_cam_y_gt("ui.cam_y_gt", -1);
-    pangolin::Var<double> a_cam_z("ui.cam_z", -1);
-    pangolin::Var<double> a_cam_z_gt("ui.cam_z_gt", -1);
-
-    pangolin::Var<double> sal_pnt_0_x("ui.sal_pnt_0_x", -1);
-    pangolin::Var<double> sal_pnt_0_x_gt("ui.sal_pnt_0_x_gt", -1);
-    pangolin::Var<double> sal_pnt_0_y("ui.sal_pnt_0_y", -1);
-    pangolin::Var<double> sal_pnt_0_y_gt("ui.sal_pnt_0_y_gt", -1);
-    pangolin::Var<double> sal_pnt_0_z("ui.sal_pnt_0_z", -1);
-    pangolin::Var<double> sal_pnt_0_z_gt("ui.sal_pnt_0_z_gt", -1);
-    pangolin::Var<double> sal_pnt_1_x("ui.sal_pnt_1_x", -1);
-    pangolin::Var<double> sal_pnt_1_x_gt("ui.sal_pnt_1_x_gt", -1);
-    pangolin::Var<double> sal_pnt_1_y("ui.sal_pnt_1_y", -1);
-    pangolin::Var<double> sal_pnt_1_y_gt("ui.sal_pnt_1_y_gt", -1);
-    pangolin::Var<double> sal_pnt_1_z("ui.sal_pnt_1_z", -1);
-    pangolin::Var<double> sal_pnt_1_z_gt("ui.sal_pnt_1_z_gt", -1);
-
-    if (ui_params.show_data_logger)
-    {
-        std::vector<std::string> labels;
-        labels.push_back(std::string("cam_cov"));
-        data_log_.SetLabels(labels);
-
-        float time_points_count = 30; // time points spread over plotter's width
-        float maxY = 1; // data value spread over plotter's height
-        plotter_ = std::make_unique<pangolin::Plotter>(&data_log_, 0.0f, time_points_count, 0.0f, maxY, time_points_count, maxY);
-        pangolin::Plotter& plotter = *plotter_.get();
-        plotter.SetBounds(0.0, pangolin::Attach::Pix(kDataLogHeight), pangolin::Attach::Pix(kUiWidth), 1.0);
-        plotter.Track("$i"); // scrolls view as new value appear
-
-        pangolin::DisplayBase().AddDisplay(plotter);
-    }
+    a_frame_ind_ = std::make_unique<pangolin::Var<ptrdiff_t>>("ui.frame_ind", -1);
+    cb_displ_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_trajectory", true, true);
+    slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
+    cb_displ_mid_cam_type_ = std::make_unique<pangolin::Var<bool>>("ui.displ_3D_uncert", true, true);
 
     pangolin::RegisterKeyPressCallback('s', OnSkip);
     pangolin::RegisterKeyPressCallback('f', OnForward);
     pangolin::RegisterKeyPressCallback(pangolin::PANGO_KEY_ESCAPE, OnKeyEsc);
+}
 
-    while (!pangolin::ShouldQuit())
+void SceneVisualizationPangolinGui::RenderFrame()
+{
+    const auto& ui_params = s_ui_params_;
+
+    // update ui
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    ptrdiff_t frame_ind = ui_params.get_observable_frame_ind_fun();
+    if (frame_ind < 0)
+        return;
+
+    *a_frame_ind_ = frame_ind;
+
+    display_cam->Activate(*view_state_3d_);
+
+    bool display_trajectory = cb_displ_traj_->Get();
+    bool display_3D_uncertainties = cb_displ_mid_cam_type_->Get();
+
+    CamDisplayType mid_cam_disp_type = CamDisplayType::None;
+    int displ_mid_cam_type = slider_mid_cam_type_->Get();
+    if (displ_mid_cam_type == 0)
+        mid_cam_disp_type = CamDisplayType::None;
+    else if (displ_mid_cam_type == 1)
     {
-        auto loop_body = [&]()
-        {
-            // update ui
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        mid_cam_disp_type = CamDisplayType::Dot;
+    }
+    else if (displ_mid_cam_type == 2)
+    {
+        mid_cam_disp_type = CamDisplayType::Schematic;
+    }
 
-            ptrdiff_t frame_ind = ui_params.get_observable_frame_ind_fun();
-            if (frame_ind < 0)
-                return;
+    CamDisplayType last_cam_disp_type = CamDisplayType::Schematic;
 
-            a_frame_ind = frame_ind;
-
-            if (has_ground_truth)
-            {
-                SE3Transform cam_orient_wfc = SE3Inv((*ui_params.gt_cam_orient_cfw)[frame_ind]);
-                a_cam_x_gt = cam_orient_wfc.T[0];
-                a_cam_y_gt = cam_orient_wfc.T[1];
-                a_cam_z_gt = cam_orient_wfc.T[2];
-            }
-
-            CameraPosState cam_state;
-            ui_params.kalman_slam->GetCameraPredictedPosState(&cam_state);
-
-            a_cam_x = cam_state.PosW[0];
-            a_cam_y = cam_state.PosW[1];
-            a_cam_z = cam_state.PosW[2];
-
-            size_t sal_pnts_count = ui_params.kalman_slam->SalientPointsCount();
-            if (sal_pnts_count > 0)
-            {
-                Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_0;
-                ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(0, &sal_pnt_0, nullptr);
-                sal_pnt_0_x = sal_pnt_0[0];
-                sal_pnt_0_y = sal_pnt_0[1];
-                sal_pnt_0_z = sal_pnt_0[2];
-            }
-            if (sal_pnts_count > 1)
-            {
-                Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_1;
-                ui_params.kalman_slam->GetSalientPointPredictedPosWithUncertainty(1, &sal_pnt_1, nullptr);
-                sal_pnt_1_x = sal_pnt_1[0];
-                sal_pnt_1_y = sal_pnt_1[1];
-                sal_pnt_1_z = sal_pnt_1[2];
-            }
-
-            if (has_ground_truth)
-            {
-                FragmentMap::DependsOnSalientPointIdInfrustructure();
-                if (sal_pnts_count > 0)
-                {
-                    const SalientPointFragment& sal_pnt_0_gt = ui_params.entire_map->GetSalientPointByInternalOrder(0);
-                    sal_pnt_0_x_gt = sal_pnt_0_gt.Coord.value()[0];
-                    sal_pnt_0_y_gt = sal_pnt_0_gt.Coord.value()[1];
-                    sal_pnt_0_z_gt = sal_pnt_0_gt.Coord.value()[2];
-                }
-
-                if (sal_pnts_count > 1)
-                {
-                    const SalientPointFragment& sal_pnt_1_gt = ui_params.entire_map->GetSalientPointByInternalOrder(1);
-                    sal_pnt_1_x_gt = sal_pnt_1_gt.Coord.value()[0];
-                    sal_pnt_1_y_gt = sal_pnt_1_gt.Coord.value()[1];
-                    sal_pnt_1_z_gt = sal_pnt_1_gt.Coord.value()[2];
-                }
-            }
-
-            display_cam.Activate(view_state_3d);
-
-            bool display_trajectory = cb_displ_traj.Get();
-            bool display_3D_uncertainties = cb_displ_mid_cam_type.Get();
-
-            CamDisplayType mid_cam_disp_type = CamDisplayType::None;
-            int displ_mid_cam_type = slider_mid_cam_type.Get();
-            if (displ_mid_cam_type == 0)
-                mid_cam_disp_type = CamDisplayType::None;
-            else if (displ_mid_cam_type == 1)
-            {
-                mid_cam_disp_type = CamDisplayType::Dot;
-            }
-            else if (displ_mid_cam_type == 2)
-            {
-                mid_cam_disp_type = CamDisplayType::Schematic;
-            }
-
-            CamDisplayType last_cam_disp_type = CamDisplayType::Schematic;
-
-            RenderScene(ui_params, ui_params.kalman_slam, ui_params.ellipsoid_cut_thr,
+    RenderScene(ui_params, ui_params.kalman_slam, ui_params.ellipsoid_cut_thr,
                 display_trajectory,
                 mid_cam_disp_type,
                 last_cam_disp_type,
                 display_3D_uncertainties,
-                ui_swallow_exc);
+                ui_params.ui_swallow_exc);
 
-            // pull data log entries from tracker
-            {
-                std::lock_guard<std::mutex> lk(ui_params.worker_chat->tracker_and_ui_mutex_);
-                while (!ui_params.plotter_data_log_exchange_buf->empty())
-                {
-                    const PlotterDataLogItem& item = ui_params.plotter_data_log_exchange_buf->front();
-                    ui_params.plotter_data_log_exchange_buf->pop_front();
-                    data_log_.Log(static_cast<float>(item.MaxCamPosUncert));
-                }
-            }
+    pangolin::FinishFrame(); // also processes user input
+}
+
+void SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnUserInput()
+{
+    // If a user provides an input (presses a key or clicks a mouse button)
+    // we will prolong the execution of ui loop for couple of seconds.
+    // It is designed for single thread scenario.
+    // Obviously the calling function is not running at these moments.
+
+    std::optional<std::chrono::steady_clock::time_point> prolonged_ui_loop_end_time;
+    bool the_first_iter = true;
+    while (true)
+    {
+        auto is_prolonged = [prolonged_ui_loop_end_time]() -> bool
+        {
+            if (!prolonged_ui_loop_end_time.has_value())
+                return false;
+            const auto now = std::chrono::steady_clock::now();
+            return now < prolonged_ui_loop_end_time;
         };
 
+        const bool do_ui_loop = the_first_iter || is_prolonged();
+        if (!do_ui_loop)
+        {
+            // the time of prolonged ui loop is elapsed
+            //LOG(INFO) << "UI quit prolonged loop (time elapsed)";
+            break;
+        }
+
+        // do prolonged ui loop
+        //LOG(INFO) << "UI loops";
+
+        got_user_input_ = false;
+
+        RenderFrame();
+
+        if (got_user_input_)
+        {
+            //LOG(INFO) << "UI is prolonged";
+
+            // continue execution of UI loop for couple of seconds
+            auto now = std::chrono::steady_clock::now();
+            prolonged_ui_loop_end_time = now + ui_loop_prolong_period_;
+        }
+
+        std::this_thread::sleep_for(ui_tight_loop_relaxing_delay_);
+        the_first_iter = false;
+    }
+}
+
+void SceneVisualizationPangolinGui::Run()
+{
+    const auto& ui_params = s_ui_params_;
+
+    while (!pangolin::ShouldQuit())
+    {
         {
             // check if worker request finishing UI thread
             std::lock_guard<std::mutex> lk(ui_params.worker_chat->exit_ui_mutex);
@@ -625,20 +544,88 @@ void SceneVisualizationPangolinGui::Run()
             }
         }
 
-        loop_body();
+        RenderFrame();
 
-        pangolin::FinishFrame();
-
-        std::this_thread::sleep_for(100ms); // make ui thread more 'lightweight'
+        std::this_thread::sleep_for(ui_tight_loop_relaxing_delay_);
     }
+}
+
+void SceneVisualizationPangolinGui::OnForward()
+{
+    LOG(INFO) << "pressed F key";
+    got_user_input_ = true;
+
+    // check if worker request finishing UI thread
+    const auto& ui_params = s_ui_params_;
+    if (!ui_params.wait_for_user_input_after_each_frame)
+        return;
+
+    // request worker to resume processing
+    std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
+    ui_params.worker_chat->resume_worker_flag = true;
+    ui_params.worker_chat->resume_worker_suppress_observations = false;
+    ui_params.worker_chat->resume_worker_cv.notify_one();
+}
+
+void SceneVisualizationPangolinGui::OnSkip()
+{
+    got_user_input_ = true;
+
+    // check if worker request finishing UI thread
+    const auto& ui_params = s_ui_params_;
+    if (!ui_params.wait_for_user_input_after_each_frame)
+        return;
+
+    // request worker to resume processing
+    std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
+    ui_params.worker_chat->resume_worker_flag = true;
+    ui_params.worker_chat->resume_worker_suppress_observations = true;
+    ui_params.worker_chat->resume_worker_cv.notify_one();
+}
+
+void SceneVisualizationPangolinGui::OnKeyEsc()
+{
+    got_user_input_ = true;
+
+    // check if worker request finishing UI thread
+    const auto& ui_params = s_ui_params_;
+    {
+        std::lock_guard<std::mutex> lk(ui_params.worker_chat->exit_worker_mutex);
+        ui_params.worker_chat->exit_worker_flag = true;
+    }
+    ui_params.worker_chat->exit_worker_cv.notify_one();
+}
+
+SceneVisualizationPangolinGui::Handler3DImpl::Handler3DImpl(pangolin::OpenGlRenderState& cam_state)
+    : Handler3D(cam_state), owner_(nullptr)
+{
+}
+
+void SceneVisualizationPangolinGui::Handler3DImpl::Mouse(pangolin::View& view, pangolin::MouseButton button, int x, int y, bool pressed, int button_state)
+{
+    owner_->got_user_input_ = true;
+    pangolin::Handler3D::Mouse(view, button, x, y, pressed, button_state);
+}
+
+void SceneVisualizationPangolinGui::Handler3DImpl::MouseMotion(pangolin::View& view, int x, int y, int button_state)
+{
+    owner_->got_user_input_ = true;
+    pangolin::Handler3D::MouseMotion(view, x, y, button_state);
+}
+
+void SceneVisualizationPangolinGui::Handler3DImpl::Special(pangolin::View& view, pangolin::InputSpecial inType, float x, float y, float p1, float p2, float p3, float p4, int button_state)
+{
+    owner_->got_user_input_ = true;
+    pangolin::Handler3D::Special(view, inType, x, y, p1, p2, p3, p4, button_state);
 }
 
 void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value across threads
 {
     VLOG(4) << "UI thread is running";
 
-    SceneVisualizationPangolinGui::s_ui_params = ui_params;
+    SceneVisualizationPangolinGui::s_ui_params_ = ui_params;
     SceneVisualizationPangolinGui pangolin_gui;
+    pangolin_gui.ui_tight_loop_relaxing_delay_ = ui_params.ui_tight_loop_relaxing_delay;
     pangolin_gui.Run();
 
     VLOG(4) << "UI thread is exiting";
