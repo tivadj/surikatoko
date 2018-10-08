@@ -231,9 +231,7 @@ public:
     CameraIntrinsicParams cam_intrinsics_{};
     RadialDistortionParams cam_distort_params_{};
 public:
-    std::function<SE3Transform(size_t, size_t)> gt_cam_orient_f1f2_;
-    std::function<SE3Transform(size_t)> gt_cam_orient_world_to_f_;
-    std::function <Point3(size_t)> gt_salient_point_by_virtual_point_id_fun_;
+    std::function<SE3Transform(size_t frame_ind)> gt_cami_from_tracker_fun_;  // gets ground truth camera position in coordinates of tracker
     Scalar debug_ellipsoid_cut_thr_ = 0.04; // value 0.05 corresponds to 2sig
     bool fake_localization_ = false; // true to get camera orientation from ground truth
     bool fake_sal_pnt_initial_inv_dist_ = false; // true to correctly initialize points depth in virtual environments
@@ -314,8 +312,8 @@ public:
 
     const std::set<SalPntId>& GetSalientPoints() const;
 
-    inline SalPntInternal& GetSalPnt(SalPntId id);
-    inline const SalPntInternal& GetSalPnt(SalPntId id) const;
+    SalPntInternal& GetSalPnt(SalPntId id);
+    const SalPntInternal& GetSalPnt(SalPntId id) const;
 
     void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
     CornersMatcherBase& CornersMatcher();

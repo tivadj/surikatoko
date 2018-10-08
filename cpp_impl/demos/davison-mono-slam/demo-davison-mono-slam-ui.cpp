@@ -2,6 +2,7 @@
 #include <random>
 #include <chrono>
 #include <thread>
+#include <glog/logging.h>
 #include "suriko/approx-alg.h"
 #include "suriko/quat.h"
 
@@ -9,6 +10,29 @@
 namespace suriko_demos_davison_mono_slam
 {
 using namespace std::literals::chrono_literals;
+
+std::optional<UIChatMessage> PopMsgUnderLock(std::optional<UIChatMessage>* msg)
+{
+    std::optional<UIChatMessage> result = *msg;
+    *msg = std::nullopt;
+    return result;
+}
+
+std::optional<WorkerChatMessage> PopMsgUnderLock(std::optional<WorkerChatMessage>* msg)
+{
+    std::optional<WorkerChatMessage> result = *msg;
+    *msg = std::nullopt;
+    return result;
+}
+
+void LoadSE3TransformIntoOpengGLMat(const SE3Transform& cam_wfc, gsl::span<double> opengl_mat_by_col)
+{
+    Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::ColMajor>> opengl_mat(opengl_mat_by_col.data());
+    opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R.cast<double>();
+    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T.cast<double>();
+    opengl_mat.bottomLeftCorner<1, 3>().setZero();
+    opengl_mat(3, 3) = 1;
+}
 
 enum class CamDisplayType
 {
@@ -18,10 +42,13 @@ enum class CamDisplayType
 };
 
 /// Draw axes in the local coordinates.
-void RenderAxes(Scalar axis_seg_len)
+void RenderAxes(Scalar axis_seg_len, float line_width)
 {
+    float old_line_width;
+    glGetFloatv(GL_LINE_WIDTH, &old_line_width);
+
     auto ax = axis_seg_len;
-    glLineWidth(2);
+    glLineWidth(line_width);
     glBegin(GL_LINES);
     glColor3d(1, 0, 0);
     glVertex3d(0, 0, 0);
@@ -33,6 +60,8 @@ void RenderAxes(Scalar axis_seg_len)
     glVertex3d(0, 0, 0);
     glVertex3d(0, 0, ax); // OZ
     glEnd();
+
+    glLineWidth(old_line_width);
 }
 
 void RenderSchematicCamera(const SE3Transform& cam_wfc, const std::array<float, 3>& track_color, CamDisplayType cam_disp_type)
@@ -42,10 +71,7 @@ void RenderSchematicCamera(const SE3Transform& cam_wfc, const std::array<float, 
 
     // transform to the camera frame
     std::array<double, 4 * 4> opengl_mat_by_col{};
-    Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::ColMajor>> opengl_mat(opengl_mat_by_col.data());
-    opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R.cast<double>();
-    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T.cast<double>();
-    opengl_mat(3, 3) = 1;
+    LoadSE3TransformIntoOpengGLMat(cam_wfc, opengl_mat_by_col);
 
     glPushMatrix();
     glMultMatrixd(opengl_mat_by_col.data());
@@ -71,7 +97,7 @@ void RenderSchematicCamera(const SE3Transform& cam_wfc, const std::array<float, 
     }
     else if (cam_disp_type == CamDisplayType::Schematic)
     {
-        RenderAxes(ax);
+        RenderAxes(ax, 2);
 
         glColor3fv(track_color.data());
         glLineWidth(1);
@@ -269,8 +295,10 @@ bool RenderUncertaintyEllipsoidBySampling(const Eigen::Matrix<Scalar, 3, 1>& cam
     return true;
 }
 
+SE3Transform CurCamFromTrackerOrigin(const std::vector<SE3Transform>& gt_cam_orient_cfw, size_t frame_ind);
+
 void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
-    const std::array<float, 3>& track_color,
+    const std::array<GLfloat, 3>& track_color,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
     CamDisplayType last_cam_disp_type)
@@ -352,46 +380,69 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
     bool ui_swallow_exc)
 {
     // world axes
-    RenderAxes(0.5);
+    RenderAxes(1, 4);
 
-    RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, ui_swallow_exc);
-
-    bool has_ground_truth = ui_params.gt_cam_orient_cfw != nullptr;
-    if (has_ground_truth)
+    bool has_gt_cameras = ui_params.gt_cam_orient_cfw != nullptr;  // gt=ground truth
+    if (has_gt_cameras)
     {
-        std::array<float, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
+        std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
         CamDisplayType gt_last_camera = CamDisplayType::None;
         RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, track_color, display_trajectory,
             mid_cam_disp_type,
             gt_last_camera);
     }
 
-    std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
-    if (ui_params.cam_orient_cfw_history != nullptr)
+    bool has_gt_sal_pnts = ui_params.entire_map != nullptr;
+    if (has_gt_sal_pnts)
     {
-        RenderCameraTrajectory(*ui_params.cam_orient_cfw_history, actual_track_color, display_trajectory,
-            mid_cam_disp_type,
-            last_cam_disp_type);
+        std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
+        glColor3fv(track_color.data());
+
+        for (const SalientPointFragment& sal_pnt_fragm : ui_params.entire_map->SalientPoints())
+        {
+            const auto& p = sal_pnt_fragm.Coord.value();
+            glBegin(GL_POINTS);
+            glVertex3d(p[0], p[1], p[2]);
+            glEnd();
+        }
     }
 
-    if (display_3D_uncertainties)
     {
-        Eigen::Matrix<Scalar, 3, 1> cam_pos;
-        Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
-        Eigen::Matrix<Scalar, 4, 1> cam_orient_quat;
-        kalman_slam->GetCameraPredictedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
-        RenderLastCameraUncertEllipsoid(cam_pos, cam_pos_uncert, cam_orient_quat, ellipsoid_cut_thr, ui_swallow_exc);
+        // the scene is drawn in the coordinate system of a tracker (=cam0)
+
+        std::array<double, 4 * 4> tracker_from_world_4x4_by_col{};
+        const SE3Transform world_from_tracker = SE3Inv(ui_params.tracker_origin_from_world);
+        LoadSE3TransformIntoOpengGLMat(world_from_tracker, tracker_from_world_4x4_by_col);
+        glPushMatrix();
+        glMultMatrixd(tracker_from_world_4x4_by_col.data());
+
+        RenderAxes(0.5, 2); // axes of the tracker's origin (=cam0)
+
+        RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, ui_swallow_exc);
+
+        std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
+        if (ui_params.cam_orient_cfw_history != nullptr)
+        {
+            RenderCameraTrajectory(*ui_params.cam_orient_cfw_history, actual_track_color, display_trajectory,
+                mid_cam_disp_type,
+                last_cam_disp_type);
+        }
+
+        if (display_3D_uncertainties)
+        {
+            Eigen::Matrix<Scalar, 3, 1> cam_pos;
+            Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
+            Eigen::Matrix<Scalar, 4, 1> cam_orient_quat;
+            kalman_slam->GetCameraPredictedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
+            RenderLastCameraUncertEllipsoid(cam_pos, cam_pos_uncert, cam_orient_quat, ellipsoid_cut_thr, ui_swallow_exc);
+        }
+
+        glPopMatrix();
     }
 }
 
 UIThreadParams SceneVisualizationPangolinGui::s_ui_params_;
-bool SceneVisualizationPangolinGui::got_user_input_ = false;
-
-SceneVisualizationPangolinGui::SceneVisualizationPangolinGui(bool defer_ui_construction)
-{
-    if (!defer_ui_construction)
-        InitUI();
-}
+std::weak_ptr<SceneVisualizationPangolinGui> SceneVisualizationPangolinGui::s_this_ui_;
 
 void SceneVisualizationPangolinGui::InitUI()
 {
@@ -407,7 +458,7 @@ void SceneVisualizationPangolinGui::InitUI()
     float center_y = fh / 2;
 
     view_state_3d_ = std::make_unique<pangolin::OpenGlRenderState>(
-        pangolin::ProjectionMatrix(w, h, 420, 420, center_x, center_y, 0.2, 100),
+        pangolin::ProjectionMatrix(w, h, 420, 420, center_x, center_y, 0.2, 1500),
         pangolin::ModelViewLookAt(30, -30, 30, 0, 0, 0, pangolin::AxisY)
     );
 
@@ -432,9 +483,21 @@ void SceneVisualizationPangolinGui::InitUI()
     slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
     cb_displ_mid_cam_type_ = std::make_unique<pangolin::Var<bool>>("ui.displ_3D_uncert", true, true);
 
-    pangolin::RegisterKeyPressCallback('s', OnSkip);
-    pangolin::RegisterKeyPressCallback('f', OnForward);
-    pangolin::RegisterKeyPressCallback(pangolin::PANGO_KEY_ESCAPE, OnKeyEsc);
+    pangolin::RegisterKeyPressCallback('s', []()
+    { 
+        if (auto form = s_this_ui_.lock())
+            form->OnKeyPressed('s'); 
+    });
+    pangolin::RegisterKeyPressCallback('f', []()
+    {
+        if (auto form = s_this_ui_.lock())
+            form->OnKeyPressed('f');
+    });
+    pangolin::RegisterKeyPressCallback(pangolin::PANGO_KEY_ESCAPE, []()
+    {
+        if (auto form = s_this_ui_.lock())
+            form->OnKeyPressed(pangolin::PANGO_KEY_ESCAPE);
+    });
 }
 
 void SceneVisualizationPangolinGui::RenderFrame()
@@ -476,11 +539,31 @@ void SceneVisualizationPangolinGui::RenderFrame()
                 last_cam_disp_type,
                 display_3D_uncertainties,
                 ui_params.ui_swallow_exc);
-
-    pangolin::FinishFrame(); // also processes user input
 }
 
-void SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnUserInput()
+int SceneVisualizationPangolinGui::WaitKey()
+{
+    const auto any_key = [](int key) { return true; };
+    return WaitKey(any_key);
+}
+
+int SceneVisualizationPangolinGui::WaitKey(std::function<bool(int key)> key_predicate)
+{
+    key_ = std::nullopt;
+    while (true)
+    {
+        TreatAppCloseAsEscape();
+        
+        if (key_.has_value() && key_predicate(key_.value()))
+            break;
+        RenderFrame();
+        pangolin::FinishFrame(); // also processes user input
+    }
+
+    return key_.value();
+}
+
+std::optional<int> SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnUserInput(std::function<bool(int key)> break_on)
 {
     // If a user provides an input (presses a key or clicks a mouse button)
     // we will prolong the execution of ui loop for couple of seconds.
@@ -513,9 +596,15 @@ void SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnUserInput()
         got_user_input_ = false;
 
         RenderFrame();
+        pangolin::FinishFrame(); // also processes user input
+
+        TreatAppCloseAsEscape();
 
         if (got_user_input_)
         {
+            if (key_.has_value() && break_on(key_.value()))
+                break;
+
             //LOG(INFO) << "UI is prolonged";
 
             // continue execution of UI loop for couple of seconds
@@ -526,74 +615,100 @@ void SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnUserInput()
         std::this_thread::sleep_for(ui_tight_loop_relaxing_delay_);
         the_first_iter = false;
     }
+    return key_;
 }
 
-void SceneVisualizationPangolinGui::Run()
+void SceneVisualizationPangolinGui::RunInSeparateThread()
 {
     const auto& ui_params = s_ui_params_;
 
-    while (!pangolin::ShouldQuit())
+    while (true)
     {
+        TreatAppCloseAsEscape();
+
+        auto do_continue = [this, &ui_params]() -> bool
         {
             // check if worker request finishing UI thread
-            std::lock_guard<std::mutex> lk(ui_params.worker_chat->exit_ui_mutex);
-            if (ui_params.worker_chat->exit_ui_flag)
+            WorkerChatSharedState& worker_chat = *ui_params.worker_chat.get();
+            std::lock_guard<std::mutex> lk(worker_chat.the_mutex);
+            if (std::optional<UIChatMessage> msg = PopMsgUnderLock(&worker_chat.ui_message); msg.has_value())
             {
-                VLOG(4) << "UI got exit signal";
-                break;
+                switch (msg.value())
+                {
+                case UIChatMessage::UIExit:
+                    VLOG(4) << "UI got exit signal";
+                    return false;
+                case UIChatMessage::UIWaitKey:
+                    multi_threaded_.form_state = FormState::WaitKey;
+                    break;
+                default:
+                    break;
+                }
             }
-        }
+            return true;
+        };
+
+        if (!do_continue())
+            break;
 
         RenderFrame();
+
+        pangolin::FinishFrame(); // also processes user input
 
         std::this_thread::sleep_for(ui_tight_loop_relaxing_delay_);
     }
 }
 
-void SceneVisualizationPangolinGui::OnForward()
+void SceneVisualizationPangolinGui::OnKeyPressed(int key)
 {
-    LOG(INFO) << "pressed F key";
+    LOG(INFO) << "pressed key " <<key;
     got_user_input_ = true;
+    key_ = key;
+
+    bool key_handled = false;
 
     // check if worker request finishing UI thread
     const auto& ui_params = s_ui_params_;
-    if (!ui_params.wait_for_user_input_after_each_frame)
-        return;
-
-    // request worker to resume processing
-    std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
-    ui_params.worker_chat->resume_worker_flag = true;
-    ui_params.worker_chat->resume_worker_suppress_observations = false;
-    ui_params.worker_chat->resume_worker_cv.notify_one();
-}
-
-void SceneVisualizationPangolinGui::OnSkip()
-{
-    got_user_input_ = true;
-
-    // check if worker request finishing UI thread
-    const auto& ui_params = s_ui_params_;
-    if (!ui_params.wait_for_user_input_after_each_frame)
-        return;
-
-    // request worker to resume processing
-    std::lock_guard<std::mutex> lk(ui_params.worker_chat->resume_worker_mutex);
-    ui_params.worker_chat->resume_worker_flag = true;
-    ui_params.worker_chat->resume_worker_suppress_observations = true;
-    ui_params.worker_chat->resume_worker_cv.notify_one();
-}
-
-void SceneVisualizationPangolinGui::OnKeyEsc()
-{
-    got_user_input_ = true;
-
-    // check if worker request finishing UI thread
-    const auto& ui_params = s_ui_params_;
+    if (ui_params.kalman_slam->in_multi_threaded_mode_)
     {
-        std::lock_guard<std::mutex> lk(ui_params.worker_chat->exit_worker_mutex);
-        ui_params.worker_chat->exit_worker_flag = true;
+        if (multi_threaded_.form_state == FormState::WaitKey &&
+            ui_params.worker_chat->ui_wait_key_predicate_(key))
+        {
+            multi_threaded_.form_state = FormState::IterateUILoop;
+
+            // request worker to resume processing
+            std::lock_guard<std::mutex> lk(ui_params.worker_chat->the_mutex);
+            ui_params.worker_chat->worker_message = WorkerChatMessage::WorkerKeyPressed;
+            ui_params.worker_chat->ui_pressed_key = key_;
+            ui_params.worker_chat->worker_got_new_message_cv.notify_one();
+            key_handled = true;
+        }
     }
-    ui_params.worker_chat->exit_worker_cv.notify_one();
+
+    if (key_handled)
+        return;
+
+    switch (key)
+    {
+    case pangolin::PANGO_KEY_ESCAPE:
+        if (ui_params.kalman_slam->in_multi_threaded_mode_)
+        {
+            {
+                std::lock_guard<std::mutex> lk(ui_params.worker_chat->the_mutex);
+                ui_params.worker_chat->worker_message = WorkerChatMessage::WorkerExit;
+            }
+            ui_params.worker_chat->worker_got_new_message_cv.notify_one();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void SceneVisualizationPangolinGui::TreatAppCloseAsEscape()
+{
+    if (pangolin::ShouldQuit())
+        OnKeyPressed(pangolin::PANGO_KEY_ESCAPE);
 }
 
 SceneVisualizationPangolinGui::Handler3DImpl::Handler3DImpl(pangolin::OpenGlRenderState& cam_state)
@@ -603,20 +718,42 @@ SceneVisualizationPangolinGui::Handler3DImpl::Handler3DImpl(pangolin::OpenGlRend
 
 void SceneVisualizationPangolinGui::Handler3DImpl::Mouse(pangolin::View& view, pangolin::MouseButton button, int x, int y, bool pressed, int button_state)
 {
-    owner_->got_user_input_ = true;
     pangolin::Handler3D::Mouse(view, button, x, y, pressed, button_state);
 }
 
 void SceneVisualizationPangolinGui::Handler3DImpl::MouseMotion(pangolin::View& view, int x, int y, int button_state)
 {
-    owner_->got_user_input_ = true;
     pangolin::Handler3D::MouseMotion(view, x, y, button_state);
 }
 
 void SceneVisualizationPangolinGui::Handler3DImpl::Special(pangolin::View& view, pangolin::InputSpecial inType, float x, float y, float p1, float p2, float p3, float p4, int button_state)
 {
-    owner_->got_user_input_ = true;
     pangolin::Handler3D::Special(view, inType, x, y, p1, p2, p3, p4, button_state);
+}
+
+std::shared_ptr<SceneVisualizationPangolinGui> SceneVisualizationPangolinGui::New(bool defer_ui_construction)
+{
+    auto gui = std::make_shared<SceneVisualizationPangolinGui>();
+    SceneVisualizationPangolinGui::s_this_ui_ = gui;
+
+    if (!defer_ui_construction)
+        gui->InitUI();
+    return gui;
+}
+
+void SceneVisualizationPangolinGui::SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, float back_dist)
+{
+    auto wfc = SE3Inv(tracker_origin_from_world);
+    pangolin::OpenGlMatrix model_view_col_major;
+
+    Eigen::Map< Eigen::Matrix<Scalar, 4, 4, Eigen::ColMajor>> eigen_mat(static_cast<Scalar*>(model_view_col_major.m));
+
+    eigen_mat =
+        internals::SE3Mat(internals::RotMat(0, 1, 0, M_PI)) *  // to axis format of OpenGL
+        internals::SE3Mat(Eigen::Matrix<Scalar, 3, 1>{0, 0, back_dist}) *
+        internals::SE3Mat(tracker_origin_from_world.R, tracker_origin_from_world.T);
+
+    view_state_3d_->SetModelViewMatrix(model_view_col_major);
 }
 
 void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value across threads
@@ -624,9 +761,10 @@ void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value a
     VLOG(4) << "UI thread is running";
 
     SceneVisualizationPangolinGui::s_ui_params_ = ui_params;
-    SceneVisualizationPangolinGui pangolin_gui;
-    pangolin_gui.ui_tight_loop_relaxing_delay_ = ui_params.ui_tight_loop_relaxing_delay;
-    pangolin_gui.Run();
+
+    auto pangolin_gui = SceneVisualizationPangolinGui::New();
+    pangolin_gui->ui_tight_loop_relaxing_delay_ = ui_params.ui_tight_loop_relaxing_delay;
+    pangolin_gui->RunInSeparateThread();
 
     VLOG(4) << "UI thread is exiting";
 }

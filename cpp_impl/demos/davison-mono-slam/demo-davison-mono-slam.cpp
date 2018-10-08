@@ -45,7 +45,7 @@ namespace suriko_demos_davison_mono_slam
 {
 using namespace std;
 using namespace boost::filesystem;
-using namespace suriko;
+using namespace suriko; 
 using namespace suriko::internals;
 using namespace suriko::virt_world;
 
@@ -54,7 +54,7 @@ using namespace suriko::virt_world;
 #define kImageSeqDir 1
 //static constexpr int kVirtualScene = 0;
 //static constexpr int kImageSeqDir = 1;
-//enum DemoDataSource { kVirtualScene, kImageSeqDir };
+//enum class DemoDataSource { kVirtualScene, kImageSeqDir };
 
 void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps_per_side_x, size_t steps_per_side_y,
     suriko::Point3 eye_offset, 
@@ -105,6 +105,56 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     }
 }
 
+void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
+    bool corrupt_salient_points_with_noise,
+    std::mt19937* gen,
+    std::normal_distribution<Scalar>* x3D_noise_dis, FragmentMap* entire_map)
+{
+    size_t next_virtual_point_id = 6000'000 + 1;
+    constexpr Scalar inclusive_gap = 1e-8; // small value to make iteration inclusive
+
+    Scalar xmid = (wb.XMin + wb.XMax) / 2;
+    Scalar xlen = wb.XMax - wb.XMin;
+    Scalar zlen = wb.ZMax - wb.ZMin;
+    for (Scalar grid_x = wb.XMin; grid_x < wb.XMax + inclusive_gap; grid_x += cell_size[0])
+    {
+        for (Scalar grid_y = wb.YMin; grid_y < wb.YMax + inclusive_gap; grid_y += cell_size[1])
+        {
+            Scalar x = grid_x;
+            Scalar y = grid_y;
+
+            Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
+            Scalar z = wb.ZMin + z_perc * zlen;
+
+            // jit x and y so the points can be distinguished during movement
+            if (corrupt_salient_points_with_noise)
+            {
+                x += (*x3D_noise_dis)(*gen);
+                y += (*x3D_noise_dis)(*gen);
+                z += (*x3D_noise_dis)(*gen);
+            }
+
+            SalientPointFragment& frag = entire_map->AddSalientPoint(Point3(x, y, z));
+            frag.SyntheticVirtualPointId = next_virtual_point_id++;
+        }
+    }
+}
+
+/// Gets the transformation from world into camera in given frame.
+SE3Transform CurCamFromTrackerOrigin(const std::vector<SE3Transform>& gt_cam_orient_cfw, size_t frame_ind, const SE3Transform& tracker_from_world)
+{
+    const SE3Transform& cur_cam_cfw = gt_cam_orient_cfw[frame_ind];
+    SE3Transform rt_cft = SE3AFromB(cur_cam_cfw, tracker_from_world);  // current camera in the coordinates of the first camera
+    return rt_cft;
+}
+
+suriko::Point3 PosTrackerOriginFromWorld(const std::vector<SE3Transform>& gt_cam_orient_cfw, suriko::Point3 p_world,
+    const SE3Transform& tracker_from_world)
+{
+    suriko::Point3 p_tracker = SE3Apply(tracker_from_world, p_world);
+    return p_tracker;
+}
+
 struct BlobInfo
 {
     suriko::Point2 Coord;
@@ -122,6 +172,7 @@ class DemoCornersMatcher : public CornersMatcherBase
     bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
     std::vector<BlobInfo> detected_blobs_; // blobs detected in current frame
 public:
+    SE3Transform tracker_origin_from_world_;
     std::optional<size_t> max_new_blobs_per_frame_;
     std::optional<size_t> max_new_blobs_in_first_frame_;
     std::optional<float> match_blob_prob_ = 1; // [0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched;
@@ -135,6 +186,8 @@ public:
         entire_map_(entire_map),
         img_size_(img_size)
     {
+        tracker_origin_from_world_.T.setZero();
+        tracker_origin_from_world_.R.setIdentity();
     }
 
     void AnalyzeFrame(size_t frame_ind, const cv::Mat& image_gray) override
@@ -145,7 +198,7 @@ public:
             return;
 
         // determine current camerra's orientation using the ground truth
-        const SE3Transform& rt_cfw = gt_cam_orient_cfw_[frame_ind];
+        const SE3Transform& cami_from_tracker = CurCamFromTrackerOrigin(gt_cam_orient_cfw_, frame_ind, tracker_origin_from_world_);
 
         std::vector<size_t> salient_points_ids;
         entire_map_.GetSalientPointsIds(&salient_points_ids);
@@ -154,8 +207,10 @@ public:
         {
             const SalientPointFragment& fragment = entire_map_.GetSalientPointNew(frag_id);
 
-            const Point3& salient_point = fragment.Coord.value();
-            suriko::Point3 pnt_camera = SE3Apply(rt_cfw, salient_point);
+            const Point3& salient_point_world = fragment.Coord.value();
+            suriko::Point3 pnt_tracker = PosTrackerOriginFromWorld(gt_cam_orient_cfw_, salient_point_world, tracker_origin_from_world_);
+
+            suriko::Point3 pnt_camera = SE3Apply(cami_from_tracker, pnt_tracker);
             suriko::Point2 pnt_pix = kalman_tracker_->ProjectCameraPoint(pnt_camera);
             Scalar pix_x = pnt_pix[0];
             Scalar pix_y = pnt_pix[1];
@@ -295,7 +350,9 @@ class ImagePatchCornersMatcher : public CornersMatcherBase
     DavisonMonoSlam* kalman_tracker_;
     std::vector<cv::KeyPoint> new_keypoints_;
     float rad_ = 0;
-    int patch_width_ = 0;
+
+    // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" Davison Murray 2002)
+    int patch_width_ = 15;
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
 public:
@@ -567,6 +624,11 @@ static bool ValidateDirectoryExists(const char *flagname, const std::string &val
     return false;
 }
 
+//static constexpr char* kVirtualCStr = "virtual";
+//static constexpr char* kImageSeqDirCStr = "imageseqdir";
+//DEFINE_string(scene_source, kVirtualCStr, "{virtual,imageseqdir}");
+DEFINE_string(scene_imageseq_dir, "", "Path to directory with image files");
+DEFINE_validator(scene_imageseq_dir, &ValidateDirectoryExists);
 DEFINE_double(world_xmin, -1.5, "world xmin");
 DEFINE_double(world_xmax, 1.5, "world xmax");
 DEFINE_double(world_ymin, -1.5, "world ymin");
@@ -598,7 +660,7 @@ DEFINE_int32(kalman_update_impl, 1, "");
 DEFINE_double(kalman_max_new_blobs_in_first_frame, 7, "");
 DEFINE_double(kalman_max_new_blobs_per_frame, 1, "");
 DEFINE_double(kalman_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
-DEFINE_int32(kalman_templ_width, 21, "width of patch template");
+DEFINE_int32(kalman_templ_width, 15, "width of patch template");
 DEFINE_bool(kalman_stop_on_sal_pnt_moved_too_far, false, "width of patch template");
 DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
@@ -615,8 +677,6 @@ DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without r
 DEFINE_bool(ctrl_visualize_during_processing, true, "");
 DEFINE_bool(ctrl_visualize_after_processing, true, "");
 DEFINE_bool(ctrl_collect_tracker_internals, false, "");
-DEFINE_string(imageseq_dir, "", "Path to directory with image files");
-DEFINE_validator(imageseq_dir, &ValidateDirectoryExists);
 DEFINE_int32(camera_image_width, 320, "");
 DEFINE_int32(camera_image_height, 240, "");
 DEFINE_double(camera_princip_point_x, 162.0, "");
@@ -628,6 +688,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 {
     gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
     google::InitGoogleLogging(argv[0]);
+
+    //DemoDataSource demo_data_source;
+    //if (FLAGS_scene_source == std::string_view(kImageSeqDirCStr))
+    //    demo_data_source = DemoDataSource::kImageSeqDir;
+    //else
+    //{
+    //    if (FLAGS_scene_source != std::string_view(kVirtualCStr))
+    //        LOG(INFO) << "WARN: Unknown demo data source '" << FLAGS_scene_source << "', resetting to '" << kVirtualCStr <<"'";
+    //    demo_data_source = DemoDataSource::kVirtualScene;
+    //}
+    //LOG(INFO) << "demo_data_source=" << (demo_data_source == DemoDataSource::kImageSeqDir ? kImageSeqDirCStr: kVirtualCStr);
 
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
@@ -647,8 +718,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     wb.ZMax = FLAGS_world_zmax;
     std::array<Scalar, 3> cell_size = { FLAGS_world_cell_size_x, FLAGS_world_cell_size_y, FLAGS_world_cell_size_z };
 
-    constexpr Scalar inclusive_gap = 1e-8; // small value to make iteration inclusive
-
     std::random_device rd;  //Will be used to obtain a seed for the random number engine
     std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
     gen.seed(1234);
@@ -657,35 +726,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     if (corrupt_salient_points_with_noise)
         x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0, FLAGS_world_noise_x3D_std);
 
-    size_t next_virtual_point_id = 6000'000 + 1;
     FragmentMap entire_map;
     entire_map.SetFragmentIdOffsetInternal(1000'000);
-    Scalar xmid = (wb.XMin + wb.XMax) / 2;
-    Scalar xlen = wb.XMax - wb.XMin;
-    Scalar zlen = wb.ZMax - wb.ZMin;
-    for (Scalar grid_x = wb.XMin; grid_x < wb.XMax + inclusive_gap; grid_x += cell_size[0])
-    {
-        for (Scalar grid_y = wb.YMin; grid_y < wb.YMax + inclusive_gap; grid_y += cell_size[1])
-        {
-            Scalar x = grid_x;
-            Scalar y = grid_y;
-            
-            Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
-            Scalar z = wb.ZMin + z_perc * zlen;
-
-            // jit x and y so the points can be distinguished during movement
-            if (corrupt_salient_points_with_noise)
-            {
-                x += (*x3D_noise_dis)(gen);
-                y += (*x3D_noise_dis)(gen);
-                z += (*x3D_noise_dis)(gen);
-            }
-
-            SalientPointFragment& frag = entire_map.AddSalientPoint(Point3(x, y, z));
-            frag.SyntheticVirtualPointId = next_virtual_point_id++;
-        }
-    }
-
+    GenerateWorldPoints(wb, cell_size, corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
     LOG(INFO) << "points_count=" << entire_map.SalientPointsCount();
 
     suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
@@ -750,6 +793,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cam_distort_params.K1 = 0;
     cam_distort_params.K2 = 0;
 
+    // the origin of a tracker (sometimes cam0)
+    SE3Transform tracker_origin_from_world;
+#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
+    // tracker coordinate system = cam0
+    tracker_origin_from_world = gt_cam_orient_cfw[0];
+#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
+    // tracker coordinates system = world coordinate system
+    tracker_origin_from_world.R.setIdentity();
+    tracker_origin_from_world.T.setZero();
+#endif
+
     DavisonMonoSlam::DebugPathEnum debug_path = DavisonMonoSlam::DebugPathEnum::DebugNone;
     if (FLAGS_kalman_debug_estim_vars_cov)
         debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugEstimVarsCov;
@@ -771,31 +825,13 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
     tracker.debug_ellipsoid_cut_thr_ = FLAGS_ui_ellipsoid_cut_thr;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    tracker.SetCamera(gt_cam_orient_cfw[0], FLAGS_kalman_estim_var_init_std);
     tracker.fake_localization_ = FLAGS_kalman_fake_localization;
     tracker.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
-    tracker.gt_cam_orient_world_to_f_ = [&gt_cam_orient_cfw](size_t f) -> SE3Transform
+    tracker.gt_cami_from_tracker_fun_ = [&gt_cam_orient_cfw, tracker_origin_from_world](size_t frame_ind) -> SE3Transform
     {
-        SE3Transform c = gt_cam_orient_cfw[f];
+        SE3Transform c = CurCamFromTrackerOrigin(gt_cam_orient_cfw, frame_ind, tracker_origin_from_world);
         return c;
     };    
-    tracker.gt_cam_orient_f1f2_ = [&gt_cam_orient_cfw](size_t f0, size_t f1) -> SE3Transform
-    {
-        SE3Transform c0 = gt_cam_orient_cfw[f0];
-        SE3Transform c1 = gt_cam_orient_cfw[f1];
-        SE3Transform c1_from_c0 = SE3AFromB(c1, c0);
-        return c1_from_c0;
-    };
-    tracker.gt_salient_point_by_virtual_point_id_fun_ = [&entire_map](size_t synthetic_virtual_point_id) -> suriko::Point3
-    {
-        const SalientPointFragment* sal_pnt = nullptr;
-        if (entire_map.GetSalientPointByVirtualPointIdInternal(synthetic_virtual_point_id, &sal_pnt) && sal_pnt->Coord.has_value())
-        {
-            const suriko::Point3& pnt_world = sal_pnt->Coord.value();
-            return pnt_world;
-        }
-        AssertFalse();
-    };
 #endif
 
     tracker.PredictEstimVarsHelper();
@@ -804,9 +840,15 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     {
         auto corners_matcher = std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size);
-        corners_matcher->max_new_blobs_in_first_frame_ = FLAGS_kalman_max_new_blobs_in_first_frame;
-        corners_matcher->max_new_blobs_per_frame_ = FLAGS_kalman_max_new_blobs_per_frame;
-        corners_matcher->match_blob_prob_ = FLAGS_kalman_match_blob_prob;
+        corners_matcher->tracker_origin_from_world_ = tracker_origin_from_world;
+
+        if (FLAGS_kalman_max_new_blobs_in_first_frame > 0)
+            corners_matcher->max_new_blobs_in_first_frame_ = FLAGS_kalman_max_new_blobs_in_first_frame;
+        if (FLAGS_kalman_max_new_blobs_per_frame > 0)
+            corners_matcher->max_new_blobs_per_frame_ = FLAGS_kalman_max_new_blobs_per_frame;
+        if (FLAGS_kalman_match_blob_prob > 0)
+            corners_matcher->match_blob_prob_ = FLAGS_kalman_match_blob_prob;
+
         tracker.SetCornersMatcher(std::move(corners_matcher));
     }
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
@@ -828,13 +870,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #endif
 #if defined(SRK_HAS_PANGOLIN)
     // across threads shared data
-    auto worker_chat = std::make_shared<WorkerThreadChat>();
+    auto worker_chat = std::make_shared<WorkerChatSharedState>();
     ptrdiff_t observable_frame_ind = -1; // this is visualized by UI, it is one frame less than current frame
     std::vector<SE3Transform> cam_orient_cfw_history; // the actual trajectory of the tracker
 
     UIThreadParams ui_params {};
     ui_params.wait_for_user_input_after_each_frame = FLAGS_ctrl_wait_after_each_frame;
     ui_params.kalman_slam = &tracker;
+    ui_params.tracker_origin_from_world = tracker_origin_from_world;
     ui_params.ellipsoid_cut_thr = FLAGS_ui_ellipsoid_cut_thr;
     ui_params.cam_orient_cfw_history = &cam_orient_cfw_history;
     ui_params.get_observable_frame_ind_fun = [&observable_frame_ind]() { return observable_frame_ind; };
@@ -848,7 +891,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     std::thread ui_thread;
     const bool defer_ui_construction = true;
-    SceneVisualizationPangolinGui pangolin_gui(defer_ui_construction);
+    auto pangolin_gui = SceneVisualizationPangolinGui::New(defer_ui_construction);  // used in single threaded mode
     if (FLAGS_ctrl_visualize_during_processing)
     {
         if (FLAGS_ctrl_multi_threaded_mode)
@@ -856,9 +899,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         else
         {
             SceneVisualizationPangolinGui::s_ui_params_ = ui_params;
-            pangolin_gui.ui_loop_prolong_period_ = std::chrono::milliseconds(FLAGS_ui_loop_prolong_period_ms);
-            pangolin_gui.ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
-            pangolin_gui.InitUI();
+            pangolin_gui->ui_loop_prolong_period_ = std::chrono::milliseconds(FLAGS_ui_loop_prolong_period_ms);
+            pangolin_gui->ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
+            pangolin_gui->InitUI();
+            int back_dist = 5;
+            pangolin_gui->SetCameraBehindTrackerOnce(tracker_origin_from_world, back_dist);
         }
     }
 #endif
@@ -869,17 +914,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cv::Mat image_gray;
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
-    LOG(INFO) << "imageseq_dir=" << FLAGS_imageseq_dir;
+    LOG(INFO) << "imageseq_dir=" << FLAGS_scene_imageseq_dir;
 
     size_t frame_ind = -1;
-    auto dir = std::filesystem::directory_iterator(FLAGS_imageseq_dir);
+    auto dir = std::filesystem::directory_iterator(FLAGS_scene_imageseq_dir);
     for (const auto& dir_entry : dir)
 #endif
     {
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-        // orient camera
-        const SE3Transform& cam_cfw = gt_cam_orient_cfw[frame_ind];
-        SE3Transform cam_wfc = SE3Inv(cam_cfw);
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
         ++frame_ind;
         auto image_file_path = dir_entry.path();
@@ -912,14 +954,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #endif
 
 #if defined(SRK_HAS_PANGOLIN)
-            constexpr auto kCam = DavisonMonoSlam::kCamStateComps;
-            Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
-            tracker.GetCameraPredictedUncertainty(&cam_state_covar);
-
             observable_frame_ind = frame_ind;
-
-            if (FLAGS_ctrl_visualize_during_processing && !FLAGS_ctrl_multi_threaded_mode)
-                pangolin_gui.RenderFrameAndProlongUILoopOnUserInput();
 #endif
         }
 
@@ -932,9 +967,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         {
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
             camera_image_rgb.setTo(0);
-            auto project_fun = [&cam_cfw, &tracker](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+            const SE3Transform& rt_cfw = gt_cam_orient_cfw[frame_ind];
+            auto project_fun = [&rt_cfw, &tracker](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
             {
-                suriko::Point3 pnt_cam = SE3Apply(cam_cfw, sal_pnt);
+                suriko::Point3 pnt_cam = SE3Apply(rt_cfw, sal_pnt_world);
                 suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(pnt_cam);
                 return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
             };
@@ -973,26 +1009,65 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #endif
 
 #if defined(SRK_HAS_PANGOLIN)
+        if (FLAGS_ctrl_multi_threaded_mode)
         {
             // check if UI requests the exit
-            std::lock_guard<std::mutex> lk(worker_chat->exit_worker_mutex);
-            if (worker_chat->exit_worker_flag)
+            std::lock_guard<std::mutex> lk(worker_chat->the_mutex);
+            std::optional<WorkerChatMessage> msg = PopMsgUnderLock(&worker_chat->worker_message);
+            if (msg == WorkerChatMessage::WorkerExit)
                 break;
         }
-        
-        bool suppress_observations = false;
-        if (FLAGS_ctrl_wait_after_each_frame)
+
+        // update UI
+        if (FLAGS_ctrl_visualize_during_processing)
         {
-            std::unique_lock<std::mutex> ulk(worker_chat->resume_worker_mutex);
-            worker_chat->resume_worker_flag = false; // reset the waiting flag
-            // wait till UI requests to resume processing
-            // TODO: if worker blocks, then UI can't request worker to exit; how to coalesce these?
-            worker_chat->resume_worker_cv.wait(ulk, [&worker_chat] {return worker_chat->resume_worker_flag; });
-            suppress_observations = worker_chat->resume_worker_suppress_observations;
+            auto key_of_interest = [](int key)
+            {
+                return key == 's' || key == 'f' || key == pangolin::PANGO_KEY_ESCAPE;
+            };
+
+            if (FLAGS_ctrl_wait_after_each_frame)
+            {
+                // let a user observe the UI and signal back when to continue
+
+                int key = -1;
+                if (FLAGS_ctrl_multi_threaded_mode)
+                {
+                    std::unique_lock<std::mutex> ulk(worker_chat->the_mutex);
+                    worker_chat->ui_message = UIChatMessage::UIWaitKey; // reset the waiting flag
+                    worker_chat->ui_wait_key_predicate_ = key_of_interest;
+
+                    // wait till UI requests to resume processing
+                    worker_chat->worker_got_new_message_cv.wait(ulk, [&worker_chat] {return worker_chat->worker_message == WorkerChatMessage::WorkerKeyPressed; });
+                    key = worker_chat->ui_pressed_key.value_or(-1);
+                }
+                else
+                {
+                    key = pangolin_gui->WaitKey(key_of_interest);
+                }
+
+                if (key == pangolin::PANGO_KEY_ESCAPE)
+                    break;
+                
+                const bool suppress_observations = (key == 's');
+
+                auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&tracker.CornersMatcher());
+                if (a_corners_matcher != nullptr)
+                    a_corners_matcher->SetSuppressObservations(suppress_observations);
+            }
+            else
+            {
+                if (FLAGS_ctrl_multi_threaded_mode) {}
+                else
+                {
+                    // in single thread mode the controller executes the tracker and gui code sequentially in the same thread
+                    auto break_on = [](int key) { return key == pangolin::PANGO_KEY_ESCAPE; };;
+                    std::optional<int> key = pangolin_gui->RenderFrameAndProlongUILoopOnUserInput(break_on);
+                    if (key == pangolin::PANGO_KEY_ESCAPE)
+                        break;
+                }
+            }
         }
-        auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&tracker.CornersMatcher());
-        if (a_corners_matcher != nullptr)
-            a_corners_matcher->SetSuppressObservations(suppress_observations);
 #endif
 #if defined(SRK_HAS_OPENCV)
         if (FLAGS_ctrl_visualize_during_processing)
@@ -1019,14 +1094,16 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 VLOG(4) << "Waiting for UI to request the exit";
                 {
                     // wait for Pangolin UI to request the exit
-                    std::unique_lock<std::mutex> ulk(worker_chat->exit_worker_mutex);
-                    worker_chat->exit_worker_cv.wait(ulk, [&worker_chat] {return worker_chat->exit_worker_flag; });
+                    std::unique_lock<std::mutex> ulk(worker_chat->the_mutex);
+                    worker_chat->ui_message = UIChatMessage::UIWaitKey;
+                    worker_chat->ui_wait_key_predicate_ = [](int key) { return key == pangolin::PANGO_KEY_ESCAPE; };
+                    worker_chat->worker_got_new_message_cv.wait(ulk, [&worker_chat] {return worker_chat->worker_message == WorkerChatMessage::WorkerKeyPressed; });
                 }
                 VLOG(4) << "Got UI notification to exit working thread";
                 {
                     // notify Pangolin UI to finish visualization thread
-                    std::lock_guard<std::mutex> lk(worker_chat->exit_ui_mutex);
-                    worker_chat->exit_ui_flag = true;
+                    std::lock_guard<std::mutex> lk(worker_chat->the_mutex);
+                    worker_chat->ui_message = UIChatMessage::UIExit;
                 }
                 VLOG(4) << "Waiting for UI to perform the exit";
                 ui_thread.join();
@@ -1035,7 +1112,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
         else
         {
-            pangolin_gui.Run();
+            if (FLAGS_ctrl_wait_after_each_frame)
+            {
+                // if there was pause after each frame then we won't wait again
+            }
+            else
+            {
+                pangolin_gui->WaitKey();
+            }
         }
     }
 #elif defined(SRK_HAS_OPENCV)

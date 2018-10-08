@@ -713,9 +713,10 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         if (fix_estim_vars_covar_symmetry_)
             FixSymmetricMat(&estim_vars_covar_);
 
-        if (kSurikoDebug && gt_cam_orient_world_to_f_ != nullptr) // ground truth
+        static bool debug_cam_pos = false;
+        if (kSurikoDebug && debug_cam_pos && gt_cami_from_tracker_fun_ != nullptr) // ground truth
         {
-            SE3Transform cam_orient_cfw_gt = gt_cam_orient_world_to_f_(frame_ind);
+            SE3Transform cam_orient_cfw_gt = gt_cami_from_tracker_fun_(frame_ind);
             SE3Transform cam_orient_wfc_gt = SE3Inv(cam_orient_cfw_gt);
 
             Eigen::Matrix<Scalar, kQuat4, 1> cam_orient_wfc_quat;
@@ -1005,25 +1006,25 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
 
 void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
 {
-    if (fake_localization_ && gt_cam_orient_world_to_f_ != nullptr)
+    if (fake_localization_ && gt_cami_from_tracker_fun_ != nullptr)
     {
-        SE3Transform cam_orient_cfw = gt_cam_orient_world_to_f_(frame_ind);
-        SE3Transform cam_orient_wfc = SE3Inv(cam_orient_cfw);
+        SE3Transform cami_from_tracker = gt_cami_from_tracker_fun_(frame_ind); // origin of tracker = cam0
+        SE3Transform tracker_from_cami = SE3Inv(cami_from_tracker);
 
-        std::array<Scalar, kQuat4> cam_orient_wfc_quat;
-        QuatFromRotationMatNoRChecks(cam_orient_wfc.R, cam_orient_wfc_quat);
+        std::array<Scalar, kQuat4> tracker_from_cami_quat;
+        QuatFromRotationMatNoRChecks(tracker_from_cami.R, tracker_from_cami_quat);
 
         // camera position
         DependsOnCameraPosPackOrder();
-        estim_vars_[0] = cam_orient_wfc.T[0];
-        estim_vars_[1] = cam_orient_wfc.T[1];
-        estim_vars_[2] = cam_orient_wfc.T[2];
+        estim_vars_[0] = tracker_from_cami.T[0];
+        estim_vars_[1] = tracker_from_cami.T[1];
+        estim_vars_[2] = tracker_from_cami.T[2];
         
         // camera orientation
-        estim_vars_[3] = cam_orient_wfc_quat[0];
-        estim_vars_[4] = cam_orient_wfc_quat[1];
-        estim_vars_[5] = cam_orient_wfc_quat[2];
-        estim_vars_[6] = cam_orient_wfc_quat[3];
+        estim_vars_[3] = tracker_from_cami_quat[0];
+        estim_vars_[4] = tracker_from_cami_quat[1];
+        estim_vars_[5] = tracker_from_cami_quat[2];
+        estim_vars_[6] = tracker_from_cami_quat[3];
     }
 }
 

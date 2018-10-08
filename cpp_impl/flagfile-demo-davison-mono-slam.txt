@@ -4,6 +4,19 @@
 # vmodule doesn't work on Windows
 #--vmodule=bundle*=4
 
+# input=sequence of images
+--scene_imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM/
+
+# Controller
+--ctrl_multi_threaded_mode=true
+--ctrl_wait_after_each_frame=false
+--ctrl_visualize_during_processing=true
+--ctrl_visualize_after_processing=true
+--ctrl_collect_tracker_internals=true
+# true to just test visualizer, no slam is done
+--ctrl_debug_skim_over=false
+
+
 --world_xmin=-1.5
 --world_xmax=1.5
 --world_ymin=-1.5
@@ -31,21 +44,20 @@
 --viewer_steps_per_side_y=10
 
 # virtual scene
-#--camera_image_width=800
-#--camera_image_height=600
-#--camera_princip_point_x=400
-#--camera_princip_point_y=300
-#--camera_focal_length_pix_x=880.282
-#--camera_focal_length_pix_y=661.376
+--camera_image_width=800
+--camera_image_height=600
+--camera_princip_point_x=400
+--camera_princip_point_y=300
+--camera_focal_length_pix_x=880.282
+--camera_focal_length_pix_y=661.376
 
-# input=sequence of images
---imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM/
---camera_image_width=320
---camera_image_height=240
---camera_princip_point_x=162
---camera_princip_point_y=125
---camera_focal_length_pix_x=195
---camera_focal_length_pix_y=195
+# Davison's FireWire Camera used to record TestSeqMonoSLAM images
+#--camera_image_width=320
+#--camera_image_height=240
+#--camera_princip_point_x=162
+#--camera_princip_point_y=125
+#--camera_focal_length_pix_x=195
+#--camera_focal_length_pix_y=195
 
 
 --kalman_estim_var_init_std=0.005
@@ -55,14 +67,14 @@
 --kalman_sal_pnt_init_inv_dist_std=5
 # 1=all,2=one observation, 3=one component of one observation
 --kalman_update_impl=1
---kalman_max_new_blobs_in_first_frame=10
---kalman_max_new_blobs_per_frame=1
---kalman_match_blob_prob=0.3
---kalman_fix_estim_vars_covar_symmetry=false
+--kalman_max_new_blobs_in_first_frame=-10
+--kalman_max_new_blobs_per_frame=-1
+--kalman_match_blob_prob=-0.3
+--kalman_fix_estim_vars_covar_symmetry=true
 --kalman_debug_estim_vars_cov
 --kalman_debug_predicted_vars_cov
 --kalman_fake_localization=false
---kalman_fake_sal_pnt_init_inv_dist=true
+--kalman_fake_sal_pnt_init_inv_dist=false
 --kalman_templ_width=21
 --kalman_stop_on_sal_pnt_moved_too_far=false
 
@@ -74,12 +86,3 @@
 --ui_loop_prolong_period_ms=1000
 --ui_tight_loop_relaxing_delay_ms=10
 
-# Controller
-
-# true to just test visualizer, no slam is done
---ctrl_multi_threaded_mode=false
---ctrl_wait_after_each_frame=false
---ctrl_visualize_during_processing=true
---ctrl_visualize_after_processing=true
---ctrl_collect_tracker_internals=true
---ctrl_debug_skim_over=false
