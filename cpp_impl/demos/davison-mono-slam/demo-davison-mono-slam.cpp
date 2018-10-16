@@ -160,7 +160,7 @@ struct BlobInfo
 {
     suriko::Point2 Coord;
     DavisonMonoSlam::SalPntId SalPntIdInTracker;
-    std::optional<Scalar> GTDepth; // ground truth depth to salient point in virtual environments
+    std::optional<Scalar> GTInvDepth; // inversed ground truth depth to salient point in virtual environments
     size_t FragmentId; // the id of a fragment in entire map
 };
 
@@ -230,10 +230,13 @@ public:
                 static_assert(sizeof fragment.UserObj >= sizeof sal_pnt_id);
             }
 
+            const Scalar depth = pnt_camera.Mat().norm();
+            SRK_ASSERT(!IsClose(0, depth)) << "salient points with zero depth are prohibited";
+
             BlobInfo blob_info;
             blob_info.Coord = pnt_pix;
             blob_info.SalPntIdInTracker = sal_pnt_id;
-            blob_info.GTDepth = pnt_camera.Mat().norm();
+            blob_info.GTInvDepth = 1 / depth;
             blob_info.FragmentId = frag_id;
             detected_blobs_.push_back(blob_info);
         }
@@ -333,9 +336,9 @@ public:
         return detected_blobs_[blob_id.Ind].Coord.Mat();
     }
     
-    std::optional<Scalar> GetSalientPointGroundTruthDepth(CornersMatcherBlobId blob_id) override
+    std::optional<Scalar> GetSalientPointGroundTruthInvDepth(CornersMatcherBlobId blob_id) override
     {
-        return detected_blobs_[blob_id.Ind].GTDepth;
+        return detected_blobs_[blob_id.Ind].GTInvDepth;
     }
 
     void SetSuppressObservations(bool value) { suppress_observations_ = value; }
@@ -672,17 +675,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
     google::InitGoogleLogging(argv[0]);
 
-    //DemoDataSource demo_data_source;
-    //if (FLAGS_scene_source == std::string_view(kImageSeqDirCStr))
-    //    demo_data_source = DemoDataSource::kImageSeqDir;
-    //else
-    //{
-    //    if (FLAGS_scene_source != std::string_view(kVirtualCStr))
-    //        LOG(INFO) << "WARN: Unknown demo data source '" << FLAGS_scene_source << "', resetting to '" << kVirtualCStr <<"'";
-    //    demo_data_source = DemoDataSource::kVirtualScene;
-    //}
-    //LOG(INFO) << "demo_data_source=" << (demo_data_source == DemoDataSource::kImageSeqDir ? kImageSeqDirCStr: kVirtualCStr);
-
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
     LOG(INFO) << "world_noise_R_std=" << FLAGS_world_noise_R_std;
@@ -752,25 +744,30 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     std::array<size_t, 2> img_size = { FLAGS_camera_image_width, FLAGS_camera_image_height };
     LOG(INFO) << "img_size=[" << img_size[0] << "," << img_size[1] << "] pix";
 
-    // TODO: change necessary params so that the primary input is a principal point in pixels (not a focal length in mm or pixel size in mm); remove focal_len_mm / pixel_size_mm from DavisonMonoSlam algo
     // focal_len_pix = focal_len_mm / pixel_size_mm
-    // assume dy=PixelSizeMm[1]=0.001mm
-
     std::array<Scalar, 2> foc_len_pix = { FLAGS_camera_focal_length_pix_x, FLAGS_camera_focal_length_pix_y };
-    float pix_size_y = 0.001f;
-    float focal_length_mm = foc_len_pix[1] * pix_size_y;
+
+    // assume dy=PixelSizeMm[1]=some constant
+    const float pix_size_y = 0.001f;
+
+    const float focal_length_mm = foc_len_pix[1] * pix_size_y;
     float pix_size_x = focal_length_mm / foc_len_pix[0];
 
     CameraIntrinsicParams cam_intrinsics;
-    cam_intrinsics.PrincipalPointPixels[0] = FLAGS_camera_princip_point_x;
-    cam_intrinsics.PrincipalPointPixels[1] = FLAGS_camera_princip_point_y;
-    cam_intrinsics.FocalLengthMm = focal_length_mm;
-    cam_intrinsics.PixelSizeMm = std::array<Scalar, 2> {pix_size_x, pix_size_y};
-    std::array<Scalar, 2> focal_length_pixels = cam_intrinsics.GetFocalLengthPixels();
-    LOG(INFO) << "foc_len=" << cam_intrinsics.FocalLengthMm << " mm"
-        << " PixelSize[dx,dy]=[" << cam_intrinsics.PixelSizeMm[0] << "," << cam_intrinsics.PixelSizeMm[1] << "] mm"
-        << " PrincipPoint[Cx,Cy]=[" << cam_intrinsics.PrincipalPointPixels[0] << "," << cam_intrinsics.PrincipalPointPixels[1] << "] pix";
-    LOG(INFO) << "foc_len[alphax,alphay]=[" << focal_length_pixels[0] << "," << focal_length_pixels[1] << "] pix";
+    cam_intrinsics.principal_point_pix = { FLAGS_camera_princip_point_x, FLAGS_camera_princip_point_y };
+    cam_intrinsics.focal_length_mm = focal_length_mm;
+    cam_intrinsics.pixel_size_mm = { pix_size_x , pix_size_y };
+
+    LOG(INFO) << "foc_len="
+        << cam_intrinsics.focal_length_mm << " mm" << " PixelSize[dx,dy]=[" 
+        << cam_intrinsics.pixel_size_mm[0] << ","
+        << cam_intrinsics.pixel_size_mm[1] << "] mm";
+    LOG(INFO) << " PrincipPoint[Cx,Cy]=["
+        << cam_intrinsics.principal_point_pix[0] << "," 
+        << cam_intrinsics.principal_point_pix[1] << "] pix";
+
+    std::array<Scalar, 2> f_pix = cam_intrinsics.FocalLengthPix();
+    LOG(INFO) << "foc_len[alphax,alphay]=[" << f_pix[0] << "," << f_pix[1] << "] pix";
 
     RadialDistortionParams cam_distort_params;
     cam_distort_params.K1 = 0;

@@ -130,18 +130,20 @@ public:
         return ImageFrame{};
     }
 
-    virtual std::optional<Scalar> GetSalientPointGroundTruthDepth(CornersMatcherBlobId blob_id) { return std::nullopt; };
+    virtual std::optional<Scalar> GetSalientPointGroundTruthInvDepth(CornersMatcherBlobId blob_id) { return std::nullopt; };
 };
 
 /// ax=f/dx and ay=f/dy 
 /// (alpha_x = focal_length_x_meters / pixel_width_meters)
 struct CameraIntrinsicParams
 {
-    Scalar FocalLengthMm; // =f in millimiters
-    std::array<Scalar,2> PixelSizeMm; // [dx,dy] in millimeters
-    std::array<Scalar,2> PrincipalPointPixels; // [Cx,Cy] in pixels
+    std::array<Scalar, 2> principal_point_pix; // [Cx,Cy] in pixels
 
-    std::array<Scalar, 2> GetFocalLengthPixels() const { return std::array<Scalar, 2> { FocalLengthMm / PixelSizeMm[0], FocalLengthMm / PixelSizeMm[1]}; }
+    Scalar focal_length_mm;  // =f, focal length in millimiters
+    std::array<Scalar,2> pixel_size_mm; // [dx,dy] in millimeters
+
+    /// Focal length in pixels (alphax=f/dx, alphay=f/dy)
+    std::array<Scalar, 2> FocalLengthPix() const { return { focal_length_mm / pixel_size_mm[0], focal_length_mm / pixel_size_mm[1] }; }
 };
 
 /// scale_factor=1+k1*r^2+k2*r^4
@@ -411,7 +413,7 @@ private:
 
     SalPntId AddSalientPoint(const CameraPosState& cam_state, suriko::Point2 corner, 
         ImageFrame patch_template,
-        std::optional<Scalar> pnt_dist_gt);
+        std::optional<Scalar> pnt_inv_dist_gt);
 
     gsl::span<Scalar> EstimVarsCamPosW();
     Eigen::Matrix<Scalar, kQuat4, 1> EstimVarsCamQuat() const;

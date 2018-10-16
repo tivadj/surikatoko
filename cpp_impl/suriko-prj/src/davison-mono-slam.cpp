@@ -518,15 +518,15 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
         {
             Point2 coord = corners_matcher_->GetBlobCoord(blob_id);
 
-            std::optional<Scalar> pnt_dist_gt;
+            std::optional<Scalar> pnt_inv_dist_gt;
             if (fake_sal_pnt_initial_inv_dist_)
             {
-                pnt_dist_gt = corners_matcher_->GetSalientPointGroundTruthDepth(blob_id);
+                pnt_inv_dist_gt = corners_matcher_->GetSalientPointGroundTruthInvDepth(blob_id);
             }
 
             ImageFrame patch_template = corners_matcher_->GetBlobPatchTemplate(blob_id, image);
 
-            SalPntId sal_pnt_id = AddSalientPoint(cam_state, coord.Mat(), patch_template, pnt_dist_gt);
+            SalPntId sal_pnt_id = AddSalientPoint(cam_state, coord.Mat(), patch_template, pnt_inv_dist_gt);
             latest_frame_sal_pnts_.insert(sal_pnt_id);
             corners_matcher_->OnSalientPointIsAssignedToBlobId(sal_pnt_id, blob_id, image);
         }
@@ -989,28 +989,24 @@ void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
 
 void DavisonMonoSlam::PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const
 {
-    std::array<Scalar, 2> foc_len_pix = cam_intrinsics_.GetFocalLengthPixels();
-    Scalar Cx = cam_intrinsics_.PrincipalPointPixels[0];
-    Scalar Cy = cam_intrinsics_.PrincipalPointPixels[1];
+    std::array<Scalar, 2> f_pix = cam_intrinsics_.FocalLengthPix();
+    Scalar Cx = cam_intrinsics_.principal_point_pix[0];
+    Scalar Cy = cam_intrinsics_.principal_point_pix[1];
 
     // A.58
     Eigen::Matrix<Scalar, kEucl3, 1>& hc = *pos_camera;;
-    hc[0] = -(hu[0] - Cx) / foc_len_pix[0];
-    hc[1] = -(hu[1] - Cy) / foc_len_pix[1];
+    hc[0] = -(hu[0] - Cx) / f_pix[0];
+    hc[1] = -(hu[1] - Cy) / f_pix[1];
     hc[2] = 1;
 }
 
 DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState& cam_state, suriko::Point2 corner_pix,
     ImageFrame patch_template,
-    std::optional<Scalar> pnt_dist_gt)
+    std::optional<Scalar> pnt_inv_dist_gt)
 {
     // undistort 2D image coordinate
     Eigen::Matrix<Scalar, kPixPosComps, 1> hd = corner_pix.Mat(); // distorted
     Eigen::Matrix<Scalar, kPixPosComps, 1> hu = hd; // undistorted
-
-    Scalar dx = cam_intrinsics_.PixelSizeMm[0];
-    Scalar dy = cam_intrinsics_.PixelSizeMm[1];
-    Scalar f = cam_intrinsics_.FocalLengthMm;
 
     // A.58
     Eigen::Matrix<Scalar, kEucl3, 1> hc;
@@ -1039,8 +1035,8 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState&
     dst_vars[4] = elev_phi;
 
     // NOTE: initial inverse depth is constant because the first image can't provide the depth information
-    if (pnt_dist_gt.has_value())
-        dst_vars[5] = 1 / pnt_dist_gt.value();
+    if (pnt_inv_dist_gt.has_value())
+        dst_vars[5] = pnt_inv_dist_gt.value();
     else
         dst_vars[5] = sal_pnt_init_inv_dist_;
 
@@ -1075,8 +1071,9 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState&
 
     Eigen::Matrix<Scalar, kEucl3, kPixPosComps> hc_by_hu;
     hc_by_hu.setZero();
-    hc_by_hu(0, 0) = -dx / f;
-    hc_by_hu(1, 1) = -dy / f;
+    std::array<Scalar, 2> f_pix = cam_intrinsics_.FocalLengthPix();
+    hc_by_hu(0, 0) = -1 / f_pix[0];
+    hc_by_hu(1, 1) = -1 / f_pix[1];
 
     Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> hu_by_hd;
     Deriv_hu_by_hd(corner_pix, &hu_by_hd);
@@ -1178,10 +1175,10 @@ void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2 corner_pix, Eigen::Matrix<Sc
 {
     Scalar ud = corner_pix[0];
     Scalar vd = corner_pix[1];
-    Scalar Cx = cam_intrinsics_.PrincipalPointPixels[0];
-    Scalar Cy = cam_intrinsics_.PrincipalPointPixels[1];
-    Scalar dx = cam_intrinsics_.PixelSizeMm[0];
-    Scalar dy = cam_intrinsics_.PixelSizeMm[1];
+    Scalar Cx = cam_intrinsics_.principal_point_pix[0];
+    Scalar Cy = cam_intrinsics_.principal_point_pix[1];
+    Scalar dx = cam_intrinsics_.pixel_size_mm[0];
+    Scalar dy = cam_intrinsics_.pixel_size_mm[1];
     Scalar k1 = cam_distort_params_.K1;
     Scalar k2 = cam_distort_params_.K2;
 
@@ -1211,19 +1208,19 @@ void DavisonMonoSlam::Deriv_hd_by_hu(suriko::Point2 corner_pix, Eigen::Matrix<Sc
 
 void DavisonMonoSlam::Deriv_hu_by_hc(const SalPntProjectionIntermidVars& proj_hist, Eigen::Matrix<Scalar, kPixPosComps, kEucl3>* hu_by_hc) const
 {
-    Scalar f = cam_intrinsics_.FocalLengthMm;
     Scalar hcx = proj_hist.hc[0];
     Scalar hcy = proj_hist.hc[1];
     Scalar hcz = proj_hist.hc[2];
-    Scalar dx = cam_intrinsics_.PixelSizeMm[0];
-    Scalar dy = cam_intrinsics_.PixelSizeMm[1];
+
+    std::array<Scalar, 2> f_pix = cam_intrinsics_.FocalLengthPix();
+
     auto& m = *hu_by_hc;
-    m(0, 0) = -f / (dx * hcz);
+    m(0, 0) = -f_pix[0] / hcz;
     m(1, 0) = 0;
     m(0, 1) = 0;
-    m(1, 1) = -f / (dy * hcz);
-    m(0, 2) = f * hcx / (dx * hcz * hcz);
-    m(1, 2) = f * hcy / (dy * hcz * hcz);
+    m(1, 1) = -f_pix[1] / hcz;
+    m(0, 2) = f_pix[0] * hcx / (hcz * hcz);
+    m(1, 2) = f_pix[1] * hcy / (hcz * hcz);
 }
 
 void DavisonMonoSlam::Deriv_R_by_q(const Eigen::Matrix<Scalar, kQuat4, 1>& q,
@@ -1440,19 +1437,22 @@ Eigen::Matrix<Scalar, kPixPosComps,1> DavisonMonoSlam::ProjectCameraSalientPoint
     const Eigen::Matrix<Scalar, kEucl3, 1>& pnt_camera,
     SalPntProjectionIntermidVars *proj_hist) const
 {
-    std::array<Scalar, 2> focal_length_pixels = cam_intrinsics_.GetFocalLengthPixels();
-
     // hc(X,Y,Z)->hu(uu,vu): project 3D salient point in camera-k onto image (pixels)
     //const auto& sal_pnt_cam = sal_pnt_camk_scaled;
     const auto& sal_pnt_cam = pnt_camera;
     Eigen::Matrix<Scalar, kPixPosComps, 1> hu;
-    hu[0] = cam_intrinsics_.PrincipalPointPixels[0] - focal_length_pixels[0] * sal_pnt_cam[0] / sal_pnt_cam[2];
-    hu[1] = cam_intrinsics_.PrincipalPointPixels[1] - focal_length_pixels[1] * sal_pnt_cam[1] / sal_pnt_cam[2];
+    
+    Scalar Cx = cam_intrinsics_.principal_point_pix[0];
+    Scalar Cy = cam_intrinsics_.principal_point_pix[1];
+    std::array<Scalar, 2> f_pix = cam_intrinsics_.FocalLengthPix();
+
+    hu[0] = Cx - f_pix[0] * sal_pnt_cam[0] / sal_pnt_cam[2];
+    hu[1] = Cy - f_pix[1] * sal_pnt_cam[1] / sal_pnt_cam[2];
 
     // hu->hd: distort image coordinates
     Scalar ru = std::sqrt(
-        suriko::Sqr(cam_intrinsics_.PixelSizeMm[0] * (hu[0] - cam_intrinsics_.PrincipalPointPixels[0])) +
-        suriko::Sqr(cam_intrinsics_.PixelSizeMm[1] * (hu[1] - cam_intrinsics_.PrincipalPointPixels[1])));
+        suriko::Sqr(cam_intrinsics_.pixel_size_mm[0] * (hu[0] - Cx)) +
+        suriko::Sqr(cam_intrinsics_.pixel_size_mm[1] * (hu[1] - Cy)));
     
     // solve polynomial fun(rd)=k2*rd^5+k1*rd^3+rd-ru=0
     Scalar rd = ru; // TODO:
