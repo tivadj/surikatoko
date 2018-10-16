@@ -375,7 +375,7 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
 
     const SalPntInternal& sal_pnt = kalman_slam->GetSalPnt(sal_pnt_id);
 
-    bool in_virtual_mode = sal_pnt.PatchTemplateInFirstFrame.empty();
+    bool in_virtual_mode = sal_pnt.patch_template_in_first_frame.empty();
     if (in_virtual_mode)
     {
         // in virtual mode render just an outline of the patch
@@ -411,9 +411,9 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
         const GLenum src_texture_format = GL_RGB;
         cv::Mat patch_rgb;
         if (kSurikoDebug)
-            patch_rgb = sal_pnt.PatchTemplateRgbInFirstFrameDebug.clone();  // need cloning because it farther flipped
+            patch_rgb = sal_pnt.patch_template_rgb_in_first_frame_debug.clone();  // need cloning because it farther flipped
         else
-            cv::cvtColor(sal_pnt.PatchTemplateInFirstFrame, patch_rgb, CV_GRAY2RGB);
+            cv::cvtColor(sal_pnt.patch_template_in_first_frame, patch_rgb, CV_GRAY2RGB);
 
         // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture
         // OpenCV stores images from top to bottom, while the GL uses bottom to top
@@ -466,7 +466,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
     {
         const SalPntInternal& sal_pnt = kalman_slam->GetSalPnt(sal_pnt_id);
 
-        const size_t sal_pnt_ind = sal_pnt.SalPntInd;
+        const size_t sal_pnt_ind = sal_pnt.sal_pnt_ind;
 
         Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
@@ -516,7 +516,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
 
         for (const SalientPointFragment& sal_pnt_fragm : ui_params.entire_map->SalientPoints())
         {
-            const auto& p = sal_pnt_fragm.Coord.value();
+            const auto& p = sal_pnt_fragm.coord.value();
             glBegin(GL_POINTS);
             glVertex3d(p[0], p[1], p[2]);
             glEnd();

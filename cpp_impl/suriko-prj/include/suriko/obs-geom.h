@@ -80,9 +80,9 @@ auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_worl
 /// The 3D point inside the map.
 struct SalientPointFragment
 {
-    std::optional<size_t> SyntheticVirtualPointId;
-    std::optional<suriko::Point3> Coord; // TODO: when it is null?
-    void* UserObj = nullptr; // ptr to salient object in tracker object
+    std::optional<size_t> synthetic_virtual_point_id;
+    std::optional<suriko::Point3> coord; // TODO: when it is null?
+    void* user_obj = nullptr; // ptr to salient object in tracker object
 };
 
 /// The space with salient 3D points.
@@ -126,8 +126,8 @@ private:
 
 struct CornerData
 {
-    suriko::Point2 PixelCoord;
-    Eigen::Matrix<Scalar, 3, 1> ImageCoord;
+    suriko::Point2 pixel_coord;
+    Eigen::Matrix<Scalar, 3, 1> image_coord;
 };
 
 class CornerTrack

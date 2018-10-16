@@ -67,19 +67,19 @@ enum class SalPntTrackStatus
 /// Represents 3D salient points.
 struct SalPntInternal
 {
-    size_t EstimVarsInd; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
-    size_t SalPntInd; // order of the salient point in the sequence of salient points
-    Eigen::Matrix<Scalar, kPixPosComps, 1> PixelCoordInLatestFrame; // distorted coordinates in the first camera
+    size_t estim_vars_ind; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
+    size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
+    Eigen::Matrix<Scalar, kPixPosComps, 1> pixel_coord_in_latest_frame; // distorted coordinates in the first camera
 
-    Eigen::Matrix<int, kPixPosComps, 1> PatchTemplateTopLeftInLatestFrame;
+    Eigen::Matrix<int, kPixPosComps, 1> patch_template_top_left_in_latest_frame;
 
     SalPntTrackStatus track_status;
 
     // Rectangular portion of the gray image corresponding to salient point, projected in current frame.
     // The coord of the corner corresponds to the center of the image template.
-    cv::Mat PatchTemplateInFirstFrame;
+    cv::Mat patch_template_in_first_frame;
 #if defined(SRK_DEBUG)
-    cv::Mat PatchTemplateRgbInFirstFrameDebug;  // doesn't work
+    cv::Mat patch_template_rgb_in_first_frame_debug;
 #endif
 };
 
@@ -89,15 +89,15 @@ struct SalPntId
 {
     union
     {
-        SalPntInternal* sal_pnt_internal_;
-        ptrdiff_t sal_pnt_as_bits_internal_;
+        SalPntInternal* sal_pnt_internal;
+        ptrdiff_t sal_pnt_as_bits_internal;
     };
 
     SalPntId() = default;
-    SalPntId(SalPntInternal* sal_pnt) : sal_pnt_internal_(sal_pnt) {}
-    operator bool() const { return sal_pnt_internal_ != nullptr; }
+    SalPntId(SalPntInternal* sal_pnt) : sal_pnt_internal(sal_pnt) {}
+    operator bool() const { return sal_pnt_internal != nullptr; }
 };
-inline bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal_ < y.sal_pnt_as_bits_internal_; }
+inline bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal < y.sal_pnt_as_bits_internal; }
 
 /// We separate the tracking of existing salient points, for which the position in the latest
 /// frame is known, from occasional search for extra salient points.
@@ -149,16 +149,16 @@ struct CameraIntrinsicParams
 /// scale_factor=1+k1*r^2+k2*r^4
 struct RadialDistortionParams
 {
-    Scalar K1;
-    Scalar K2;
+    Scalar k1;
+    Scalar k2;
 };
 
 struct CameraPosState
 {
-    Eigen::Matrix<Scalar, kEucl3, 1> PosW; // in world frame
-    Eigen::Matrix<Scalar, kQuat4, 1> OrientationWfc;
-    Eigen::Matrix<Scalar, kVelocComps, 1> VelocityW; // in world frame
-    Eigen::Matrix<Scalar, kAngVelocComps, 1> AngularVelocityC; // in camera frame
+    Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // in world frame
+    Eigen::Matrix<Scalar, kQuat4, 1> orientation_wfc;
+    Eigen::Matrix<Scalar, kVelocComps, 1> velocity_w; // in world frame
+    Eigen::Matrix<Scalar, kAngVelocComps, 1> angular_velocity_c; // in camera frame
 };
 
 struct SalPntRectFacet
@@ -179,23 +179,23 @@ struct SalPntRectFacet
 /// Represents a state of the tracker.
 struct DavisonMonoSlamTrackerInternalsSlice
 {
-    std::chrono::duration<double> FrameProcessingDur; // frame processing duration
-    Eigen::Matrix<Scalar, 3, 1> CamPosW;
-    Eigen::Matrix<Scalar, 3, 3> CamPosUncert;
-    Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> CamStateUncert;
-    std::optional<Eigen::Matrix<Scalar, 3, 3>> SalPntsUncertMedian; // median of uncertainty of all salient points; null if there are 0 salient points
-    Scalar CurReprojErr;
-    size_t EstimatedSalPnts; // number of tracking salient points (which are stored in estimated variables array)
-    size_t NewSalPnts; // number of new salient points allocated in current frame
-    size_t CommonSalPnts; // number of same salient points in the previous and current frame
-    size_t DeletedSalPnts; // number of deleted salient points in current frame
+    std::chrono::duration<double> frame_processing_dur; // frame processing duration
+    Eigen::Matrix<Scalar, 3, 1> cam_pos_w;
+    Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
+    Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> cam_state_uncert;
+    std::optional<Eigen::Matrix<Scalar, 3, 3>> sal_pnts_uncert_median; // median of uncertainty of all salient points; null if there are 0 salient points
+    Scalar cur_reproj_err;
+    size_t estimated_sal_pnts; // number of tracking salient points (which are stored in estimated variables array)
+    size_t new_sal_pnts; // number of new salient points allocated in current frame
+    size_t common_sal_pnts; // number of same salient points in the previous and current frame
+    size_t deleted_sal_pnts; // number of deleted salient points in current frame
 };
 
 /// Represents the history of the tracker processing a sequence of frames.
 struct DavisonMonoSlamTrackerInternalsHist
 {
-    std::chrono::duration<double> AvgFrameProcessingDur;
-    std::vector<DavisonMonoSlamTrackerInternalsSlice> StateSamples;
+    std::chrono::duration<double> avg_frame_processing_dur;
+    std::vector<DavisonMonoSlamTrackerInternalsSlice> state_samples;
 };
 
 class DavisonMonoSlam;
@@ -299,33 +299,33 @@ private:
 private:
     struct
     {
-        EigenDynMat R_; // R[2m,2m]
-        EigenDynMat H_; // H[2m,13+N*6]
+        EigenDynMat R; // R[2m,2m]
+        EigenDynMat H; // H[2m,13+N*6]
 
-        EigenDynVec zk_; // [2m,1]
-        EigenDynVec projected_sal_pnts_; // [2m,1]
+        EigenDynVec zk; // [2m,1]
+        EigenDynVec projected_sal_pnts; // [2m,1]
 
-        EigenDynMat filter_gain_; // P[13+N*6, 2m] m=number of observed points
-        EigenDynMat innov_var_; // [13+N*6, 13+N*6]
-        EigenDynMat innov_var_inv_; // P[13+N*6, 13+N*6]
-        EigenDynMat H_P_; // H*P, [13+N*6, 13+N*6]
-        EigenDynMat Knew_; // H*P, [13+N*6, 13+N*6]
-        EigenDynMat estim_vars_covar_new_; // P[13+N*6, 13+N*6]
-        EigenDynMat K_S_; // K*S, [13+N*6, 2m]
+        EigenDynMat filter_gain; // P[13+N*6, 2m] m=number of observed points
+        EigenDynMat innov_var; // [13+N*6, 13+N*6]
+        EigenDynMat innov_var_inv; // P[13+N*6, 13+N*6]
+        EigenDynMat H_P; // H*P, [13+N*6, 13+N*6]
+        EigenDynMat Knew; // H*P, [13+N*6, 13+N*6]
+        EigenDynMat estim_vars_covar_new; // P[13+N*6, 13+N*6]
+        EigenDynMat K_S; // K*S, [13+N*6, 2m]
     } stacked_update_cache_;
     struct
     {
-        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> P_Hxy_; // P*Hx or P*Hy, [13+N*6, 2]
-        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> Knew_; // K[13+N*6, 2]
-        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> K_S_; // K*S, [13+N*6, 2]
+        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> P_Hxy; // P*Hx or P*Hy, [13+N*6, 2]
+        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> Knew; // K[13+N*6, 2]
+        Eigen::Matrix<Scalar, Eigen::Dynamic, kPixPosComps> K_S; // K*S, [13+N*6, 2]
     } one_obs_per_update_cache_;
     struct
     {
-        EigenDynVec Knew_; // [13+N*6, 1]
+        EigenDynVec Knew; // [13+N*6, 1]
     } one_comp_of_obs_per_update_cache_;
     struct
     {
-        Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic> J_P_; // [7,13+N*6]
+        Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic> J_P; // [7,13+N*6]
     } add_sal_pnt_cache_;
 public:
     DavisonMonoSlam();
@@ -379,17 +379,17 @@ private:
     struct SalPntProjectionIntermidVars
     {
         Eigen::Matrix<Scalar, kEucl3, 1> hc; // euclidean position of salient point in camera coordinates
-        Eigen::Matrix<Scalar, kEucl3, 1> FirstCamSalPntUnityDir; // unity direction from first camera to the salient point in world coordinates
+        Eigen::Matrix<Scalar, kEucl3, 1> first_cam_sal_pnt_unity_dir; // unity direction from first camera to the salient point in world coordinates
     };
 
     struct EstimVarsSalientPoint
     {
-        Eigen::Matrix<Scalar, kEucl3, 1> FirstCamPosW; // the position of the camera (in world frame) the salient point was first seen
+        Eigen::Matrix<Scalar, kEucl3, 1> first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
         
         // polar coordinates of the salient point in the camera where the feature was seen for the first time
-        Scalar AzimuthThetaW; // theta=azimuth, rotates clockwise around worldOY, zero corresponds to worldOZ direction
-        Scalar ElevationPhiW; // elevation=latin_phi, rotates clockwise around worldOX, zero corresponds to worldOZ direction
-        Scalar InverseDistRho; // inverse distance (=rho) from the first camera, where the salient point was seen the first time, to this salient point
+        Scalar azimuth_theta_w; // theta=azimuth, rotates clockwise around worldOY, zero corresponds to worldOZ direction
+        Scalar elevation_phi_w; // elevation=latin_phi, rotates clockwise around worldOX, zero corresponds to worldOZ direction
+        Scalar inverse_dist_rho; // inverse distance (=rho) from the first camera, where the salient point was seen the first time, to this salient point
     };
 
     void ResetCamera(Scalar estim_var_init_std);

@@ -156,10 +156,10 @@ private:
     // perf: eigen matrices are scoped to class to avoid dynamic allocation
     struct EstimateCorrectionsDecomposedInTwoPhases_Cache
     {
-        Eigen::Matrix<Scalar, kPointVarsCount, Eigen::Dynamic, Eigen::ColMajor> point_allframes_; // [3x9M] point-allframes matrix
-        EigenDynMat left_side_; // [9Mx9M], M=number of frames, =G-sum(Ft.P.F)
-        EigenDynMat left_summand_; // [9Mx9M], =Ft.P.F
-        Eigen::Matrix<Scalar, Eigen::Dynamic, 1> right_side_; // [9Mx1], =sum(Ft.P.E)-Df
+        Eigen::Matrix<Scalar, kPointVarsCount, Eigen::Dynamic, Eigen::ColMajor> point_allframes; // [3x9M] point-allframes matrix
+        EigenDynMat left_side; // [9Mx9M], M=number of frames, =G-sum(Ft.P.F)
+        EigenDynMat left_summand; // [9Mx9M], =Ft.P.F
+        Eigen::Matrix<Scalar, Eigen::Dynamic, 1> right_side; // [9Mx1], =sum(Ft.P.E)-Df
     } decomp_lin_sys_cache_;
 public:
     BundleAdjustmentKanatani();

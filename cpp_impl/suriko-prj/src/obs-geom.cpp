@@ -62,7 +62,7 @@ SalientPointFragment& FragmentMap::AddSalientPoint(const std::optional<suriko::P
     salient_points_.resize(salient_points_.size() + 1);
     
     SalientPointFragment& frag = salient_points_.back();
-    frag.Coord = coord;
+    frag.coord = coord;
     return frag;
 }
 
@@ -70,15 +70,15 @@ void FragmentMap::SetSalientPoint(size_t point_track_id, const suriko::Point3 &c
 {
     SRK_ASSERT(point_track_id < salient_points_.size());
     SalientPointFragment& frag = salient_points_[point_track_id];
-    frag.Coord = coord;
+    frag.coord = coord;
 }
 
 void FragmentMap::SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId)
 {
     SRK_ASSERT(fragment_id < salient_points_.size());
     SalientPointFragment& frag = salient_points_[fragment_id];
-    frag.SyntheticVirtualPointId = syntheticVirtualPointId;
-    frag.Coord = coord;
+    frag.synthetic_virtual_point_id = syntheticVirtualPointId;
+    frag.coord = coord;
 }
 
 const SalientPointFragment& FragmentMap::GetSalientPointNew(size_t salient_point_id) const
@@ -104,7 +104,7 @@ const suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id) cons
 {
     size_t ind = SalientPointIdToInd(salient_point_id);
     CHECK(ind < salient_points_.size());
-    const std::optional<suriko::Point3>& sal_pnt = salient_points_[ind].Coord;
+    const std::optional<suriko::Point3>& sal_pnt = salient_points_[ind].coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
@@ -113,7 +113,7 @@ suriko::Point3& FragmentMap::GetSalientPoint(size_t salient_point_id)
 {
     size_t ind = SalientPointIdToInd(salient_point_id);
     CHECK(ind < salient_points_.size());
-    std::optional<suriko::Point3>& sal_pnt = salient_points_[ind].Coord;
+    std::optional<suriko::Point3>& sal_pnt = salient_points_[ind].coord;
     SRK_ASSERT(sal_pnt.has_value());
     return sal_pnt.value();
 }
@@ -122,7 +122,7 @@ bool FragmentMap::GetSalientPointByVirtualPointIdInternal(size_t salient_point_i
     *fragment = nullptr;
     for (const SalientPointFragment& p : salient_points_)
     {
-        if (p.SyntheticVirtualPointId == salient_point_id)
+        if (p.synthetic_virtual_point_id == salient_point_id)
         {
             *fragment = &p;
             return true;
@@ -179,7 +179,7 @@ void CornerTrack::AddCorner(size_t frame_ind, const suriko::Point2& value)
     }
 
     CornerData corner_data;
-    corner_data.PixelCoord = value;
+    corner_data.pixel_coord = value;
     CoordPerFramePixels.push_back(std::optional<CornerData>(corner_data));
     CheckConsistent();
 }
@@ -217,7 +217,7 @@ std::optional<suriko::Point2> CornerTrack::GetCorner(size_t frame_ind) const
     std::optional<CornerData> corner_data = CoordPerFramePixels[local_ind];
     if (!corner_data.has_value())
         return std::optional<suriko::Point2>();
-    return corner_data.value().PixelCoord;
+    return corner_data.value().pixel_coord;
 }
 
 std::optional<CornerData> CornerTrack::GetCornerData(size_t frame_ind) const

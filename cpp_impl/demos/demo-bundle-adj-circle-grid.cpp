@@ -81,12 +81,12 @@ int CircleGridDemo(int argc, char* argv[])
     std::vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mat_per_frame;
 
     WorldBounds wb{};
-    wb.XMin = FLAGS_world_xmin;
-    wb.XMax = FLAGS_world_xmax;
-    wb.YMin = FLAGS_world_ymin;
-    wb.YMax = FLAGS_world_ymax;
-    wb.ZMin = FLAGS_world_zmin;
-    wb.ZMax = FLAGS_world_zmax;
+    wb.x_min = FLAGS_world_xmin;
+    wb.x_max = FLAGS_world_xmax;
+    wb.y_min = FLAGS_world_ymin;
+    wb.y_max = FLAGS_world_ymax;
+    wb.z_min = FLAGS_world_zmin;
+    wb.z_max = FLAGS_world_zmax;
     std::array<Scalar, 3> cell_size = { FLAGS_world_cell_size_x, FLAGS_world_cell_size_y, FLAGS_world_cell_size_z };
     Scalar rot_radius = 15 * cell_size[0];
     Scalar ascentZ = 10 * cell_size[0];
@@ -96,17 +96,17 @@ int CircleGridDemo(int argc, char* argv[])
 
     size_t next_synthetic_virtual_point_id = 1000001;
     FragmentMap map;
-    Scalar xmid = (wb.XMin + wb.XMax) / 2;
-    Scalar xlen = wb.XMax - wb.XMin;
-    Scalar zlen = wb.ZMax - wb.ZMin;
-    for (Scalar x = wb.XMin; x < wb.XMax + inclusive_gap; x += cell_size[0])
+    Scalar xmid = (wb.x_min + wb.x_max) / 2;
+    Scalar xlen = wb.x_max - wb.x_min;
+    Scalar zlen = wb.z_max - wb.z_min;
+    for (Scalar x = wb.x_min; x < wb.x_max + inclusive_gap; x += cell_size[0])
     {
-        for (Scalar y = wb.YMin; y < wb.YMax + inclusive_gap; y += cell_size[1])
+        for (Scalar y = wb.y_min; y < wb.y_max + inclusive_gap; y += cell_size[1])
         {
             Scalar val_z = std::cos((x - xmid) / xlen * M_PI);
-            Scalar z = wb.ZMin + val_z * zlen;
+            Scalar z = wb.z_min + val_z * zlen;
             SalientPointFragment& salient_point = map.AddSalientPoint(Point3(x, y, z));
-            salient_point.SyntheticVirtualPointId = next_synthetic_virtual_point_id;
+            salient_point.synthetic_virtual_point_id = next_synthetic_virtual_point_id;
             next_synthetic_virtual_point_id += 1;
         }
     }
@@ -121,8 +121,8 @@ int CircleGridDemo(int argc, char* argv[])
         std::uniform_real_distribution<Scalar> dis(FLAGS_noise_x3D_hi / 2, FLAGS_noise_x3D_hi);
         for (SalientPointFragment& fragment : map_noise.SalientPoints())
         {
-            if (!fragment.Coord.has_value()) continue;
-            suriko::Point3& pnt = fragment.Coord.value();
+            if (!fragment.coord.has_value()) continue;
+            suriko::Point3& pnt = fragment.coord.value();
             auto d1 = dis(gen);
             auto d2 = dis(gen);
             auto d3 = dis(gen);
@@ -147,7 +147,7 @@ int CircleGridDemo(int argc, char* argv[])
 
         CornerTrack& point_track = track_rep.AddCornerTrackObj();
         point_track.SalientPointId = sal_pnt_id;
-        point_track.SyntheticVirtualPointId = sal_pnt.SyntheticVirtualPointId;
+        point_track.SyntheticVirtualPointId = sal_pnt.synthetic_virtual_point_id;
     }
 
     // Numerical stability scaler, chosen so that x_pix / f0 and y_pix / f0 is close to 1
@@ -201,12 +201,12 @@ int CircleGridDemo(int argc, char* argv[])
         for (size_t frag_ind = 0; frag_ind < map.SalientPoints().size(); ++frag_ind)
         {
             const SalientPointFragment& frag = map.SalientPoints()[frag_ind];
-            if (!frag.Coord.has_value()) continue;
+            if (!frag.coord.has_value()) continue;
 
             CornerTrack& track = track_rep.GetPointTrackById(frag_ind);
-            CHECK_EQ(track.SyntheticVirtualPointId.value(), frag.SyntheticVirtualPointId.value());
+            CHECK_EQ(track.SyntheticVirtualPointId.value(), frag.synthetic_virtual_point_id.value());
 
-            Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, RT_cfw, frag.Coord.value());
+            Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, RT_cfw, frag.coord.value());
             auto pnt_div_f0 = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
             auto pnt_pix = suriko::Point2(pnt_div_f0 * f0);
             track.AddCorner(ang_ind, pnt_pix);
@@ -267,10 +267,10 @@ int CircleGridDemo(int argc, char* argv[])
         for (const SalientPointFragment& sal_pnt :  map.SalientPoints())
         {
             const SalientPointFragment* sal_pnt_noise = nullptr;
-            bool op = map_noise.GetSalientPointByVirtualPointIdInternal(sal_pnt.SyntheticVirtualPointId.value(), &sal_pnt_noise);
+            bool op = map_noise.GetSalientPointByVirtualPointIdInternal(sal_pnt.synthetic_virtual_point_id.value(), &sal_pnt_noise);
             SRK_ASSERT(op);
 
-            Scalar pnt_diff = (sal_pnt.Coord.value().Mat() - sal_pnt_noise->Coord.value().Mat()).norm();
+            Scalar pnt_diff = (sal_pnt.coord.value().Mat() - sal_pnt_noise->coord.value().Mat()).norm();
             stat_pnt.Next(pnt_diff);
         }
         LOG(INFO) << "avg_pnt_diff=" << stat_pnt.Mean() << " std_pnt_diff=" << stat_pnt.Std();

@@ -63,11 +63,11 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     std::vector<SE3Transform>* inverse_orient_cams)
 {
     std::array<suriko::Point3,5> look_at_base_points = {
-        suriko::Point3(wb.XMax, wb.YMin, wb.ZMin),
-        suriko::Point3(wb.XMin, wb.YMin, wb.ZMin),
-        suriko::Point3(wb.XMin, wb.YMax, wb.ZMin),
-        suriko::Point3(wb.XMax, wb.YMax, wb.ZMin),
-        suriko::Point3(wb.XMax, wb.YMin, wb.ZMin),
+        suriko::Point3(wb.x_max, wb.y_min, wb.z_min),
+        suriko::Point3(wb.x_min, wb.y_min, wb.z_min),
+        suriko::Point3(wb.x_min, wb.y_max, wb.z_min),
+        suriko::Point3(wb.x_max, wb.y_max, wb.z_min),
+        suriko::Point3(wb.x_max, wb.y_min, wb.z_min),
     };
 
     // number of viewer steps per each side is variable
@@ -114,18 +114,18 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
     constexpr Scalar inclusive_gap = 1e-8; // small value to make iteration inclusive
 
 
-    Scalar xmid = (wb.XMin + wb.XMax) / 2;
-    Scalar xlen = wb.XMax - wb.XMin;
-    Scalar zlen = wb.ZMax - wb.ZMin;
-    for (Scalar grid_x = wb.XMin; grid_x < wb.XMax + inclusive_gap; grid_x += cell_size[0])
+    Scalar xmid = (wb.x_min + wb.x_max) / 2;
+    Scalar xlen = wb.x_max - wb.x_min;
+    Scalar zlen = wb.z_max - wb.z_min;
+    for (Scalar grid_x = wb.x_min; grid_x < wb.x_max + inclusive_gap; grid_x += cell_size[0])
     {
-        for (Scalar grid_y = wb.YMin; grid_y < wb.YMax + inclusive_gap; grid_y += cell_size[1])
+        for (Scalar grid_y = wb.y_min; grid_y < wb.y_max + inclusive_gap; grid_y += cell_size[1])
         {
             Scalar x = grid_x;
             Scalar y = grid_y;
 
             Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
-            Scalar z = wb.ZMin + z_perc * zlen;
+            Scalar z = wb.z_min + z_perc * zlen;
 
             // jit x and y so the points can be distinguished during movement
             if (corrupt_salient_points_with_noise)
@@ -136,7 +136,7 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
             }
 
             SalientPointFragment& frag = entire_map->AddSalientPoint(Point3(x, y, z));
-            frag.SyntheticVirtualPointId = next_virtual_point_id++;
+            frag.synthetic_virtual_point_id = next_virtual_point_id++;
         }
     }
 }
@@ -208,7 +208,7 @@ public:
         {
             const SalientPointFragment& fragment = entire_map_.GetSalientPointNew(frag_id);
 
-            const Point3& salient_point_world = fragment.Coord.value();
+            const Point3& salient_point_world = fragment.coord.value();
             suriko::Point3 pnt_tracker = PosTrackerOriginFromWorld(gt_cam_orient_cfw_, salient_point_world, tracker_origin_from_world_);
 
             suriko::Point3 pnt_camera = SE3Apply(cami_from_tracker, pnt_tracker);
@@ -222,12 +222,12 @@ public:
                 continue;
 
             DavisonMonoSlam::SalPntId sal_pnt_id {};
-            if (fragment.UserObj != nullptr)
+            if (fragment.user_obj != nullptr)
             {
                 // got salient point which hits the current frame and had been seen before
                 // auto sal_pnt_id = reinterpret_cast<DavisonMonoSlam::SalPntId>(fragment.UserObj);
-                std::memcpy(&sal_pnt_id, &fragment.UserObj, sizeof(decltype(fragment.UserObj)));
-                static_assert(sizeof fragment.UserObj >= sizeof sal_pnt_id);
+                std::memcpy(&sal_pnt_id, &fragment.user_obj, sizeof(decltype(fragment.user_obj)));
+                static_assert(sizeof fragment.user_obj >= sizeof sal_pnt_id);
             }
 
             const Scalar depth = pnt_camera.Mat().norm();
@@ -327,8 +327,8 @@ public:
         size_t frag_id = detected_blobs_[blob_id.Ind].FragmentId;
         SalientPointFragment& frag = entire_map_.GetSalientPointNew(frag_id);
         
-        static_assert(sizeof sal_pnt_id <= sizeof frag.UserObj, "SalPntId must fit into UserObject");
-        std::memcpy(&frag.UserObj, &sal_pnt_id, sizeof(sal_pnt_id));
+        static_assert(sizeof sal_pnt_id <= sizeof frag.user_obj, "SalPntId must fit into UserObject");
+        std::memcpy(&frag.user_obj, &sal_pnt_id, sizeof(sal_pnt_id));
     }
 
     suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) override
@@ -390,7 +390,7 @@ public:
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
             const SalPntInternal& sal_pnt = kalman_tracker_->GetSalPnt(sal_pnt_id);
-            cv::matchTemplate(image.gray, sal_pnt.PatchTemplateInFirstFrame, result, method);
+            cv::matchTemplate(image.gray, sal_pnt.patch_template_in_first_frame, result, method);
             cv::normalize(result, result, 0, 1, cv::NORM_MINMAX, -1);
 
             double minVal;
@@ -413,8 +413,8 @@ public:
             int rad_y_int = kalman_tracker_->sal_pnt_patch_size_[1] / 2;
 
             auto center = cv::Point{ maxLoc.x + rad_x_int, maxLoc.y + rad_y_int };
-            float diffC = (sal_pnt.PixelCoordInLatestFrame - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
-            float diffTL = (sal_pnt.PatchTemplateTopLeftInLatestFrame - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
+            float diffC = (sal_pnt.pixel_coord_in_latest_frame - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
+            float diffTL = (sal_pnt.patch_template_top_left_in_latest_frame - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
             if (diffTL > max_shift_per_frame)
             {
                 if (stop_on_sal_pnt_moved_too_far_)
@@ -566,30 +566,30 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const DavisonMonoSl
     if (!fs.open(file_name.data(), cv::FileStorage::WRITE, "utf8"))
         return false;
 
-    fs << "FramesCount" << static_cast<int>(hist.StateSamples.size());
-    fs << "AvgFrameProcessingDur" << static_cast<float>(hist.AvgFrameProcessingDur.count()); // seconds
+    fs << "FramesCount" << static_cast<int>(hist.state_samples.size());
+    fs << "AvgFrameProcessingDur" << static_cast<float>(hist.avg_frame_processing_dur.count()); // seconds
     fs << "Frames" <<"[";
 
-    for (const auto& item : hist.StateSamples)
+    for (const auto& item : hist.state_samples)
     {
         fs << "{";
 
-        cv::write(fs, "CurReprojErr", item.CurReprojErr);
-        cv::write(fs, "EstimatedSalPnts", static_cast<int>(item.EstimatedSalPnts));
-        cv::write(fs, "NewSalPnts", static_cast<int>(item.NewSalPnts));
-        cv::write(fs, "CommonSalPnts", static_cast<int>(item.CommonSalPnts));
-        cv::write(fs, "DeletedSalPnts", static_cast<int>(item.DeletedSalPnts));
-        cv::write(fs, "FrameProcessingDur", item.FrameProcessingDur.count()); // seconds
+        cv::write(fs, "CurReprojErr", item.cur_reproj_err);
+        cv::write(fs, "EstimatedSalPnts", static_cast<int>(item.estimated_sal_pnts));
+        cv::write(fs, "NewSalPnts", static_cast<int>(item.new_sal_pnts));
+        cv::write(fs, "CommonSalPnts", static_cast<int>(item.common_sal_pnts));
+        cv::write(fs, "DeletedSalPnts", static_cast<int>(item.deleted_sal_pnts));
+        cv::write(fs, "FrameProcessingDur", item.frame_processing_dur.count()); // seconds
 
-        Eigen::Map<const Eigen::Matrix<Scalar, 9, 1>> cam_pos_uncert(item.CamPosUncert.data());
+        Eigen::Map<const Eigen::Matrix<Scalar, 9, 1>> cam_pos_uncert(item.cam_pos_uncert.data());
         fs << "CamPosUnc_s" <<"[:";
         WriteMatElements(fs, cam_pos_uncert);
         fs << "]";
 
-        if (item.SalPntsUncertMedian.has_value())
+        if (item.sal_pnts_uncert_median.has_value())
         {
             fs << "SalPntUncMedian_s" << "[:";
-            WriteMatElements(fs, item.SalPntsUncertMedian.value());
+            WriteMatElements(fs, item.sal_pnts_uncert_median.value());
             fs << "]";
         }
 
@@ -770,8 +770,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     LOG(INFO) << "foc_len[alphax,alphay]=[" << f_pix[0] << "," << f_pix[1] << "] pix";
 
     RadialDistortionParams cam_distort_params;
-    cam_distort_params.K1 = 0;
-    cam_distort_params.K2 = 0;
+    cam_distort_params.k1 = 0;
+    cam_distort_params.k2 = 0;
 
     // the origin of a tracker (sometimes cam0)
     SE3Transform tracker_origin_from_world;
@@ -935,7 +935,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
             CameraPosState cam_state;
             tracker.GetCameraPredictedPosState(&cam_state);
-            SE3Transform actual_cam_wfc(RotMat(cam_state.OrientationWfc), cam_state.PosW);
+            SE3Transform actual_cam_wfc(RotMat(cam_state.orientation_wfc), cam_state.pos_w);
             SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
 #if defined(SRK_HAS_PANGOLIN)
             cam_orient_cfw_history.push_back(actual_cam_cfw);
@@ -987,7 +987,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             {
                 const SalPntInternal& sal_pnt = tracker.GetSalPnt(sal_pnt_id);
                 cv::rectangle(camera_image_bgr, 
-                    cv::Rect{ sal_pnt.PatchTemplateTopLeftInLatestFrame[0], sal_pnt.PatchTemplateTopLeftInLatestFrame[1], w, h },
+                    cv::Rect{ sal_pnt.patch_template_top_left_in_latest_frame[0], sal_pnt.patch_template_top_left_in_latest_frame[1], w, h },
                     cv::Scalar::all(0));
             }
 #endif

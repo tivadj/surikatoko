@@ -127,8 +127,8 @@ bool MultiViewIterativeFactorizer::FindRelativeMotionMultiPoints(size_t anchor_f
         size_t track_id = common_track_ids[i];
         
         const CornerTrack& corner_track = track_rep_.GetPointTrackById(track_id);
-        Eigen::Matrix<Scalar, 3, 1> c1 = corner_track.GetCornerData(anchor_frame_ind).value().ImageCoord;
-        Eigen::Matrix<Scalar, 3, 1> c2 = corner_track.GetCornerData(target_frame_ind).value().ImageCoord;
+        Eigen::Matrix<Scalar, 3, 1> c1 = corner_track.GetCornerData(anchor_frame_ind).value().image_coord;
+        Eigen::Matrix<Scalar, 3, 1> c2 = corner_track.GetCornerData(target_frame_ind).value().image_coord;
 
         Eigen::Matrix<Scalar, 3, 1> c2_homog = c2;
         if (norm)
@@ -206,7 +206,7 @@ size_t MultiViewIterativeFactorizer::CollectFrameInfoListForPoint(size_t track_i
     {
         if (!corner_data.has_value())
             return;
-        const Eigen::Matrix<Scalar, 3, 1>& x_meter = corner_data.value().ImageCoord;
+        const Eigen::Matrix<Scalar, 3, 1>& x_meter = corner_data.value().image_coord;
 
         if (!base_frame_ind.has_value())
             base_frame_ind = frame_ind;
@@ -336,7 +336,7 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
 
             //
 
-            Eigen::Matrix<Scalar, 3, 1> x3D_base = track.GetCornerData(base_frame_ind).value().ImageCoord;
+            Eigen::Matrix<Scalar, 3, 1> x3D_base = track.GetCornerData(base_frame_ind).value().image_coord;
             x3D_base *= depth_base;
 
             const SE3Transform& base_from_world = cam_orient_cfw_[base_frame_ind];
@@ -360,7 +360,7 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
             size_t salient_point_id = 0;
             { // actual modification
                 SalientPointFragment& salient_point = map_.AddSalientPoint(x3D_world, &salient_point_id);
-                salient_point.SyntheticVirtualPointId = track.SyntheticVirtualPointId;
+                salient_point.synthetic_virtual_point_id = track.SyntheticVirtualPointId;
             }
 
             track.SalientPointId = salient_point_id;

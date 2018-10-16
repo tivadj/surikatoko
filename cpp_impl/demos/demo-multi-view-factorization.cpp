@@ -57,11 +57,11 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     Scalar viewer_down_offset, Scalar ascentZ, std::vector<SE3Transform>* inverse_orient_cams)
 {
     std::array<suriko::Point3,5> look_at_base_points = {
-        suriko::Point3(wb.XMax, wb.YMin, wb.ZMin),
-        suriko::Point3(wb.XMin, wb.YMin, wb.ZMin),
-        suriko::Point3(wb.XMin, wb.YMax, wb.ZMin),
-        suriko::Point3(wb.XMax, wb.YMax, wb.ZMin),
-        suriko::Point3(wb.XMax, wb.YMin, wb.ZMin),
+        suriko::Point3(wb.x_max, wb.y_min, wb.z_min),
+        suriko::Point3(wb.x_min, wb.y_min, wb.z_min),
+        suriko::Point3(wb.x_min, wb.y_max, wb.z_min),
+        suriko::Point3(wb.x_max, wb.y_max, wb.z_min),
+        suriko::Point3(wb.x_max, wb.y_min, wb.z_min),
     };
 
     // number of viewer steps per each side is variable
@@ -72,7 +72,7 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
         steps_per_side_y
     };
 
-    Scalar skew_ang = (Scalar)std::atan2(std::abs(wb.XMax - wb.XMin), std::abs(wb.YMax - wb.YMin));
+    Scalar skew_ang = (Scalar)std::atan2(std::abs(wb.x_max - wb.x_min), std::abs(wb.y_max - wb.y_min));
     Scalar viewer_offsetX = viewer_down_offset * std::sin(skew_ang);
     Scalar viewer_offsetY = -viewer_down_offset * std::cos(skew_ang);
 
@@ -218,8 +218,8 @@ void DrawMap(const FragmentMap& fragment_map)
     glBegin(GL_POINTS);
     for (const SalientPointFragment& point : fragment_map.SalientPoints())
     {
-        if (!point.Coord.has_value()) continue;
-        const suriko::Point3& p = point.Coord.value();
+        if (!point.coord.has_value()) continue;
+        const suriko::Point3& p = point.coord.value();
         glVertex3d(p.Mat()[0], p.Mat()[1], p.Mat()[2]);
     }
     glEnd();
@@ -308,7 +308,7 @@ public:
         // determine which salient points are visible
         for (const SalientPointFragment& fragment : entire_map_.SalientPoints())
         {
-            const Point3& salient_point = fragment.Coord.value();
+            const Point3& salient_point = fragment.coord.value();
             Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K_, rt_cfw, salient_point);
             SRK_ASSERT(!IsClose(0, pnt_homog[2], 10e-5)) << "points in infinity are unsupported";
 
@@ -325,17 +325,17 @@ public:
             // now, the point is visible in current frame
 
             CornerTrack* corner_track = nullptr;
-            if (fragment.SyntheticVirtualPointId.has_value())
+            if (fragment.synthetic_virtual_point_id.has_value())
             {
                 // determine points correspondance using synthatic ids
-                track_rep->GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
+                track_rep->GetFirstPointTrackByFragmentSyntheticId(fragment.synthetic_virtual_point_id.value(), &corner_track);
             }
             if (corner_track == nullptr)
             {
                 suriko::CornerTrack& new_corner_track = track_rep->AddCornerTrackObj();
                 SRK_ASSERT(!new_corner_track.SalientPointId.has_value()) << "new track is not associated with any reconstructed salient point";
 
-                new_corner_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId;
+                new_corner_track.SyntheticVirtualPointId = fragment.synthetic_virtual_point_id;
 
                 corner_track = &new_corner_track;
             }
@@ -343,8 +343,8 @@ public:
             suriko::Point2 pix(pix_x, pix_y);
 
             CornerData& corner_data = corner_track->AddCorner(frame_ind);
-            corner_data.PixelCoord = pix;
-            corner_data.ImageCoord = K_inv_ * pix.AsHomog();
+            corner_data.pixel_coord = pix;
+            corner_data.image_coord = K_inv_ * pix.AsHomog();
         }
     }
 };
@@ -385,12 +385,12 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
     std::vector<Eigen::Matrix<Scalar, 3, 3>> intrinsic_cam_mat_per_frame;
 
     WorldBounds wb{};
-    wb.XMin = FLAGS_world_xmin;
-    wb.XMax = FLAGS_world_xmax;
-    wb.YMin = FLAGS_world_ymin;
-    wb.YMax = FLAGS_world_ymax;
-    wb.ZMin = FLAGS_world_zmin;
-    wb.ZMax = FLAGS_world_zmax;
+    wb.x_min = FLAGS_world_xmin;
+    wb.x_max = FLAGS_world_xmax;
+    wb.y_min = FLAGS_world_ymin;
+    wb.y_max = FLAGS_world_ymax;
+    wb.z_min = FLAGS_world_zmin;
+    wb.z_max = FLAGS_world_zmax;
     std::array<Scalar, 3> cell_size = { FLAGS_world_cell_size_x, FLAGS_world_cell_size_y, FLAGS_world_cell_size_z };
 
     constexpr Scalar inclusive_gap = 1e-8; // small value to make iteration inclusive
@@ -406,18 +406,18 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
     size_t next_virtual_point_id = 6000'000 + 1;
     FragmentMap entire_map;
     entire_map.SetFragmentIdOffsetInternal(1000'000);
-    Scalar xmid = (wb.XMin + wb.XMax) / 2;
-    Scalar xlen = wb.XMax - wb.XMin;
-    Scalar zlen = wb.ZMax - wb.ZMin;
-    for (Scalar grid_x = wb.XMin; grid_x < wb.XMax + inclusive_gap; grid_x += cell_size[0])
+    Scalar xmid = (wb.x_min + wb.x_max) / 2;
+    Scalar xlen = wb.x_max - wb.x_min;
+    Scalar zlen = wb.z_max - wb.z_min;
+    for (Scalar grid_x = wb.x_min; grid_x < wb.x_max + inclusive_gap; grid_x += cell_size[0])
     {
-        for (Scalar grid_y = wb.YMin; grid_y < wb.YMax + inclusive_gap; grid_y += cell_size[1])
+        for (Scalar grid_y = wb.y_min; grid_y < wb.y_max + inclusive_gap; grid_y += cell_size[1])
         {
             Scalar x = grid_x;
             Scalar y = grid_y;
             
             Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
-            Scalar z = wb.ZMin + z_perc * zlen;
+            Scalar z = wb.z_min + z_perc * zlen;
 
             // jit x and y so the points can be distinguished during movement
             if (corrupt_salient_points_with_noise)
@@ -428,7 +428,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
             }
 
             SalientPointFragment& frag = entire_map.AddSalientPoint(Point3(x, y, z));
-            frag.SyntheticVirtualPointId = next_virtual_point_id++;
+            frag.synthetic_virtual_point_id = next_virtual_point_id++;
         }
     }
 
@@ -491,9 +491,9 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
     mvf.gt_salient_point_by_virtual_point_id_fun_ = [&entire_map](size_t synthetic_virtual_point_id) -> suriko::Point3
     {
         const SalientPointFragment* sal_pnt = nullptr;
-        if (entire_map.GetSalientPointByVirtualPointIdInternal(synthetic_virtual_point_id, &sal_pnt) && sal_pnt->Coord.has_value())
+        if (entire_map.GetSalientPointByVirtualPointIdInternal(synthetic_virtual_point_id, &sal_pnt) && sal_pnt->coord.has_value())
         {
-            const suriko::Point3& pnt_world = sal_pnt->Coord.value();
+            const suriko::Point3& pnt_world = sal_pnt->coord.value();
             return pnt_world;
         }
         AssertFalse();
@@ -550,7 +550,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
         // determine which salient points are visible
         for (const SalientPointFragment& fragment : entire_map.SalientPoints())
         {
-            const Point3& salient_point = fragment.Coord.value();
+            const Point3& salient_point = fragment.coord.value();
             Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, rt_cfw, salient_point);
 
             auto pnt_pix = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
@@ -563,7 +563,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
             if (!hit_wnd)
                 continue;
 
-            entire_fragment_id_per_frame.insert(fragment.SyntheticVirtualPointId.value());
+            entire_fragment_id_per_frame.insert(fragment.synthetic_virtual_point_id.value());
 
 #if defined(SRK_HAS_OPENCV)
             camera_image_rgb.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
@@ -572,21 +572,21 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
             if (FLAGS_debug_skim_over || frame_ind < well_known_frames_count)
             {
                 CornerTrack* corner_track = nullptr;
-                mvf.track_rep_.GetFirstPointTrackByFragmentSyntheticId(fragment.SyntheticVirtualPointId.value(), &corner_track);
+                mvf.track_rep_.GetFirstPointTrackByFragmentSyntheticId(fragment.synthetic_virtual_point_id.value(), &corner_track);
 
                 if (corner_track == nullptr)
                 {
                     // add new salient points
                     size_t salient_point_id = 0;
-                    SalientPointFragment& new_frag = mvf.map_.AddSalientPoint(fragment.Coord, &salient_point_id);
-                    new_frag.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId; // force id of subset fragment to be identical to fragment id from entire map
+                    SalientPointFragment& new_frag = mvf.map_.AddSalientPoint(fragment.coord, &salient_point_id);
+                    new_frag.synthetic_virtual_point_id = fragment.synthetic_virtual_point_id; // force id of subset fragment to be identical to fragment id from entire map
 
                     new_points_per_frame_count += 1;
 
                     //
                     suriko::CornerTrack& new_corner_track = mvf.track_rep_.AddCornerTrackObj();
                     new_corner_track.SalientPointId = salient_point_id;
-                    new_corner_track.SyntheticVirtualPointId = fragment.SyntheticVirtualPointId;
+                    new_corner_track.SyntheticVirtualPointId = fragment.synthetic_virtual_point_id;
 
                     corner_track = &new_corner_track;
 
@@ -596,8 +596,8 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
                 suriko::Point2 pix(pix_x, pix_y);
 
                 CornerData& corner_data = corner_track->AddCorner(frame_ind);
-                corner_data.PixelCoord = pix;
-                corner_data.ImageCoord = K_inv * pix.AsHomog();
+                corner_data.pixel_coord = pix;
+                corner_data.image_coord = K_inv * pix.AsHomog();
             }
         }
 

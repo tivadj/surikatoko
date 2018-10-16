@@ -8,12 +8,12 @@ namespace suriko { namespace virt_world {
 
 struct WorldBounds
 {
-    Scalar XMin;
-    Scalar XMax;
-    Scalar YMin;
-    Scalar YMax;
-    Scalar ZMin;
-    Scalar ZMax;
+    Scalar x_min;
+    Scalar x_max;
+    Scalar y_min;
+    Scalar y_max;
+    Scalar z_min;
+    Scalar z_max;
 };
 
 void GenerateCircleCameraShots(const suriko::Point3& circle_center, Scalar circle_radius, Scalar ascentZ,

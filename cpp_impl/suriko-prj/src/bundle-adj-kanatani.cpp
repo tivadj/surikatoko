@@ -231,9 +231,9 @@ bool SceneNormalizer::NormalizeWorldInplaceInternal()
     // update salient points
     for (SalientPointFragment& sal_pnt : map_->SalientPoints())
     {
-        suriko::Point3 salient_point = sal_pnt.Coord.value();
+        suriko::Point3 salient_point = sal_pnt.coord.value();
         auto newX = NormalizeOrRevertPoint(salient_point, prenorm_cam0_from_world, world_scale_, NormalizeAction::Normalize);
-        sal_pnt.Coord = newX;
+        sal_pnt.coord = newX;
     }
 
     bool check_post_cond = true;
@@ -254,9 +254,9 @@ void SceneNormalizer::RevertNormalization()
     // update salient points
     for (SalientPointFragment& sal_pnt : map_->SalientPoints())
     {
-        suriko::Point3 salient_point = sal_pnt.Coord.value();
+        suriko::Point3 salient_point = sal_pnt.coord.value();
         suriko::Point3 revertX = NormalizeOrRevertPoint(salient_point, prenorm_cam0_from_world, world_scale_, NormalizeAction::Revert);
-        sal_pnt.Coord = revertX;
+        sal_pnt.coord = revertX;
     }
 
     // update orientations of the camera
@@ -583,8 +583,8 @@ void BundleAdjustmentKanatani::EnsureMemoryAllocated()
     corrections_.resize(VarsCount(), 1); // corrections of vars
 
     size_t normalized_frame_vars_count = vars_count_per_frame_ * frames_count - normalized_var_indices_count_;
-    decomp_lin_sys_cache_.left_side_.resize(normalized_frame_vars_count, normalized_frame_vars_count);
-    decomp_lin_sys_cache_.right_side_.resize(normalized_frame_vars_count, 1);
+    decomp_lin_sys_cache_.left_side.resize(normalized_frame_vars_count, normalized_frame_vars_count);
+    decomp_lin_sys_cache_.right_side.resize(normalized_frame_vars_count, 1);
 }
 
 Scalar BundleAdjustmentKanatani::ReprojError(Scalar f0, const FragmentMap& map,
@@ -1834,7 +1834,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         SRK_ASSERT(point_hessian->allFinite()) << "Possibly hessian factor is too big c=" << hessian_factor;
     };
 
-    auto get_normalized_point_allframes = [this, &deriv_second_pointframe](size_t pnt_ind, decltype(decomp_lin_sys_cache_.point_allframes_)* mat) -> void
+    auto get_normalized_point_allframes = [this, &deriv_second_pointframe](size_t pnt_ind, decltype(decomp_lin_sys_cache_.point_allframes)* mat) -> void
     {
         // make a copy because normalized columns have to be removed
         *mat = deriv_second_pointframe.middleRows<kPointVarsCount>(pnt_ind * kPointVarsCount); // 3x9*frames_count
@@ -1846,14 +1846,14 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
     };
 
     // left_side <- G
-    EigenDynMat& decomp_lin_sys_left_side = decomp_lin_sys_cache_.left_side_; // [9*frames_count,9*frames_count]
+    EigenDynMat& decomp_lin_sys_left_side = decomp_lin_sys_cache_.left_side; // [9*frames_count,9*frames_count]
     fill_matG(&decomp_lin_sys_left_side);
 
     size_t matG_size = decomp_lin_sys_left_side.rows();
 
     // calculate deltas for frame vars
 
-    Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& decomp_lin_sys_right_side = decomp_lin_sys_cache_.right_side_;
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1>& decomp_lin_sys_right_side = decomp_lin_sys_cache_.right_side;
 
     decomp_lin_sys_right_side.fill(0);
 
@@ -1882,13 +1882,13 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
             }
 
             // left side
-            auto& point_allframes = decomp_lin_sys_cache_.point_allframes_; // [3x9M] cached matrix
+            auto& point_allframes = decomp_lin_sys_cache_.point_allframes; // [3x9M] cached matrix
             point_allframes.resize(Eigen::NoChange, matG_size);
             get_normalized_point_allframes(pnt_ind, &point_allframes);
 
             // perf: the Ft.E.F product is a hot spot
             // subtract Ft.E.F as in G-sum(Ft.E.F)
-            EigenDynMat& left_summand = decomp_lin_sys_cache_.left_summand_; // [9Mx9M] cached matrix
+            EigenDynMat& left_summand = decomp_lin_sys_cache_.left_summand; // [9Mx9M] cached matrix
             left_summand.noalias() = point_allframes.transpose() * point_hessian_inv * point_allframes;
             decomp_lin_sys_left_side -= left_summand;
 
@@ -1946,7 +1946,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
             {
                 Eigen::Map<const Eigen::Matrix<Scalar, kPointVarsCount, 1>> gradeE_point(&grad_error[pnt_ind * kPointVarsCount]);
 
-                auto& point_frame = decomp_lin_sys_cache_.point_allframes_; // [3x9M] cached matrix
+                auto& point_frame = decomp_lin_sys_cache_.point_allframes; // [3x9M] cached matrix
                 get_normalized_point_allframes(pnt_ind, &point_frame);
 
                 corrects_one_point = -point_hessian_inv * (point_frame * corrections_frame + gradeE_point);
