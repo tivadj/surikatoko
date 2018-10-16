@@ -6,6 +6,12 @@
 #include "suriko/approx-alg.h"
 #include "suriko/quat.h"
 
+#if defined(SRK_HAS_OPENCV)
+#include <opencv2/core/core.hpp> // cv::Mat
+#include <opencv2/imgproc.hpp> // cv::circle
+#include <opencv2/highgui.hpp> // cv::imshow
+#endif
+
 #if defined(SRK_HAS_PANGOLIN)
 namespace suriko_demos_davison_mono_slam
 {
@@ -153,8 +159,7 @@ void RenderEllipsoid(
         return p1.second > p2.second;
     });
 
-    // draw the ellipse which is the crossing of ellipsoid and the plane using the two largest semi-axes
-    // polar ellipse
+    // Draw the ellipse, which is the crossing of ellipsoid and the plane, which (the plane) spans the two largest semi-axes.
     glLineWidth(1);
     glBegin(GL_LINE_LOOP);
     size_t dots_per_ellipse = 12;
@@ -197,14 +202,6 @@ void RenderUncertaintyEllipsoid(
     Scalar ellipsoid_cut_thr,
     bool ui_swallow_exc)
 {
-    Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(pos_uncert);
-    bool op2 = lltOfA.info() != Eigen::NumericalIssue;
-    if (!op2)
-    {
-        LOG(ERROR) << "failed lltOfA.info() != Eigen::NumericalIssue";
-        return;
-    }
-
     QuadricEllipsoidWithCenter ellipsoid;
     ExtractEllipsoidFromUncertaintyMat(pos, pos_uncert, ellipsoid_cut_thr, &ellipsoid);
 
@@ -295,8 +292,6 @@ bool RenderUncertaintyEllipsoidBySampling(const Eigen::Matrix<Scalar, 3, 1>& cam
     return true;
 }
 
-SE3Transform CurCamFromTrackerOrigin(const std::vector<SE3Transform>& gt_cam_orient_cfw, size_t frame_ind);
-
 void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
     const std::array<GLfloat, 3>& track_color,
     bool display_trajectory,
@@ -347,28 +342,149 @@ void RenderLastCameraUncertEllipsoid(
     int z = 0;
 }
 
+std::array<GLfloat, 3> GetSalientPointColor(const SalPntInternal& sal_pnt)
+{
+    std::array<GLfloat, 3> new_sal_pnt_color{ 0, 255, 0 }; // green
+    std::array<GLfloat, 3> matched_sal_pnt_color{ 255, 0, 0 }; // red
+    std::array<GLfloat, 3> unobserved_sal_pnt_color{ 255, 255, 0 }; // yellow
+    std::array<GLfloat, 3> default_sal_pnt_color{ 255, 255, 255 };
+    std::array<GLfloat, 3>* sal_pnt_color = &default_sal_pnt_color;
+    switch (sal_pnt.track_status)
+    {
+    case SalPntTrackStatus::New:
+        sal_pnt_color = &new_sal_pnt_color;
+        break;
+    case SalPntTrackStatus::Matched:
+        sal_pnt_color = &matched_sal_pnt_color;
+        break;
+    case SalPntTrackStatus::Unobserved:
+        sal_pnt_color = &unobserved_sal_pnt_color;
+        break;
+    default:
+        sal_pnt_color = &default_sal_pnt_color;
+        break;
+    }
+    return *sal_pnt_color;
+}
+
+void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
+{
+    std::optional<SalPntRectFacet> rect = kalman_slam->GetPredictedSalPntFaceRect(sal_pnt_id);
+    if (!rect.has_value())
+        return;
+
+    const SalPntInternal& sal_pnt = kalman_slam->GetSalPnt(sal_pnt_id);
+
+    bool in_virtual_mode = sal_pnt.PatchTemplateInFirstFrame.empty();
+    if (in_virtual_mode)
+    {
+        // in virtual mode render just an outline of the patch
+
+        // iterate vertices in such an order, that the front of patch will face the camera
+        static constexpr std::array<size_t, 4> rect_inds = {
+            SalPntRectFacet::kTopRightInd,
+            SalPntRectFacet::kTopLeftInd,
+            SalPntRectFacet::kBotLeftInd,
+            SalPntRectFacet::kBotRightInd
+        };
+
+        glBegin(GL_LINE_LOOP);
+        for (auto i : rect_inds)
+        {
+            const auto& x = rect.value().points[i];
+            glVertex3d(x[0], x[1], x[2]);
+        }
+        glEnd();
+    }
+    else
+    {
+        // render an image of rectangular patch, associated with salient point
+        const GLsizei texWidth = kalman_slam->sal_pnt_patch_size_[0];
+        const GLsizei texHeight = kalman_slam->sal_pnt_patch_size_[1];
+
+        // bind the texture
+        glEnable(GL_TEXTURE_2D);
+        GLuint texId = -1;
+        glGenTextures(1 /*num of textures*/, &texId);
+
+        // always convert to RGB because OpenGL can't get gray images as an input (glTexImage2D.format parameter)
+        const GLenum src_texture_format = GL_RGB;
+        cv::Mat patch_rgb;
+        if (kSurikoDebug)
+            patch_rgb = sal_pnt.PatchTemplateRgbInFirstFrameDebug.clone();  // need cloning because it farther flipped
+        else
+            cv::cvtColor(sal_pnt.PatchTemplateInFirstFrame, patch_rgb, CV_GRAY2RGB);
+
+        // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture
+        // OpenCV stores images from top to bottom, while the GL uses bottom to top
+        cv::flip(patch_rgb, patch_rgb, 0 /*0=around x-axis*/);
+
+        //set length of one complete row in data (doesn't need to equal image.cols)
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, patch_rgb.step / patch_rgb.elemSize());
+
+        //use fast 4-byte alignment (default anyway) if possible
+        glPixelStorei(GL_UNPACK_ALIGNMENT, (patch_rgb.step & 3) ? 1 : 4);
+
+        glBindTexture(GL_TEXTURE_2D, texId);
+        const GLenum gl_texture_format = GL_RGB;  // GL_LUMINANCE (for gray) or GL_RGB, both work
+        glTexImage2D(GL_TEXTURE_2D, 0, gl_texture_format, texWidth, texHeight, 0, src_texture_format, GL_UNSIGNED_BYTE, patch_rgb.data);
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);  // do not mix texture color with background
+
+        using PointIndAndTexCoord = std::tuple<size_t, std::array <GLfloat, 2>>;
+        std::array< PointIndAndTexCoord, 4> vertex_and_tex_coords = {
+            PointIndAndTexCoord { SalPntRectFacet::kTopRightInd, {1.0f, 1.0f}},
+            PointIndAndTexCoord { SalPntRectFacet::kTopLeftInd, {0.0f, 1.0f}},
+            PointIndAndTexCoord { SalPntRectFacet::kBotLeftInd, {0.0f, 0.0f}},
+            PointIndAndTexCoord { SalPntRectFacet::kBotRightInd, {1.0f, 0.0f}},
+        };
+
+        glBegin(GL_QUADS);
+        for (auto i : { 0, 1, 2, 3 })
+        {
+            const PointIndAndTexCoord& descr = vertex_and_tex_coords[i];
+            const std::array <GLfloat, 2>& tex_coord = std::get<1>(descr);
+            glTexCoord2f(tex_coord[0], tex_coord[1]);
+
+            const auto& w1 = rect.value().points[std::get<0>(descr)];
+            glVertex3d(w1[0], w1[1], w1[2]);
+        }
+        glEnd();
+
+        // clear the texture
+        glDeleteTextures(1, &texId);
+        glDisable(GL_TEXTURE_2D); // may be unnecessary
+    }
+}
+
 void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
     bool display_3D_uncertainties,
     bool ui_swallow_exc)
 {
-    size_t sal_pnt_count = kalman_slam->SalientPointsCount();
-    for (size_t sal_pnt_ind = 0; sal_pnt_ind < sal_pnt_count; ++sal_pnt_ind)
+    for (DavisonMonoSlam::SalPntId sal_pnt_id : kalman_slam->GetSalientPoints())
     {
+        const SalPntInternal& sal_pnt = kalman_slam->GetSalPnt(sal_pnt_id);
+
+        const size_t sal_pnt_ind = sal_pnt.SalPntInd;
+
         Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
         kalman_slam->GetSalientPointPredictedPosWithUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
-        glColor3d(0.7, 0.7, 0.7);
+        std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
+        glColor3fv(sal_pnt_color.data());
 
         if (display_3D_uncertainties)
         {
             RenderUncertaintyEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, ui_swallow_exc);
-            //bool op = RenderUncertaintyEllipsoidBySampling(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr);
         }
 
         glBegin(GL_POINTS);
         glVertex3d(sal_pnt_pos[0], sal_pnt_pos[1], sal_pnt_pos[2]);
         glEnd();
+
+        RenderSalientPointPatchTemplate(kalman_slam, sal_pnt_id);
     }
 }
 
@@ -718,16 +834,19 @@ SceneVisualizationPangolinGui::Handler3DImpl::Handler3DImpl(pangolin::OpenGlRend
 
 void SceneVisualizationPangolinGui::Handler3DImpl::Mouse(pangolin::View& view, pangolin::MouseButton button, int x, int y, bool pressed, int button_state)
 {
+    owner_->got_user_input_ = true;
     pangolin::Handler3D::Mouse(view, button, x, y, pressed, button_state);
 }
 
 void SceneVisualizationPangolinGui::Handler3DImpl::MouseMotion(pangolin::View& view, int x, int y, int button_state)
 {
+    owner_->got_user_input_ = true;
     pangolin::Handler3D::MouseMotion(view, x, y, button_state);
 }
 
 void SceneVisualizationPangolinGui::Handler3DImpl::Special(pangolin::View& view, pangolin::InputSpecial inType, float x, float y, float p1, float p2, float p3, float p4, int button_state)
 {
+    owner_->got_user_input_ = true;
     pangolin::Handler3D::Special(view, inType, x, y, p1, p2, p3, p4, button_state);
 }
 

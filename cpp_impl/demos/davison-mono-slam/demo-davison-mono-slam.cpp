@@ -39,7 +39,7 @@
 #include "demo-davison-mono-slam-ui.h"
 
 // PROVIDE DATA SOURCE FOR DEMO
-#define DEMO_DATA_SOURCE kImageSeqDir
+#define DEMO_DATA_SOURCE_TYPE kImageSeqDir
 
 namespace suriko_demos_davison_mono_slam
 {
@@ -112,6 +112,7 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
 {
     size_t next_virtual_point_id = 6000'000 + 1;
     constexpr Scalar inclusive_gap = 1e-8; // small value to make iteration inclusive
+
 
     Scalar xmid = (wb.XMin + wb.XMax) / 2;
     Scalar xlen = wb.XMax - wb.XMin;
@@ -190,7 +191,7 @@ public:
         tracker_origin_from_world_.R.setIdentity();
     }
 
-    void AnalyzeFrame(size_t frame_ind, const cv::Mat& image_gray) override
+    void AnalyzeFrame(size_t frame_ind, const ImageFrame& image) override
     {
         detected_blobs_.clear();
 
@@ -239,7 +240,7 @@ public:
     }
 
     void MatchSalientPoints(size_t frame_ind,
-        const cv::Mat& image_gray,
+        const ImageFrame& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
@@ -274,7 +275,7 @@ public:
     }
 
     void RecruitNewSalientPoints(size_t frame_ind,
-        const cv::Mat& image_gray,
+        const ImageFrame& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         std::vector<CornersMatcherBlobId>* new_blob_ids) override
@@ -318,7 +319,7 @@ public:
         }
     }
 
-    void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const cv::Mat& image_gray) override
+    void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const ImageFrame& image) override
     {
         size_t frag_id = detected_blobs_[blob_id.Ind].FragmentId;
         SalientPointFragment& frag = entire_map_.GetSalientPointNew(frag_id);
@@ -349,10 +350,6 @@ class ImagePatchCornersMatcher : public CornersMatcherBase
     cv::Ptr<cv::ORB> detector_;
     DavisonMonoSlam* kalman_tracker_;
     std::vector<cv::KeyPoint> new_keypoints_;
-    float rad_ = 0;
-
-    // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" Davison Murray 2002)
-    int patch_width_ = 15;
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
 public:
@@ -363,24 +360,13 @@ public:
         detector_ = cv::ORB::create(nfeatures);
     }
 
-    void SetPatchWidth(int value)
-    {
-        patch_width_ = value;
-        rad_ = patch_width_ / 2.0f;
-    }
-
-    void AnalyzeFrame(size_t frame_ind, const cv::Mat& image_gray) override
-    {
-
-    }
-
     void MatchSalientPoints(size_t frame_ind,
-        const cv::Mat& image_gray,
+        const ImageFrame& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
-        int result_cols = image_gray.cols - patch_width_ + 1;
-        int result_rows = image_gray.rows - patch_width_ + 1;
+        int result_cols = image.gray.cols - kalman_tracker_->sal_pnt_patch_size_[0] + 1;
+        int result_rows = image.gray.rows - kalman_tracker_->sal_pnt_patch_size_[1] + 1;
         cv::Mat result;
         result.create(result_rows, result_cols, CV_32FC1);
 
@@ -398,11 +384,10 @@ public:
         static float max_shift_per_frame = 30;
         static cv::Mat image_gray_with_match;
 
-        int rad_int = (int)rad_;
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
             const SalPntInternal& sal_pnt = kalman_tracker_->GetSalPnt(sal_pnt_id);
-            cv::matchTemplate(image_gray, sal_pnt.PatchTemplateInFirstFrame, result, method);
+            cv::matchTemplate(image.gray, sal_pnt.PatchTemplateInFirstFrame, result, method);
             cv::normalize(result, result, 0, 1, cv::NORM_MINMAX, -1);
 
             double minVal;
@@ -416,13 +401,17 @@ public:
             static bool debug_ui = false;
             if (debug_ui)
             {
-                image_gray.copyTo(image_gray_with_match);
-                cv::rectangle(image_gray_with_match, cv::Rect{ match_loc.x, match_loc.y, patch_width_, patch_width_ }, cv::Scalar::all(0));
+                image.gray.copyTo(image_gray_with_match);
+                cv::Rect rect{ match_loc.x, match_loc.y, kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1] };
+                cv::rectangle(image_gray_with_match, rect, cv::Scalar::all(0));
             }
 
-            auto center = cv::Point{ maxLoc.x + rad_int, maxLoc.y + rad_int };
+            int rad_x_int = kalman_tracker_->sal_pnt_patch_size_[0] / 2;
+            int rad_y_int = kalman_tracker_->sal_pnt_patch_size_[1] / 2;
+
+            auto center = cv::Point{ maxLoc.x + rad_x_int, maxLoc.y + rad_y_int };
             float diffC = (sal_pnt.PixelCoordInLatestFrame - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
-            float diffTL = (sal_pnt.PatchTemplateTopLeft - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
+            float diffTL = (sal_pnt.PatchTemplateTopLeftInLatestFrame - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
             if (diffTL > max_shift_per_frame)
             {
                 if (stop_on_sal_pnt_moved_too_far_)
@@ -441,22 +430,23 @@ public:
     }
 
     void RecruitNewSalientPoints(size_t frame_ind,
-        const cv::Mat& image_gray,
+        const ImageFrame& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         std::vector<CornersMatcherBlobId>* new_blob_ids) override
     {
         std::vector<cv::KeyPoint> keypoints;
-        detector_->detect(image_gray, keypoints);
+        detector_->detect(image.gray, keypoints);
 
         cv::Mat descr_per_row;
-        detector_->compute(image_gray, keypoints, descr_per_row);
+        detector_->compute(image.gray, keypoints, descr_per_row);
 
         std::vector<cv::KeyPoint> sparse_keypoints;
-        FilterOutClosest(keypoints, rad_, &sparse_keypoints);
+        const float rad_diag = std::sqrt(suriko::Sqr(kalman_tracker_->sal_pnt_patch_size_[0]) + suriko::Sqr(kalman_tracker_->sal_pnt_patch_size_[1])) / 2;
+        FilterOutClosest(keypoints, rad_diag, &sparse_keypoints);
 
         cv::Mat sparse_img;
-        cv::drawKeypoints(image_gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+        cv::drawKeypoints(image.gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         // remove keypoints which are close to 'matched' salient points
         auto filter_out_close_to_existing = [this,&matched_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, float exclude_radius,
@@ -483,10 +473,10 @@ public:
         };
 
         new_keypoints_.clear();
-        filter_out_close_to_existing(sparse_keypoints, rad_, &new_keypoints_);
+        filter_out_close_to_existing(sparse_keypoints, rad_diag, &new_keypoints_);
 
         cv::Mat new_img;
-        cv::drawKeypoints(image_gray, new_keypoints_, new_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+        cv::drawKeypoints(image.gray, new_keypoints_, new_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         for (size_t i=0; i< new_keypoints_.size(); ++i)
         {
@@ -517,46 +507,38 @@ public:
         }
     }
 
-    void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const cv::Mat& image_gray) override
-    {
-        const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
-
-        SalPntInternal& sal_pnt = kalman_tracker_->GetSalPnt(sal_pnt_id);
-
-        int w = (int)patch_width_;
-        int rad_int = patch_width_ / 2;
-        int center_x = (int)kp.pt.x;
-        int center_y = (int)kp.pt.y;
-        cv::Rect patch_bounds{center_x - rad_int, center_y - rad_int, w, w };
-        
-        sal_pnt.PatchTemplateTopLeft = decltype(sal_pnt.PatchTemplateTopLeft){patch_bounds.x, patch_bounds.y};
-
-        cv::Mat patch;
-        image_gray(patch_bounds).copyTo(patch);
-        SRK_ASSERT(patch.rows == w);
-        SRK_ASSERT(patch.cols == w);
-        sal_pnt.PatchTemplateInFirstFrame = patch;
-    }
-    
-    void OnSalientPointIsMatchedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id) override
-    {
-        const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
-
-        SalPntInternal& sal_pnt = kalman_tracker_->GetSalPnt(sal_pnt_id);
-
-        int w = (int)patch_width_;
-        int rad_int = patch_width_ / 2;
-        int center_x = (int)kp.pt.x;
-        int center_y = (int)kp.pt.y;
-        cv::Rect patch_bounds{center_x - rad_int, center_y - rad_int, w, w };
-        
-        sal_pnt.PatchTemplateTopLeft = decltype(sal_pnt.PatchTemplateTopLeft){patch_bounds.x, patch_bounds.y};
-    }
-
     suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) override
     {
         const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
         return suriko::Point2{ kp.pt.x, kp.pt.y };
+    }
+
+    ImageFrame GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const ImageFrame& image) override
+    {
+        const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
+
+        int rad_x_int = kalman_tracker_->sal_pnt_patch_size_[0] / 2;
+        int rad_y_int = kalman_tracker_->sal_pnt_patch_size_[1] / 2;
+
+        int center_x = (int)kp.pt.x;
+        int center_y = (int)kp.pt.y;
+        cv::Rect patch_bounds{ center_x - rad_x_int, center_y - rad_y_int, kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1] };
+
+        cv::Mat patch_gray;
+        image.gray(patch_bounds).copyTo(patch_gray);
+        SRK_ASSERT(patch_gray.rows == kalman_tracker_->sal_pnt_patch_size_[1]);
+        SRK_ASSERT(patch_gray.cols == kalman_tracker_->sal_pnt_patch_size_[0]);
+
+        ImageFrame patch_template{};
+        patch_template.gray = patch_gray;
+
+        if (kSurikoDebug)
+        {
+            cv::Mat patch;
+            image.rgb_debug(patch_bounds).copyTo(patch);
+            patch_template.rgb_debug = patch;
+        }
+        return patch_template;
     }
 
     void SetSuppressObservations(bool value) { suppress_observations_ = value; }
@@ -657,6 +639,7 @@ DEFINE_double(kalman_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist_std, 1, "");
 DEFINE_double(kalman_measurm_noise_std, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
+DEFINE_bool(kalman_support_inf_sal_pnts, true, "true to handle salient points in infinity, by multiplying by rho when projecting salient points");
 DEFINE_double(kalman_max_new_blobs_in_first_frame, 7, "");
 DEFINE_double(kalman_max_new_blobs_per_frame, 1, "");
 DEFINE_double(kalman_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
@@ -811,7 +794,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugPredictedVarsCov;
     DavisonMonoSlam::SetDebugPath(debug_path);
 
-    DavisonMonoSlam tracker{};
+    DavisonMonoSlam tracker{ };
     tracker.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
     tracker.between_frames_period_ = 1;
     tracker.cam_intrinsics_ = cam_intrinsics;
@@ -820,8 +803,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.sal_pnt_init_inv_dist_std_ = FLAGS_kalman_sal_pnt_init_inv_dist_std;
     tracker.SetInputNoiseStd(FLAGS_kalman_input_noise_std);
     tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
+    tracker.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
+    tracker.SetCamera(SE3Transform::NoTransform(), FLAGS_kalman_estim_var_init_std);
 
     tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
+    tracker.support_inf_sal_pnts_ = FLAGS_kalman_support_inf_sal_pnts;
     tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
     tracker.debug_ellipsoid_cut_thr_ = FLAGS_ui_ellipsoid_cut_thr;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
@@ -854,7 +840,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
     {
         auto corners_matcher = std::make_unique<ImagePatchCornersMatcher>(&tracker);
-        corners_matcher->SetPatchWidth(FLAGS_kalman_templ_width);
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_kalman_stop_on_sal_pnt_moved_too_far;
         tracker.SetCornersMatcher(std::move(corners_matcher));
     }
@@ -866,7 +851,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
 
 #if defined(SRK_HAS_OPENCV)
-    cv::Mat camera_image_rgb = cv::Mat::zeros((int)img_size[1], (int)img_size[0], CV_8UC3);
+    cv::Mat camera_image_bgr = cv::Mat::zeros((int)img_size[1], (int)img_size[0], CV_8UC3);
 #endif
 #if defined(SRK_HAS_PANGOLIN)
     // across threads shared data
@@ -910,8 +895,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     std::optional<std::chrono::duration<double>> frame_process_time; // time it took to process current frame by tracker
 
+    ImageFrame image;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    cv::Mat image_gray;
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
     LOG(INFO) << "imageseq_dir=" << FLAGS_scene_imageseq_dir;
@@ -927,20 +912,26 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         auto image_file_path = dir_entry.path();
         auto path_str = image_file_path.string();
         LOG(INFO) << path_str;
-        cv::Mat image_rgb = cv::imread(image_file_path.string());
+        cv::Mat image_bgr = cv::imread(image_file_path.string());
         cv::Mat image_gray;
-        cv::cvtColor(image_rgb, image_gray, CV_BGR2GRAY);
+        cv::cvtColor(image_bgr, image_gray, CV_BGR2GRAY);
+        image.gray = image_gray;
+        if (kSurikoDebug)
+        {
+            cv::Mat image_rgb;
+            cv::cvtColor(image_bgr, image_rgb, CV_BGR2RGB);
+            image.rgb_debug = image_rgb;
+        }
 #endif
-
         auto& corners_matcher = tracker.CornersMatcher();
-        corners_matcher.AnalyzeFrame(frame_ind, image_gray);
+        corners_matcher.AnalyzeFrame(frame_ind, image);
 
         // process the frame
         if (!FLAGS_ctrl_debug_skim_over)
         {
             auto t1 = std::chrono::high_resolution_clock::now();
 
-            tracker.ProcessFrame(frame_ind, image_gray);
+            tracker.ProcessFrame(frame_ind, image);
 
             auto t2 = std::chrono::high_resolution_clock::now();
             frame_process_time = t2 - t1;
@@ -993,17 +984,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             strbuf << "f=" << frame_ind;
             cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
-            image_rgb.copyTo(camera_image_rgb);
-            auto w = FLAGS_kalman_templ_width;
+            image_bgr.copyTo(camera_image_bgr);
+            auto [w,h] = tracker.sal_pnt_patch_size_;
             for (SalPntId sal_pnt_id : tracker.GetSalientPoints())
             {
                 const SalPntInternal& sal_pnt = tracker.GetSalPnt(sal_pnt_id);
-                cv::rectangle(camera_image_rgb, 
-                    cv::Rect{ sal_pnt.PatchTemplateTopLeft[0], sal_pnt.PatchTemplateTopLeft[1], w, w },
+                cv::rectangle(camera_image_bgr, 
+                    cv::Rect{ sal_pnt.PatchTemplateTopLeftInLatestFrame[0], sal_pnt.PatchTemplateTopLeftInLatestFrame[1], w, h },
                     cv::Scalar::all(0));
             }
 #endif
-            cv::imshow("front-camera", camera_image_rgb);
+            cv::imshow("front-camera", camera_image_bgr);
             cv::waitKey(1); // allow to refresh an opencv view
         }
 #endif

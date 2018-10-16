@@ -64,6 +64,12 @@ struct SE3Transform
 
     SE3Transform() = default;
     SE3Transform(const Eigen::Matrix<Scalar, 3, 3>& R, const Eigen::Matrix<Scalar, 3, 1>& T) : R(R), T(T) {}
+    
+    static SE3Transform NoTransform() { 
+        return SE3Transform(
+            Eigen::Matrix<Scalar, 3, 3>::Identity(),
+            Eigen::Matrix<Scalar, 3, 1>::Zero());
+    }
 };
 
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform;

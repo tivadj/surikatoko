@@ -93,19 +93,33 @@ void PropagateUncertaintyUsingSimulation(const XMean& x_mean, const XCovar& x_co
 
     static constexpr size_t kYSize = YCovar::RowsAtCompileTime;
 
+    std::vector<XMean> in_samples;
+    static bool debug = false;
+    if (debug)
+        in_samples.reserve(gen_samples_count);
+
     typedef Eigen::Matrix<Scalar, kYSize, 1> YMean;
     std::vector<YMean> samples(gen_samples_count);
 
-    std::generate_n(samples.begin(), gen_samples_count, [&x_rand, &propag_fun, gen]()
+    std::generate_n(samples.begin(), gen_samples_count, [&x_rand, &propag_fun, gen,&in_samples]()
     {
         XMean samp;
         x_rand.NewSample(gen, &samp);
+        if (debug)
+            in_samples.push_back(samp);
 
         YMean out_y;
         propag_fun(samp, &out_y);
 
         return out_y;
     });
+
+    XCovar x_covar_tmp;
+    if (debug)
+    {
+        static constexpr size_t kXSize = XCovar::RowsAtCompileTime;
+        CalcCovarMat<Scalar, kXSize>(in_samples, &x_covar_tmp);
+    }
 
     CalcCovarMat<Scalar, kYSize>(samples, y_covar);
 }
