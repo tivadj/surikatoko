@@ -657,6 +657,7 @@ DEFINE_double(ui_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncerta
 DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
 DEFINE_int32(ui_loop_prolong_period_ms, 3000, "");
 DEFINE_int32(ui_tight_loop_relaxing_delay_ms, 100, "");
+DEFINE_int32(ui_dots_per_uncert_ellipse, 12, "Number of dots to split uncertainty ellipse (4=rectangle)");
 DEFINE_bool(ctrl_multi_threaded_mode, false, "true for UI to work in a separated dedicated thread; false for UI to work inside worker's thread");
 DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
 DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without reconstruction");
@@ -883,6 +884,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             SceneVisualizationPangolinGui::s_ui_params_ = ui_params;
             pangolin_gui->ui_loop_prolong_period_ = std::chrono::milliseconds(FLAGS_ui_loop_prolong_period_ms);
             pangolin_gui->ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
+            pangolin_gui->dots_per_uncert_ellipse_ = FLAGS_ui_dots_per_uncert_ellipse;
             pangolin_gui->InitUI();
             int back_dist = 5;
             pangolin_gui->SetCameraBehindTrackerOnce(tracker_origin_from_world, back_dist);
@@ -982,6 +984,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
             image_bgr.copyTo(camera_image_bgr);
+            
+            CameraPosState cam_state;
+            tracker.GetCameraPredictedPosState(&cam_state);
+
             auto [w,h] = tracker.sal_pnt_patch_size_;
             for (SalPntId sal_pnt_id : tracker.GetSalientPoints())
             {
@@ -989,6 +995,19 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 cv::rectangle(camera_image_bgr, 
                     cv::Rect{ sal_pnt.patch_template_top_left_in_latest_frame[0], sal_pnt.patch_template_top_left_in_latest_frame[1], w, h },
                     cv::Scalar::all(0));
+
+                Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
+                Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
+                tracker.GetSalientPointPredictedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+
+                Ellipsoid3DWithCenter ellipsoid;
+                const Scalar ellisoid_cut_thr = 0.05;
+                ExtractEllipsoidFromUncertaintyMat(sal_pnt_pos, sal_pnt_pos_uncert, ellisoid_cut_thr, &ellipsoid);
+
+                std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
+                cv::Scalar sal_pnt_color_bgr{ sal_pnt_color[2], sal_pnt_color[1], sal_pnt_color[0] };
+
+                DrawEllipsoidContour(tracker, cam_state, ellipsoid, FLAGS_ui_dots_per_uncert_ellipse, sal_pnt_color_bgr, &camera_image_bgr);
             }
 #endif
             cv::imshow("front-camera", camera_image_bgr);

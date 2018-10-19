@@ -199,6 +199,7 @@ auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not
 /// Checks if Rt*R=I.
 [[nodiscard]]
 bool IsOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg = nullptr);
+bool IsOrthogonal(const Eigen::Matrix<Scalar,2,2>& R, std::string* msg = nullptr);
 
 /// Checks if Rt*R=I and det(R)=1.
 [[nodiscard]]
@@ -250,12 +251,37 @@ SE3Transform LookAtLufWfc(
     const Eigen::Matrix<Scalar, 3, 1>& center,
     const Eigen::Matrix<Scalar, 3, 1>& up);
 
-/// (x-c)*A*(x-c)=T
-struct QuadricEllipsoidWithCenter
+/// (x-c)*A*(x-c)=r where x[3x1], c[3x1], A[3,3], r=scalar
+struct Ellipsoid3DWithCenter
 {
     Eigen::Matrix<Scalar, 3, 3> A;
-    Eigen::Matrix<Scalar, 3, 1> Center; // c
-    Scalar RightSide; // T
+    Eigen::Matrix<Scalar, 3, 1> center; // c
+    Scalar right_side; // r
+};
+
+/// Equation of ellipse is: (x-c)*A*(x-c)=r where c[2x1] is the center of ellipse, A[2,2] is a matrix, r is a scalar.
+/// x[2x1] belongs to ellipse if it satisfies the equation.
+struct Ellipse2DWithCenter
+{
+    Eigen::Matrix<Scalar, 2, 2> A;
+    Eigen::Matrix<Scalar, 2, 1> center; // c
+    Scalar right_side; // r
+};
+
+/// Represents a 2D ellipse, for which the eigenvectors are found.
+struct RotatedEllipse2D
+{
+    Eigen::Matrix<Scalar, 2, 1> center_e;  // center in the coordinates of ellipse
+    Eigen::Matrix<Scalar, 2, 1> semi_axes;
+    Eigen::Matrix<Scalar, 2, 2> rot_mat_world_from_ellipse;
+};
+
+/// Represents a 2D ellipse, for which the eigenvectors are found.
+struct RotatedEllipsoid3D
+{
+    Eigen::Matrix<Scalar, 3, 1> center_e;
+    Eigen::Matrix<Scalar, 3, 1> semi_axes;
+    Eigen::Matrix<Scalar, 3, 3> rot_mat_world_from_ellipse;
 };
 
 void PickPointOnEllipsoid(
@@ -272,14 +298,24 @@ void ExtractEllipsoidFromUncertaintyMat(const Eigen::Matrix<Scalar, 3, 1>& gauss
 void ExtractEllipsoidFromUncertaintyMat(
     const Eigen::Matrix<Scalar, 3, 1>& gauss_mean,
     const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
-    QuadricEllipsoidWithCenter* ellipsoid);
+    Ellipsoid3DWithCenter* ellipsoid);
 
-bool GetRotatedEllipsoid(const QuadricEllipsoidWithCenter& ellipsoid, bool can_throw,
-    Eigen::Matrix<Scalar, 3, 1>* ellipse_center,
-    Eigen::Matrix<Scalar, 3, 1>* ellipse_semi_axes,
-    Eigen::Matrix<Scalar, 3, 3>* rot_mat_world_from_ellipse);
+bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw, RotatedEllipsoid3D* result);
+
+RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipsoid);
 
 bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov);
+
+/// Camera axes are in XYZ=LUF (left, up, forward) mode. Camera is aligned with positive OZ direction.
+/// Camera plane (u,v) is defined by first two columns of camera orientation R (the third column is OZ direction).
+/// source: "Perspective Projection of an Ellipsoid", David Eberly, GeometricTools, https://www.geometrictools.com/
+bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
+    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
+    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
+    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
+    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
+    Ellipse2DWithCenter* result);
+
 
 namespace internals
 {
@@ -291,5 +327,12 @@ Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 1>& translatio
 /// Generates rotation matrix from direction and angle to rotate. For zero angle it returns the identity matrix.
 Eigen::Matrix<Scalar, 3, 3> RotMat(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang);
 Eigen::Matrix<Scalar, 3, 3> RotMat(Scalar unity_dir_x, Scalar unity_dir_y, Scalar unity_dir_z, Scalar ang);
+
+template <typename F>
+constexpr auto Deg2Rad(F x)
+{
+    using Float = std::common_type_t<float, F>; // if input is int, force output to be float
+    return x * static_cast<Float>(M_PI / 180);
+}
 }
 }

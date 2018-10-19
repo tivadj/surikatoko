@@ -1140,7 +1140,7 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState&
         Eigen::Matrix<Scalar, 3, 3> pos_uncert;
         LoadSalientPointPosWithUncertainty(estim_vars_, estim_vars_covar_, salient_pnt_ind, &pos_mean, &pos_uncert);
 
-        QuadricEllipsoidWithCenter ellipsoid;
+        Ellipsoid3DWithCenter ellipsoid;
         ExtractEllipsoidFromUncertaintyMat(pos_mean, pos_uncert, 0.05, &ellipsoid);
         SRK_ASSERT(true);
     }

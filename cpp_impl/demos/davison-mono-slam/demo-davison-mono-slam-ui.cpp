@@ -5,17 +5,19 @@
 #include <glog/logging.h>
 #include "suriko/approx-alg.h"
 #include "suriko/quat.h"
+#include "suriko/obs-geom.h"
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/core/core.hpp> // cv::Mat
 #include <opencv2/imgproc.hpp> // cv::circle
-#include <opencv2/highgui.hpp> // cv::imshow
 #endif
 
 #if defined(SRK_HAS_PANGOLIN)
 namespace suriko_demos_davison_mono_slam
 {
 using namespace std::literals::chrono_literals;
+using namespace suriko;
+using namespace suriko::internals;
 
 std::optional<UIChatMessage> PopMsgUnderLock(std::optional<UIChatMessage>* msg)
 {
@@ -144,71 +146,106 @@ void PickRandomPointOnEllipsoid(
     PickPointOnEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, ray, pos_ellipsoid);
 }
 
-void RenderEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 1>& center,
-    const Eigen::Matrix<Scalar, 3, 1>& semi_axes,
-    const Eigen::Matrix<Scalar, 3, 3>& rot_mat_world_from_ellipse)
+auto EllipsePntPolarToEuclid(Scalar a, Scalar b, Scalar theta) -> suriko::Point2
+{
+    Scalar cos_theta = std::cos(theta);
+    Scalar sin_theta = std::sin(theta);
+
+    // Polar ellipse https://en.wikipedia.org/wiki/Ellipse
+    // r=a*b/sqrt((b*cos(theta))^2 + (a*sin(theta))^2)
+    Scalar r = a * b / std::sqrt(suriko::Sqr(b * cos_theta) + suriko::Sqr(a * sin_theta));
+
+    suriko::Point2 p;
+    p[0] = r * cos_theta;
+    p[1] = r * sin_theta;
+    return p;
+}
+
+void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_ellipse)
 {
     std::array<std::pair<size_t, Scalar>, 3> sorted_semi_axes;
-    sorted_semi_axes[0] = { 0, semi_axes[0] };
-    sorted_semi_axes[1] = { 1, semi_axes[1] };
-    sorted_semi_axes[2] = { 2, semi_axes[2] };
+    sorted_semi_axes[0] = { 0, rot_ellipsoid.semi_axes[0] };
+    sorted_semi_axes[1] = { 1, rot_ellipsoid.semi_axes[1] };
+    sorted_semi_axes[2] = { 2, rot_ellipsoid.semi_axes[2] };
     std::sort(sorted_semi_axes.begin(), sorted_semi_axes.end(), [](auto& p1, auto& p2)
     {
         // sort descending by length of semi-axis
         return p1.second > p2.second;
     });
 
-    // Draw the ellipse, which is the crossing of ellipsoid and the plane, which (the plane) spans the two largest semi-axes.
+    enum Axes { Largest, Middle, Smallest };
+
+    // The ellipsoid is drawn as an ellipse, built on two eigenvectors with largest eigenvalues.
+    // ellipse axes OX,OY=Largest,Middle
+
     glLineWidth(1);
     glBegin(GL_LINE_LOOP);
-    size_t dots_per_ellipse = 12;
-    std::array<Scalar, 2> big_semi_axes = { sorted_semi_axes[0].second,sorted_semi_axes[1].second };
     for (size_t i = 0; i < dots_per_ellipse; ++i)
     {
+        // draw in the plane of largest-2nd-largest eigenvectors
         Scalar theta = i * (2 * M_PI) / dots_per_ellipse;
-        Scalar cos_theta = std::cos(theta);
-        Scalar sin_theta = std::sin(theta);
+        suriko::Point2 eucl = EllipsePntPolarToEuclid(sorted_semi_axes[Largest].second, sorted_semi_axes[Middle].second, theta);
 
-        // Polar ellipse https://en.wikipedia.org/wiki/Ellipse
-        // r=a*b/sqrt((b*cos(theta))^2 + (a*sin(theta))^2)
-        Scalar r = big_semi_axes[0] * big_semi_axes[1] / std::sqrt(suriko::Sqr(big_semi_axes[1] * cos_theta) + suriko::Sqr(big_semi_axes[0] * sin_theta));
-
-        Eigen::Matrix<Scalar, 3, 1> wstmp;
-        wstmp[0] = r * cos_theta;
-        wstmp[1] = r * sin_theta;
-        wstmp[2] = 0;
+        // ellipse OX is on largest, ellipse OY on the 2nd-largest
 
         Eigen::Matrix<Scalar, 3, 1> ws;
-        // the largets semi-axis
-        ws[sorted_semi_axes[0].first] = r * cos_theta;
-        // second largets semi-axis
-        ws[sorted_semi_axes[1].first] = r * sin_theta;
-        // the smallest semi-axis
-        ws[sorted_semi_axes[2].first] = 0;
+        ws[sorted_semi_axes[Largest].first] = eucl[0];  // ellipse OX
+        ws[sorted_semi_axes[Middle].first] = eucl[1];  // ellipse OY
+        ws[sorted_semi_axes[Smallest].first] = 0;
 
         // map to the original ellipse with axes not parallel to world axes
-        ws += center;
+        ws += rot_ellipsoid.center_e;
 
-        Eigen::Matrix<Scalar, 3, 1> pos_world = rot_mat_world_from_ellipse * ws;
+        Eigen::Matrix<Scalar, 3, 1> pos_world = rot_ellipsoid.rot_mat_world_from_ellipse * ws;
         glVertex3d(pos_world[0], pos_world[1], pos_world[2]);
     }
     glEnd();
+
+    const bool almost_circle = sorted_semi_axes[Smallest].second / sorted_semi_axes[Largest].second > 0.9f;
+    if (almost_circle)
+    {
+        // render two strokes, orthogonal to ellipse plane, to represent the ellipsoid is almost a sphere
+        // ellipse axes OX,OY=Middle,Smallest
+        const Scalar ang_delta = Deg2Rad(5);
+        std::array<Scalar, 4> thick_stroke_angs = {
+            -ang_delta,
+            ang_delta,
+            M_PI - ang_delta,
+            M_PI + ang_delta
+        };
+        glBegin(GL_LINES);
+        for (Scalar ang : thick_stroke_angs)
+        {
+            // draw in the plane of middle-smallest eigenvectors
+            suriko::Point2 eucl = EllipsePntPolarToEuclid(sorted_semi_axes[Middle].second, sorted_semi_axes[Smallest].second, ang);
+
+            Eigen::Matrix<Scalar, 3, 1> ws;
+            ws[sorted_semi_axes[Middle].first] = eucl[0];  // ellipse OX
+            ws[sorted_semi_axes[Smallest].first] = eucl[1];  // ellipse OY
+            ws[sorted_semi_axes[Largest].first] = 0;
+
+            // map to the original ellipse with axes not parallel to world axes
+            ws += rot_ellipsoid.center_e;
+
+            Eigen::Matrix<Scalar, 3, 1> pos_world = rot_ellipsoid.rot_mat_world_from_ellipse * ws;
+            glVertex3d(pos_world[0], pos_world[1], pos_world[2]);
+        }
+        glEnd();
+    }
 }
 
 void RenderUncertaintyEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& pos,
     const Eigen::Matrix<Scalar, 3, 3>& pos_uncert,
     Scalar ellipsoid_cut_thr,
+    size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
-    QuadricEllipsoidWithCenter ellipsoid;
+    Ellipsoid3DWithCenter ellipsoid;
     ExtractEllipsoidFromUncertaintyMat(pos, pos_uncert, ellipsoid_cut_thr, &ellipsoid);
 
-    Eigen::Matrix<Scalar, 3, 1> center1;
-    Eigen::Matrix<Scalar, 3, 1> semi_axes1;
-    Eigen::Matrix<Scalar, 3, 3> rot_mat_world_from_ellipse1;
-    bool op1 = GetRotatedEllipsoid(ellipsoid, !ui_swallow_exc, &center1, &semi_axes1, &rot_mat_world_from_ellipse1);
+    RotatedEllipsoid3D rot_ellipsoid;
+    bool op1 = GetRotatedEllipsoid(ellipsoid, !ui_swallow_exc, &rot_ellipsoid);
     if (!op1)
     {
         if (ui_swallow_exc)
@@ -217,7 +254,7 @@ void RenderUncertaintyEllipsoid(
     }
 
     // draw projection of ellipsoid
-    RenderEllipsoid(center1, semi_axes1, rot_mat_world_from_ellipse1);
+    RenderEllipsoid(rot_ellipsoid, dots_per_ellipse);
 }
 
 bool RenderUncertaintyEllipsoidBySampling(const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
@@ -327,19 +364,6 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
         cam_pos_world_prev = cam_pos_world;
         cam_pos_world_prev_inited = true;
     }
-}
-
-void RenderLastCameraUncertEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
-    const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert,
-    const Eigen::Matrix<Scalar, 4, 1>& cam_orient_quat_wfc, Scalar ellipsoid_cut_thr, bool ui_swallow_exc)
-{
-    Eigen::Matrix<Scalar, 3, 3> cam_orient_wfc;
-    RotMatFromQuat(gsl::make_span<const Scalar>(cam_orient_quat_wfc.data(), 4), &cam_orient_wfc);
-
-    RenderUncertaintyEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, ui_swallow_exc);
-    //bool op = RenderUncertaintyEllipsoidBySampling(cam_pos, cam_pos_uncert, ellipsoid_cut_thr);
-    int z = 0;
 }
 
 std::array<GLfloat, 3> GetSalientPointColor(const SalPntInternal& sal_pnt)
@@ -460,6 +484,7 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
 
 void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
     bool display_3D_uncertainties,
+    size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
     for (DavisonMonoSlam::SalPntId sal_pnt_id : kalman_slam->GetSalientPoints())
@@ -477,7 +502,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
 
         if (display_3D_uncertainties)
         {
-            RenderUncertaintyEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, ui_swallow_exc);
+            RenderUncertaintyEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
         }
 
         glBegin(GL_POINTS);
@@ -493,6 +518,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
     CamDisplayType mid_cam_disp_type,
     CamDisplayType last_cam_disp_type,
     bool display_3D_uncertainties,
+    size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
     // world axes
@@ -534,7 +560,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
 
         RenderAxes(0.5, 2); // axes of the tracker's origin (=cam0)
 
-        RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, ui_swallow_exc);
+        RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
 
         std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
         if (ui_params.cam_orient_cfw_history != nullptr)
@@ -548,9 +574,14 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
         {
             Eigen::Matrix<Scalar, 3, 1> cam_pos;
             Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
-            Eigen::Matrix<Scalar, 4, 1> cam_orient_quat;
-            kalman_slam->GetCameraPredictedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat);
-            RenderLastCameraUncertEllipsoid(cam_pos, cam_pos_uncert, cam_orient_quat, ellipsoid_cut_thr, ui_swallow_exc);
+            Eigen::Matrix<Scalar, 4, 1> cam_orient_quat_wfc;
+            kalman_slam->GetCameraPredictedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat_wfc);
+
+            Eigen::Matrix<Scalar, 3, 3> cam_orient_wfc;
+            RotMatFromQuat(gsl::make_span<const Scalar>(cam_orient_quat_wfc.data(), 4), &cam_orient_wfc);
+
+            RenderUncertaintyEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
+            //bool op = RenderUncertaintyEllipsoidBySampling(cam_pos, cam_pos_uncert, ellipsoid_cut_thr);
         }
 
         glPopMatrix();
@@ -654,6 +685,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
                 mid_cam_disp_type,
                 last_cam_disp_type,
                 display_3D_uncertainties,
+                dots_per_uncert_ellipse_,
                 ui_params.ui_swallow_exc);
 }
 
@@ -888,5 +920,68 @@ void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value a
     VLOG(4) << "UI thread is exiting";
 }
 
+#endif
+
+#if defined(SRK_HAS_OPENCV)
+
+void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr)
+{
+    std::optional<cv::Point> pnt_int_prev;
+    for (size_t i = 0; i <= dots_per_ellipse; ++i)
+    {
+        Scalar theta = i * (2 * M_PI) / dots_per_ellipse;
+        suriko::Point2 eucl = EllipsePntPolarToEuclid(ellipse.semi_axes[0], ellipse.semi_axes[1], theta);
+
+        Eigen::Matrix<Scalar, 2, 1> ws = eucl.Mat();
+
+        // map to the original ellipse with axes not parallel to world axes
+        ws += ellipse.center_e;
+
+        // the 'world' for ellipse is the OX and OY of camera
+        Eigen::Matrix<Scalar, 2, 1> pos_camera = ellipse.rot_mat_world_from_ellipse * ws;
+
+        // due to distortion, the pixel coordinates of contour will not form an ellipse
+        // hence usage of 2D ellipse drawing functions is inappropriate
+        // instead we just project 3D points onto the image
+        suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(suriko::Point3(pos_camera[0], pos_camera[1], 1));
+
+        cv::Point pnt_int{ static_cast<int>(pnt_pix[0]), static_cast<int>(pnt_pix[1]) };
+
+        if (pnt_int_prev.has_value())
+        {
+            cv::line(*camera_image_bgr, pnt_int_prev.value(), pnt_int, color);
+        }
+        pnt_int_prev = pnt_int;
+    }
+}
+
+void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraPosState& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
+    size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr)
+{
+    // The set of ellipsoid 3D points, visible from given camera position, is in implicit form and to
+    // enumerate them is a problem, source: "Perspective Projection of an Ellipsoid", David Eberly, GeometricTools, https://www.geometrictools.com/
+    // If it is solved, we can just enumerate them and project-distort into pixels.
+    // Instead, we project those contour 3D points onto the camera (z=1) and get the ellipse,
+    // 3D points of which can be easily enumerated.
+
+    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
+    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
+
+    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
+    Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
+    Scalar lam = 1;
+    Eigen::Matrix<Scalar, 3, 1> u = cam_wfc.leftCols<1>();
+    Eigen::Matrix<Scalar, 3, 1> v = cam_wfc.middleCols<1>(1);
+
+    Ellipse2DWithCenter ellipse_on_cam_plane;
+    bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam, &ellipse_on_cam_plane);
+    if (!op)
+        return;
+
+    RotatedEllipse2D rotated_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
+
+    DrawDistortedEllipse(tracker, rotated_ellipse, dots_per_ellipse, sal_pnt_color_bgr, camera_image_bgr);
 }
 #endif
+
+}

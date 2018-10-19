@@ -7,11 +7,19 @@
 
 #if defined(SRK_HAS_PANGOLIN)
 #include <pangolin/pangolin.h>
+#endif
+
+#if defined(SRK_HAS_OPENCV)
+#include <opencv2/core/core.hpp> // cv::Mat
+#endif
 
 namespace suriko_demos_davison_mono_slam
 {
 using namespace suriko;
 
+std::array<GLfloat, 3> GetSalientPointColor(const SalPntInternal& sal_pnt);
+
+#if defined(SRK_HAS_PANGOLIN)
 enum class UIChatMessage
 {
     UIWaitKey,            // Worker asks UI to wait for any key pressed
@@ -102,6 +110,7 @@ public:
 
     std::chrono::milliseconds ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(1000);  // makes ui thread more 'lightweight'
     std::chrono::milliseconds ui_loop_prolong_period_ = std::chrono::milliseconds(3000);  // time from user input till ui loop finishes
+    size_t dots_per_uncert_ellipse_ = 12;
 private:
     bool got_user_input_ = false;  // indicates that a user made some input (pressed a key or clicked a mouse button)
     std::optional<int> key_;
@@ -128,5 +137,15 @@ private:
 
 // parameters by value across threads
 void SceneVisualizationThread(UIThreadParams ui_params);
-}
 #endif
+
+#if defined(SRK_HAS_OPENCV)
+/// Draws ellipse in camera plane by dividing it into points and projecting/distorting them into pixels.
+void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr);
+
+/// Draw visible from given camera contour of ellipsoid.
+void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraPosState& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
+    size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr);
+#endif
+
+}
