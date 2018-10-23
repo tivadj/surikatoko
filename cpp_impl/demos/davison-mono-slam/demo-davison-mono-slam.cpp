@@ -347,6 +347,7 @@ public:
 };
 
 #if defined(SRK_HAS_OPENCV)
+
 class ImagePatchCornersMatcher : public CornersMatcherBase
 {
     bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
@@ -363,15 +364,15 @@ public:
         detector_ = cv::ORB::create(nfeatures);
     }
 
-    void MatchSalientPoints(size_t frame_ind,
-        const ImageFrame& image,
+    void MatchSalientPointsOpenCVImpl(size_t frame_ind,
+        const ImageFrame& frame_image,
         const std::set<SalPntId>& tracking_sal_pnts,
-        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
+        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts)
     {
-        int result_cols = image.gray.cols - kalman_tracker_->sal_pnt_patch_size_[0] + 1;
-        int result_rows = image.gray.rows - kalman_tracker_->sal_pnt_patch_size_[1] + 1;
-        cv::Mat result;
-        result.create(result_rows, result_cols, CV_32FC1);
+        int result_cols = frame_image.gray.cols - kalman_tracker_->sal_pnt_patch_size_[0] + 1;
+        int result_rows = frame_image.gray.rows - kalman_tracker_->sal_pnt_patch_size_[1] + 1;
+        cv::Mat match_score_image;
+        match_score_image.create(result_rows, result_cols, CV_32FC1);
 
         static int method = -1;
         if (method == -1)
@@ -385,36 +386,56 @@ public:
         }
 
         static float max_shift_per_frame = 30;
-        static cv::Mat image_gray_with_match;
 
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
             const SalPntInternal& sal_pnt = kalman_tracker_->GetSalPnt(sal_pnt_id);
-            cv::matchTemplate(image.gray, sal_pnt.patch_template_in_first_frame, result, method);
-            cv::normalize(result, result, 0, 1, cv::NORM_MINMAX, -1);
+            cv::matchTemplate(frame_image.gray, sal_pnt.template_in_first_frame, match_score_image, method);
+            cv::normalize(match_score_image, match_score_image, 0, 1, cv::NORM_MINMAX, -1);
 
             double minVal;
             double maxVal;
             cv::Point minLoc;
             cv::Point maxLoc;
-            minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc);
+            minMaxLoc(match_score_image, &minVal, &maxVal, &minLoc, &maxLoc);
 
-            auto match_loc = maxLoc;
+            auto matched_loc_top_left = maxLoc;
 
             static bool debug_ui = false;
+            static cv::Mat image_gray_with_match;
             if (debug_ui)
             {
-                image.gray.copyTo(image_gray_with_match);
-                cv::Rect rect{ match_loc.x, match_loc.y, kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1] };
+                frame_image.gray.copyTo(image_gray_with_match);
+                cv::Rect rect{ matched_loc_top_left.x, matched_loc_top_left.y, kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1] };
                 cv::rectangle(image_gray_with_match, rect, cv::Scalar::all(0));
+            }
+
+            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt, frame_image);
+
+            bool ok = match_pnt_center.has_value();
+            if (ok)
+            {
+                Pointi top_left_my = TemplateTopLeft((int)match_pnt_center.value().Mat()[0], (int)match_pnt_center.value().Mat()[1],
+                    kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1]);
+                Scalar dist =
+                    std::abs(matched_loc_top_left.x - top_left_my.x) +
+                    std::abs(matched_loc_top_left.y - top_left_my.y);
+                ok = dist < 5;
+            }
+            if (!ok)
+            {
+                SRK_ASSERT(true);
             }
 
             int rad_x_int = kalman_tracker_->sal_pnt_patch_size_[0] / 2;
             int rad_y_int = kalman_tracker_->sal_pnt_patch_size_[1] / 2;
 
             auto center = cv::Point{ maxLoc.x + rad_x_int, maxLoc.y + rad_y_int };
-            float diffC = (sal_pnt.pixel_coord_in_latest_frame - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
-            float diffTL = (sal_pnt.patch_template_top_left_in_latest_frame - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
+            if (match_pnt_center.has_value())
+                center = cv::Point{ static_cast<int>(match_pnt_center.value()[0]), static_cast<int>(match_pnt_center.value()[1]) };
+
+            float diffC = (sal_pnt.pixel_coord_real - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
+            float diffTL = (sal_pnt.template_top_left_int - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
             if (diffTL > max_shift_per_frame)
             {
                 if (stop_on_sal_pnt_moved_too_far_)
@@ -430,6 +451,280 @@ public:
 
             matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_ind }));
         }
+    }
+
+    void MatchSalientPointsCustomImpl(size_t frame_ind,
+        const ImageFrame& frame_image,
+        const std::set<SalPntId>& tracking_sal_pnts,
+        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts)
+    {
+        for (auto sal_pnt_id : tracking_sal_pnts)
+        {
+            const SalPntInternal& sal_pnt = kalman_tracker_->GetSalPnt(sal_pnt_id);
+
+            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt, frame_image);
+            if (!match_pnt_center.has_value())
+                continue;
+
+            const auto& center = match_pnt_center.value();
+
+            if (kSurikoDebug)
+            {
+                if (match_pnt_center.has_value())
+                {
+                    static float max_shift_per_frame = 30;
+                    auto diffC = (sal_pnt.pixel_coord_real - center.Mat()).norm();
+                    if (diffC > max_shift_per_frame)
+                    {
+                        if (stop_on_sal_pnt_moved_too_far_)
+                            SRK_ASSERT(false) << "sal pnt moved to far away";
+                        else
+                            continue;
+                    }
+                }
+            }
+
+            size_t blob_ind = new_keypoints_.size();
+            cv::KeyPoint kp{};
+            kp.pt = cv::Point2f{ static_cast<float>(center.Mat()[0]), static_cast<float>(center.Mat()[1]) };
+            new_keypoints_.push_back(kp);
+
+            matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_ind }));
+        }
+    }
+
+    Scalar MatchPatchTemplate(const ImageFrame& frame_image,
+        const cv::Mat& template_gray,
+        Pointi templ_top_left)
+    {
+        Scalar sum_sqr{ 0 };
+        for (int patch_y=0; patch_y < template_gray.rows; ++patch_y)
+        {
+            for (int patch_x = 0; patch_x < template_gray.cols; ++patch_x)
+            {
+                auto frame_value = frame_image.gray.at<unsigned char>(templ_top_left.y + patch_y, templ_top_left.x + patch_x);
+                auto templ_value = template_gray.at<unsigned char>(patch_y, patch_x);
+
+                auto f = static_cast<Scalar>(frame_value);
+                auto t = static_cast<Scalar>(templ_value);
+
+                Scalar delta = std::abs(f - t);
+                sum_sqr += delta;
+            }
+        }
+        const Scalar err_per_pixel = sum_sqr / template_gray.total();
+        return err_per_pixel;
+    }
+
+    struct TemplateMatchResult
+    {
+        suriko::Point2 center;
+        Scalar err_per_pixel;
+
+        // specify the number of calls to match-template routine to find this specific match-result.
+        int executed_match_templ_calls;
+    };
+
+    TemplateMatchResult MatchSalPntTemplateCenterInRect(const SalPntInternal& sal_pnt, const ImageFrame& frame_image, Recti search_rect)
+    {
+        Pointi search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
+        const int search_radius_left = search_center.x - search_rect.x;
+        const int search_radius_up = search_center.y - search_rect.y;
+
+        // -1 to make up for center pixel
+        const int search_radius_right = search_rect.x + search_rect.width - search_center.x - 1;
+        const int search_radius_down = search_rect.y + search_rect.height - search_center.y - 1;
+        const int search_common_rad = std::min({ search_radius_left , search_radius_right , search_radius_up, search_radius_down });
+
+        struct PosAndErr
+        {
+            Pointi patch_top_left;
+            Scalar err_per_pixel;
+            int executed_match_templ_calls = 0;
+        };
+        std::vector<PosAndErr> best_match_poses;
+        auto min_err_value = std::numeric_limits<Scalar>::max();
+        int match_templ_calls_counter = 0;                            // records the number of calls to match patch template
+        const auto& template_gray = sal_pnt.template_in_first_frame;
+        auto match_templ_at = [this, &template_gray,&frame_image,&best_match_poses, &min_err_value,&match_templ_calls_counter](Pointi center)
+        {
+            ++match_templ_calls_counter;
+
+            Pointi patch_top_left = TemplateTopLeft(center.x, center.y, template_gray.cols, template_gray.rows);
+            Scalar err = MatchPatchTemplate(frame_image, template_gray, patch_top_left);
+            if (err <= min_err_value)
+            {
+                if (err < min_err_value) best_match_poses.clear();
+                best_match_poses.push_back(PosAndErr{ patch_top_left, err, match_templ_calls_counter });
+                min_err_value = err;
+                static bool debug_calls = false;
+                if (debug_calls)
+                    LOG(INFO) <<"#" << match_templ_calls_counter << " new_min=" << err;
+            }
+        };
+
+        match_templ_at(search_center);  // rad=0
+        SRK_ASSERT(!best_match_poses.empty());
+
+        // The probability of matching is the greatest in the center.
+        // Hence iterate around the center pixel in circles.
+        
+        Recti border{ search_center.x, search_center.y, 1, 1 };
+        for (int rad = 1; rad < search_common_rad; ++rad)
+        {
+            // inflate by one line from each side
+            border.x -= 1;
+            border.y -= 1;
+            border.width += 2;
+            border.height += 2;
+
+            // top-right to top-left
+            for (int x = border.x + border.width - 1; x > border.x; --x)
+                match_templ_at(Pointi{ x, border.y });
+
+            // top-left to bottom-left
+            for (int y = border.y; y < border.y + border.height - 1; ++y)
+                match_templ_at(Pointi{ border.x, y });
+
+            // bottom-left to bottom-right
+            for (int x = border.x; x < border.x + border.width - 1; ++x)
+                match_templ_at(Pointi{ x, border.y + border.height - 1 });
+
+            // bottom-right to top-right
+            for (int y = border.y + border.height - 1; y > border.y; --y)
+                match_templ_at(Pointi{ border.x + border.width - 1, y });
+        }
+        // TODO: iterate through remainder side rectangles
+
+        // preserve fractional coordinates of central pixel
+        suriko::Point2 templ_top_left = { best_match_poses[0].patch_top_left.x, best_match_poses[0].patch_top_left.y };
+        suriko::Point2 center{ templ_top_left.Mat() + sal_pnt.OffsetFromTopLeft() };
+
+        TemplateMatchResult result;
+        result.center = center;
+        result.err_per_pixel = best_match_poses[0].err_per_pixel;
+        result.executed_match_templ_calls = best_match_poses[0].executed_match_templ_calls;
+        return result;
+    }
+
+    std::optional<Recti> PredictSalientPointSearchRect(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt, const ImageFrame& next_frame_image)
+    {
+        Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
+        Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
+        tracker.GetSalientPointPredictedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+
+        Ellipsoid3DWithCenter ellipsoid;
+        const Scalar ellisoid_cut_thr = 0.05;
+        ExtractEllipsoidFromUncertaintyMat(sal_pnt_pos, sal_pnt_pos_uncert, ellisoid_cut_thr, &ellipsoid);
+
+        CameraPosState cam_state;
+        tracker.GetCameraPredictedPosState(&cam_state);
+
+        Eigen::Matrix<Scalar, 3, 3> cam_wfc;
+        RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
+
+        Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
+        Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
+        Scalar lam = suriko::kCamPlaneZ;
+        Eigen::Matrix<Scalar, 3, 1> u = cam_wfc.leftCols<1>();
+        Eigen::Matrix<Scalar, 3, 1> v = cam_wfc.middleCols<1>(1);
+
+        Ellipse2DWithCenter ellipse_on_cam_plane;
+        bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam, &ellipse_on_cam_plane);
+        if (!op)
+            return std::nullopt;
+        
+        Rect ellipse_bounds_cam = GetEllipseBounds(ellipse_on_cam_plane);
+
+        // convert bounds of ellipse in the camera plane into bounds in image pixel coordinates
+        suriko::Point2 top_left_pix = tracker.ProjectCameraPoint(suriko::Point3{ ellipse_bounds_cam.x, ellipse_bounds_cam.y, suriko::kCamPlaneZ });
+        suriko::Point2 bot_right_pix = tracker.ProjectCameraPoint(suriko::Point3{ 
+            ellipse_bounds_cam.x + ellipse_bounds_cam.width, 
+            ellipse_bounds_cam.y + ellipse_bounds_cam.height, suriko::kCamPlaneZ });
+
+        // axes in camera plane are opposite to axes of image pixel
+        // just using min/max to avoid safely find bounds
+        std::swap(top_left_pix, bot_right_pix);
+
+        int x1 = static_cast<int>(top_left_pix.Mat()[0]);
+        int x2 = static_cast<int>(bot_right_pix.Mat()[0]);
+        int y1 = static_cast<int>(top_left_pix.Mat()[1]);
+        int y2 = static_cast<int>(bot_right_pix.Mat()[1]);
+
+        int patch_rad_x = sal_pnt.template_in_first_frame.cols / 2;
+        int patch_rad_y = sal_pnt.template_in_first_frame.rows / 2;
+
+        // for simplicity, ignore salient points, which are close to frame image borders
+        // and treat them as if they can't be matched here
+        // new_bounds = old_bounds - frame_image_margins
+        int new_x1 = std::max(x1, patch_rad_x);
+        int new_y1 = std::max(y1, patch_rad_y);
+        
+        // -1 to make up for center pixel
+        int new_x2 = std::min(x2, next_frame_image.gray.cols - patch_rad_x - 1);
+        int new_y2 = std::min(y2, next_frame_image.gray.rows - patch_rad_y - 1);
+
+        Recti bounds_pix;
+        bounds_pix.x = new_x1;
+        bounds_pix.y = new_y1;
+        bounds_pix.width = new_x2 - new_x1;
+        bounds_pix.height = new_y2 - new_y1;
+        bool empty_search = bounds_pix.width <= 0 || bounds_pix.height <= 0;
+        if (empty_search)
+            return std::nullopt;
+        SRK_ASSERT(bounds_pix.x >= 0);
+        SRK_ASSERT(bounds_pix.y >= 0);
+        SRK_ASSERT(bounds_pix.width < next_frame_image.gray.cols);
+        SRK_ASSERT(bounds_pix.height < next_frame_image.gray.rows);
+        return bounds_pix;
+    }
+
+    std::optional<suriko::Point2> MatchSalientPointCenter(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt, const ImageFrame& frame_image)
+    {
+        std::optional<Recti> search_rect_opt = PredictSalientPointSearchRect(tracker, sal_pnt, frame_image);
+        if (!search_rect_opt.has_value())
+            return std::nullopt; // lost
+
+        const Recti search_rect = search_rect_opt.value();
+
+        static cv::Mat image_gray_with_match;
+        static bool debug_ui = false;
+        if (debug_ui)
+        {
+            frame_image.gray.copyTo(image_gray_with_match);
+            cv::Rect patch_rect{
+                sal_pnt.template_top_left_int[0], sal_pnt.template_top_left_int[1],
+                tracker.sal_pnt_patch_size_[0], tracker.sal_pnt_patch_size_[1] };
+            cv::rectangle(image_gray_with_match, patch_rect, cv::Scalar::all(0));
+
+            cv::Rect search_rect_cv{ search_rect.x, search_rect.y, search_rect.width, search_rect.height };
+            cv::rectangle(image_gray_with_match, search_rect_cv, cv::Scalar::all(255));
+        }
+
+        TemplateMatchResult match_result = MatchSalPntTemplateCenterInRect(sal_pnt, frame_image, search_rect);
+        static float fail_pixel_ratio = 0.2; // template with such ratio (or greater) of unmatched template pixels is treated as unmatched
+        static unsigned char avg_unmatched_pixel_intensity = 128;
+        auto err_thresh = static_cast<Scalar>(fail_pixel_ratio * avg_unmatched_pixel_intensity);
+        if (match_result.err_per_pixel > err_thresh)
+            return std::nullopt;
+
+        static bool debug_calls = false;
+        if (debug_calls)
+            LOG(INFO) << "match_err_per_pixel=" << match_result.err_per_pixel << " match_calls=" << match_result.executed_match_templ_calls;
+
+        return match_result.center;
+    }
+
+    void MatchSalientPoints(size_t frame_ind,
+        const ImageFrame& image,
+        const std::set<SalPntId>& tracking_sal_pnts,
+        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
+    {
+        static bool impl = true;
+        if (impl)
+            MatchSalientPointsCustomImpl(frame_ind, image, tracking_sal_pnts, matched_sal_pnts);
+        else
+            MatchSalientPointsOpenCVImpl(frame_ind, image, tracking_sal_pnts, matched_sal_pnts);
     }
 
     void RecruitNewSalientPoints(size_t frame_ind,
@@ -535,12 +830,11 @@ public:
         ImageFrame patch_template{};
         patch_template.gray = patch_gray;
 
-        if (kSurikoDebug)
-        {
-            cv::Mat patch;
-            image.rgb_debug(patch_bounds).copyTo(patch);
-            patch_template.rgb_debug = patch;
-        }
+#if defined(SRK_DEBUG)
+        cv::Mat patch;
+        image.rgb_debug(patch_bounds).copyTo(patch);
+        patch_template.rgb_debug = patch;
+#endif
         return patch_template;
     }
 
@@ -675,6 +969,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 {
     gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
     google::InitGoogleLogging(argv[0]);
+
+#if defined(SRK_HAS_OPENCV)
+    cv::theRNG().state = 123; // specify seed for OpenCV randomness, so that debugging always goes the same execution path
+#endif
 
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
@@ -915,12 +1213,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         cv::Mat image_gray;
         cv::cvtColor(image_bgr, image_gray, CV_BGR2GRAY);
         image.gray = image_gray;
-        if (kSurikoDebug)
-        {
-            cv::Mat image_rgb;
-            cv::cvtColor(image_bgr, image_rgb, CV_BGR2RGB);
-            image.rgb_debug = image_rgb;
-        }
+#if defined(SRK_DEBUG)
+        cv::Mat image_rgb;
+        cv::cvtColor(image_bgr, image_rgb, CV_BGR2RGB);
+        image.rgb_debug = image_rgb;
+#endif
 #endif
         auto& corners_matcher = tracker.CornersMatcher();
         corners_matcher.AnalyzeFrame(frame_ind, image);
@@ -993,7 +1290,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             {
                 const SalPntInternal& sal_pnt = tracker.GetSalPnt(sal_pnt_id);
                 cv::rectangle(camera_image_bgr, 
-                    cv::Rect{ sal_pnt.patch_template_top_left_in_latest_frame[0], sal_pnt.patch_template_top_left_in_latest_frame[1], w, h },
+                    cv::Rect{ sal_pnt.template_top_left_int[0], sal_pnt.template_top_left_int[1], w, h },
                     cv::Scalar::all(0));
 
                 Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;

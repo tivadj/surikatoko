@@ -52,6 +52,21 @@ public:
     Scalar& operator[] (size_t i)       { return mat_(i); };
 };
 
+struct Rect
+{
+    Scalar x, y, width, height;
+};
+
+struct Recti
+{
+    int x, y, width, height;
+};
+
+struct Pointi
+{
+    int x, y;
+};
+
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
 
 /// SE3=Special Euclidean transformation in 3D.
@@ -259,6 +274,8 @@ struct Ellipsoid3DWithCenter
     Scalar right_side; // r
 };
 
+bool ValidateEllipsoid(const Ellipsoid3DWithCenter& maybe_ellipsoid);
+
 /// Equation of ellipse is: (x-c)*A*(x-c)=r where c[2x1] is the center of ellipse, A[2,2] is a matrix, r is a scalar.
 /// x[2x1] belongs to ellipse if it satisfies the equation.
 struct Ellipse2DWithCenter
@@ -267,6 +284,9 @@ struct Ellipse2DWithCenter
     Eigen::Matrix<Scalar, 2, 1> center; // c
     Scalar right_side; // r
 };
+
+bool ValidateEllipse(const Ellipse2DWithCenter& maybe_ellipsoid);
+Rect GetEllipseBounds(const Ellipse2DWithCenter& ellipse);
 
 /// Represents a 2D ellipse, for which the eigenvectors are found.
 struct RotatedEllipse2D

@@ -23,6 +23,7 @@ namespace
     constexpr size_t kAccelComps = kEucl3; // a: 3 for acceleration
     constexpr size_t kAngAccelComps = kEucl3; // alpha: 3 for angular acceleration
     constexpr size_t kPixPosComps = 2; // rows and columns
+    constexpr Scalar kCamPlaneZ = 1; // z=1 in [x,y,1]
 
     // [x q v w], x: 3 for position, q: 4 for quaternion orientation, v: 3 for velocity, w: 3 for angular velocity
     constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
@@ -69,19 +70,32 @@ struct SalPntInternal
 {
     size_t estim_vars_ind; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
     size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
-    Eigen::Matrix<Scalar, kPixPosComps, 1> pixel_coord_in_latest_frame; // distorted coordinates in the first camera
 
-    Eigen::Matrix<int, kPixPosComps, 1> patch_template_top_left_in_latest_frame;
+    // The distorted coordinates in the current camera, corresponds to the center of the image template.
+    Eigen::Matrix<Scalar, kPixPosComps, 1> pixel_coord_real;
+
+    Eigen::Matrix<int, kPixPosComps, 1> template_top_left_int;
 
     SalPntTrackStatus track_status;
 
     // Rectangular portion of the gray image corresponding to salient point, projected in current frame.
-    // The coord of the corner corresponds to the center of the image template.
-    cv::Mat patch_template_in_first_frame;
+    cv::Mat template_in_first_frame;
 #if defined(SRK_DEBUG)
-    cv::Mat patch_template_rgb_in_first_frame_debug;
+    cv::Mat template_rgb_in_first_frame_debug;
 #endif
+
+    Eigen::Matrix<Scalar, kPixPosComps, 1> OffsetFromTopLeft() const
+    {
+        return pixel_coord_real - Eigen::Matrix<Scalar, kPixPosComps, 1>{template_top_left_int[0], template_top_left_int[1]};
+    }
 };
+
+static Pointi TemplateTopLeft(int center_x, int center_y, int templ_width, int templ_height)
+{
+    int rad_x = templ_width / 2;
+    int rad_y = templ_height / 2;
+    return Pointi{ center_x - rad_x, center_y - rad_y };
+}
 
 /// Represents publicly transferable key to refer to a salient point.
 /// It is valid even if other salient points are removed or new salient points added.

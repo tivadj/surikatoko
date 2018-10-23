@@ -692,6 +692,47 @@ void ExtractEllipsoidFromUncertaintyMat(
     }
 }
 
+bool ValidateEllipsoid(const Ellipsoid3DWithCenter& maybe_ellipsoid)
+{
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, 3, 3>> eigen_solver(maybe_ellipsoid.A);
+    bool op = eigen_solver.info() == Eigen::Success;
+    if (!op)
+        return false;
+    const Eigen::Matrix<Scalar, 3, 1>& vs = eigen_solver.eigenvalues().eval();
+    const bool all_posotive = vs[0] > 0 && vs[1] > 0 && vs[2] > 0;
+    return all_posotive;
+}
+
+bool ValidateEllipse(const Ellipse2DWithCenter& maybe_ellipse)
+{
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, 2, 2>> eigen_solver(maybe_ellipse.A);
+    bool op = eigen_solver.info() == Eigen::Success;
+    if (!op)
+        return false;
+    const Eigen::Matrix<Scalar, 2, 1>& vs = eigen_solver.eigenvalues().eval();
+    const bool all_posotive = vs[0] > 0 && vs[1] > 0;
+    return all_posotive;
+}
+
+Rect GetEllipseBounds(const Ellipse2DWithCenter& ellipse)
+{
+    Scalar a1 = ellipse.A(0, 0);
+    Scalar a2 = ellipse.A(0, 1);
+    Scalar a4 = ellipse.A(1, 1);
+    Scalar m1 = ellipse.center[0];
+    Scalar m2 = ellipse.center[1];
+
+    Scalar dx = std::sqrt(ellipse.right_side / (a1 - a2 * a2 / a4));
+    Scalar dy = std::sqrt(ellipse.right_side / (a4 - a2 * a2 / a1));
+
+    Rect result;
+    result.x = m1 - dx;
+    result.width = 2 * dx;
+    result.y = m2 - dy;
+    result.height = 2 * dy;
+    return result;
+}
+
 /// Calculates A,b,c ellipsoid coefficients as in equation xAx+bx+c=0. eg: prop_thr=0.05 for 2sigma.
 void ExtractEllipsoidFromUncertaintyMat(
     const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
@@ -708,6 +749,8 @@ void ExtractEllipsoidFromUncertaintyMat(
 
     Scalar c1 = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
     ellipsoid->right_side = c1;
+
+    if (kSurikoDebug) { SRK_ASSERT(ValidateEllipsoid(*ellipsoid)); }
 
     if (VLOG_IS_ON(4))
     {
@@ -801,24 +844,11 @@ bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
     const auto& u = cam_plane_u;
     const auto& v = cam_plane_v;
     
-    // M2
-    Eigen::Matrix<Scalar, 3, 1> em = eye - ellipsoid.center;
-    Eigen::Matrix<Scalar, 3, 1> v2 = ellipsoid.A * em;
-    Eigen::Matrix<Scalar, 3, 3> M2 = 4 * (v2 * v2.transpose() - ellipsoid.A * (em.transpose() * v2 - ellipsoid.right_side));
-
-
-    // transform to ellipse in the form: x*A*x + b*x + c = 0
-    Scalar c = (ellipsoid.center.transpose() * ellipsoid.A * ellipsoid.center)[0] - ellipsoid.right_side;
-    Eigen::Matrix<Scalar, 3, 1> b = -2 * ellipsoid.A * ellipsoid.center;
-
     // find M which specifies the set of directions {d} towards the projected ellipse
     // {d} = d such that d*M*d=0
-    Eigen::Matrix<Scalar, 3, 1> v1 = b + 2 * ellipsoid.A * eye;
-    Scalar s1 = (eye.transpose() * ellipsoid.A * eye + b.transpose() * eye)[0] + c;
-    Eigen::Matrix<Scalar, 3, 3> M = v1 * v1.transpose() - 4 * s1 * ellipsoid.A;
-
-    // find projection of camera center onto the camera plane
-    Eigen::Matrix<Scalar, 3, 1> eye_on_plane = eye + (lam - n.transpose() * eye) * n;
+    Eigen::Matrix<Scalar, 3, 1> em = eye - ellipsoid.center;
+    Eigen::Matrix<Scalar, 3, 1> v2 = ellipsoid.A * em;
+    Eigen::Matrix<Scalar, 3, 3> M = 4 * (v2 * v2.transpose() - ellipsoid.A * (em.transpose() * v2 - ellipsoid.right_side));
 
     // find k0, ..., k5 for sig*P*sig+q*sig+k5=0
     Scalar k0 = (u.transpose() * M * u)[0];
@@ -839,6 +869,7 @@ bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
     P(1, 1) = k2;
     Eigen::Matrix<Scalar, 2, 1> q { k3, k4 };
 
+    // transform ellipse form x*A*x+q*x+c==0 into (x-m)A(x-m)=r
     Eigen::Matrix<Scalar, 2, 1> center = P.colPivHouseholderQr().solve(-0.5 * q);
     Scalar right_side = center.transpose() * P * center - k5;
 
@@ -851,6 +882,8 @@ bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
 
     result->center = center;
     result->right_side = right_side;
+    if (!ValidateEllipse(*result)) // occur when ellipsoid 'behind' the camera
+        return false;
     return true;
 }
 

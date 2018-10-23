@@ -399,7 +399,7 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
 
     const SalPntInternal& sal_pnt = kalman_slam->GetSalPnt(sal_pnt_id);
 
-    bool in_virtual_mode = sal_pnt.patch_template_in_first_frame.empty();
+    bool in_virtual_mode = sal_pnt.template_in_first_frame.empty();
     if (in_virtual_mode)
     {
         // in virtual mode render just an outline of the patch
@@ -434,11 +434,11 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
         // always convert to RGB because OpenGL can't get gray images as an input (glTexImage2D.format parameter)
         const GLenum src_texture_format = GL_RGB;
         cv::Mat patch_rgb;
-        if (kSurikoDebug)
-            patch_rgb = sal_pnt.patch_template_rgb_in_first_frame_debug.clone();  // need cloning because it farther flipped
-        else
-            cv::cvtColor(sal_pnt.patch_template_in_first_frame, patch_rgb, CV_GRAY2RGB);
-
+#if defined(SRK_DEBUG)
+        patch_rgb = sal_pnt.template_rgb_in_first_frame_debug.clone();  // need cloning because it farther flipped
+#else
+        cv::cvtColor(sal_pnt.template_in_first_frame, patch_rgb, CV_GRAY2RGB);
+#endif
         // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture
         // OpenCV stores images from top to bottom, while the GL uses bottom to top
         cv::flip(patch_rgb, patch_rgb, 0 /*0=around x-axis*/);
@@ -969,7 +969,7 @@ void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraPosState& 
 
     Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
     Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
-    Scalar lam = 1;
+    Scalar lam = suriko::kCamPlaneZ;
     Eigen::Matrix<Scalar, 3, 1> u = cam_wfc.leftCols<1>();
     Eigen::Matrix<Scalar, 3, 1> v = cam_wfc.middleCols<1>(1);
 

@@ -479,11 +479,11 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
         Point2 coord = corners_matcher_->GetBlobCoord(blob_id);
         SalPntInternal& sal_pnt = GetSalPnt(sal_pnt_id);
         sal_pnt.track_status = SalPntTrackStatus::Matched;
-        sal_pnt.pixel_coord_in_latest_frame = coord.Mat();
+        sal_pnt.pixel_coord_real = coord.Mat();
 
         int rad_x_int = sal_pnt_patch_size_[0] / 2;
         int rad_y_int = sal_pnt_patch_size_[1] / 2;
-        sal_pnt.patch_template_top_left_in_latest_frame = Eigen::Matrix<int, kPixPosComps, 1> { coord[0] - rad_x_int, coord[1] - rad_y_int};
+        sal_pnt.template_top_left_int = Eigen::Matrix<int, kPixPosComps, 1> { coord[0] - rad_x_int, coord[1] - rad_y_int};
 
         latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
@@ -629,7 +629,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             ++obs_sal_pnt_ind;
 
             const SalPntInternal& sal_pnt = GetSalPnt(obs_sal_pnt_id);
-            Point2 corner_pix = sal_pnt.pixel_coord_in_latest_frame;
+            Point2 corner_pix = sal_pnt.pixel_coord_real;
             zk.middleRows<kPixPosComps>(obs_sal_pnt_ind * kPixPosComps) = corner_pix.Mat();
 
             // project salient point into current camera
@@ -778,7 +778,7 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
             Knew.noalias() = one_obs_per_update_cache_.P_Hxy * innov_var_inv_2x2;
 
             // 3. update X and P using info derived from salient point observation
-            suriko::Point2 corner_pix = sal_pnt.pixel_coord_in_latest_frame;
+            suriko::Point2 corner_pix = sal_pnt.pixel_coord_real;
             
             // project salient point into current camera
 
@@ -856,7 +856,7 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
             const SalPntInternal& sal_pnt = GetSalPnt(obs_sal_pnt_id);
 
             // get observation corner
-            Point2 corner_pix = sal_pnt.pixel_coord_in_latest_frame;
+            Point2 corner_pix = sal_pnt.pixel_coord_real;
 
             for (size_t obs_comp_ind = 0; obs_comp_ind < kPixPosComps; ++obs_comp_ind)
             {
@@ -1151,14 +1151,15 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState&
     sal_pnt.estim_vars_ind = sal_pnt_var_ind;
     sal_pnt.sal_pnt_ind = old_sal_pnts_count;
     sal_pnt.track_status = SalPntTrackStatus::New;
-    sal_pnt.pixel_coord_in_latest_frame = hd;
-    sal_pnt.patch_template_top_left_in_latest_frame = Eigen::Matrix<int, kPixPosComps, 1>{
+    sal_pnt.pixel_coord_real = hd;
+    sal_pnt.template_top_left_int = Eigen::Matrix<int, kPixPosComps, 1>{
         hd[0] - sal_pnt_patch_size_[0] / 2,
         hd[1] - sal_pnt_patch_size_[1] / 2
     };
-    sal_pnt.patch_template_in_first_frame = std::move(patch_template.gray);
-    if (kSurikoDebug)
-        sal_pnt.patch_template_rgb_in_first_frame_debug = std::move(patch_template.rgb_debug);
+    sal_pnt.template_in_first_frame = std::move(patch_template.gray);
+#if defined(SRK_DEBUG)
+    sal_pnt.template_rgb_in_first_frame_debug = std::move(patch_template.rgb_debug);
+#endif
 
     SalPntId sal_pnt_id = SalPntId(sal_pnts_.back().get());
     sal_pnts_as_ids_.insert(sal_pnt_id);
@@ -1168,7 +1169,7 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraPosState&
 
 Eigen::Matrix<Scalar, kPixPosComps, 1> DavisonMonoSlam::GetSalPntPixelCoord(SalPntId sal_pnt_id) const
 {
-    return GetSalPnt(sal_pnt_id).pixel_coord_in_latest_frame;
+    return GetSalPnt(sal_pnt_id).pixel_coord_real;
 }
 
 void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2 corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const
@@ -1495,7 +1496,7 @@ void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(const SalPntInternal& sa
 
     // how distorted pixels coordinates depend on undistorted pixels coordinates
     Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> hd_by_hu;
-    Point2 corner_pix = sal_pnt.pixel_coord_in_latest_frame;
+    Point2 corner_pix = sal_pnt.pixel_coord_real;
     Deriv_hd_by_hu(corner_pix, &hd_by_hu);
 
     // A.34 how undistorted pixels coordinates hu=[uu,vu] depend on salient point (in camera) 3D meter coordinates [hcx,hcy,hcz] (A.23)
@@ -1871,7 +1872,7 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalPntFaceRect(const EigenDyn
 
     // select integer 2D boundary of a template patch on the image.
     using RealCorner = Eigen::Matrix<Scalar, 2, 1>;
-    auto top_left = RealCorner{ sal_pnt.patch_template_top_left_in_latest_frame[0], sal_pnt.patch_template_top_left_in_latest_frame[1] };
+    auto top_left = RealCorner{ sal_pnt.template_top_left_int[0], sal_pnt.template_top_left_int[1] };
     auto bot_right = RealCorner{
         top_left[0] + sal_pnt_patch_size_[0] ,
         top_left[1] + sal_pnt_patch_size_[1]
@@ -2178,7 +2179,7 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError() const
 
         Eigen::Matrix<Scalar, kPixPosComps, 1> pix = ProjectInternalSalientPoint(cam_state, sal_pnt_vars, nullptr);
 
-        suriko::Point2 corner_pix = sal_pnt.pixel_coord_in_latest_frame;
+        suriko::Point2 corner_pix = sal_pnt.pixel_coord_real;
         Scalar err_one = (corner_pix.Mat() - pix).norm();
         err_sum += err_one;
     }
