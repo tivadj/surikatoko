@@ -617,8 +617,8 @@ public:
         const Scalar ellisoid_cut_thr = 0.05;
         ExtractEllipsoidFromUncertaintyMat(sal_pnt_pos, sal_pnt_pos_uncert, ellisoid_cut_thr, &ellipsoid);
 
-        CameraPosState cam_state;
-        tracker.GetCameraPredictedPosState(&cam_state);
+        CameraStateVars cam_state;
+        tracker.GetCameraPredictedVars(&cam_state);
 
         Eigen::Matrix<Scalar, 3, 3> cam_wfc;
         RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
@@ -1232,8 +1232,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             auto t2 = std::chrono::high_resolution_clock::now();
             frame_process_time = t2 - t1;
 
-            CameraPosState cam_state;
-            tracker.GetCameraPredictedPosState(&cam_state);
+            CameraStateVars cam_state;
+            tracker.GetCameraEstimatedVars(&cam_state);
             SE3Transform actual_cam_wfc(RotMat(cam_state.orientation_wfc), cam_state.pos_w);
             SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
 #if defined(SRK_HAS_PANGOLIN)
@@ -1282,8 +1282,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
             image_bgr.copyTo(camera_image_bgr);
             
-            CameraPosState cam_state;
-            tracker.GetCameraPredictedPosState(&cam_state);
+            CameraStateVars cam_state;
+            tracker.GetCameraEstimatedVars(&cam_state);
 
             auto [w,h] = tracker.sal_pnt_patch_size_;
             for (SalPntId sal_pnt_id : tracker.GetSalientPoints())
@@ -1295,7 +1295,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
                 Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
                 Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
-                tracker.GetSalientPointPredictedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+                tracker.GetSalientPointEstimatedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
                 Ellipsoid3DWithCenter ellipsoid;
                 const Scalar ellisoid_cut_thr = 0.05;

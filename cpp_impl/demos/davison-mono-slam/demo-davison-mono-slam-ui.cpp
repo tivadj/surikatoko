@@ -495,7 +495,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
 
         Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
-        kalman_slam->GetSalientPointPredictedPosWithUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+        kalman_slam->GetSalientPointEstimatedPosWithUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
         std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
         glColor3fv(sal_pnt_color.data());
@@ -562,9 +562,10 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
 
         RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
 
-        std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
+        // orientation of schematic camera is taken from history
         if (ui_params.cam_orient_cfw_history != nullptr)
         {
+            std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
             RenderCameraTrajectory(*ui_params.cam_orient_cfw_history, actual_track_color, display_trajectory,
                 mid_cam_disp_type,
                 last_cam_disp_type);
@@ -575,13 +576,12 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
             Eigen::Matrix<Scalar, 3, 1> cam_pos;
             Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
             Eigen::Matrix<Scalar, 4, 1> cam_orient_quat_wfc;
-            kalman_slam->GetCameraPredictedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat_wfc);
+            kalman_slam->GetCameraEstimatedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat_wfc);
 
             Eigen::Matrix<Scalar, 3, 3> cam_orient_wfc;
             RotMatFromQuat(gsl::make_span<const Scalar>(cam_orient_quat_wfc.data(), 4), &cam_orient_wfc);
 
             RenderUncertaintyEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
-            //bool op = RenderUncertaintyEllipsoidBySampling(cam_pos, cam_pos_uncert, ellipsoid_cut_thr);
         }
 
         glPopMatrix();
@@ -955,7 +955,7 @@ void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D
     }
 }
 
-void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraPosState& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
+void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
     size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr)
 {
     // The set of ellipsoid 3D points, visible from given camera position, is in implicit form and to

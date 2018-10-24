@@ -144,7 +144,7 @@ void SceneVisualizationThread(UIThreadParams ui_params);
 void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr);
 
 /// Draw visible from given camera contour of ellipsoid.
-void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraPosState& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
+void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
     size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr);
 #endif
 
