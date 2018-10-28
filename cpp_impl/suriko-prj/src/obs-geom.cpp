@@ -11,6 +11,63 @@ namespace suriko
 //auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2 { return suriko::Point2(m); }
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3 { return suriko::Point3(m); }
 
+bool operator == (const Recti& lhs, const Recti& rhs)
+{
+    return
+        lhs.x == rhs.x &&
+        lhs.y == rhs.y &&
+        lhs.width == rhs.width &&
+        lhs.height == rhs.height;
+}
+
+std::ostream& operator<<(std::ostream& os, const Recti& r)
+{
+    return os << "("
+        << r.x << " "
+        << r.y << " "
+        << r.width << " "
+        << r.height << " )";
+}
+
+std::optional<Recti> IntersectRects(const Recti& a, const Recti& b)
+{
+    // check no crossing in horizontal direction
+    const Recti* left = &a;
+    const Recti* right = &b;
+    if (left->x > right->x)
+        std::swap(left, right);
+
+    if (left->Right() <= right->x)
+        return std::nullopt;
+
+    // check no crossing in vertical direction
+    const Recti* top = &a;
+    const Recti* bot = &b;
+    if (top->y > bot->y)
+        std::swap(top, bot);
+
+    if (top->Bottom() <= bot->y)
+        return std::nullopt;
+    
+    // now, there is certainly some non-empty crossing
+    auto x1 = right->x;
+    auto x2 = std::min(a.Right(), b.Right());
+    auto y1 = bot->y;
+    auto y2 = std::min(a.Bottom(), b.Bottom());
+    return RectFromSides(x1, y1, x2, y2);
+}
+
+Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom)
+{
+    Recti result{
+        a.x + left,
+        a.y + top,
+        a.width - (left + right),
+        a.height - (top + bottom)
+    };
+    return result;
+}
+
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform {
     SE3Transform result;
     result.R = rt.R.transpose();
@@ -798,6 +855,14 @@ bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw,
     return true;
 }
 
+RotatedEllipsoid3D GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid)
+{
+    RotatedEllipsoid3D result;
+    bool op = GetRotatedEllipsoid(ellipsoid, true, &result);
+    SRK_ASSERT(op);
+    return result;
+}
+
 RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipse)
 {
     // check symmetry
@@ -882,9 +947,11 @@ bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
 
     result->center = center;
     result->right_side = right_side;
-    if (!ValidateEllipse(*result)) // occur when ellipsoid 'behind' the camera
-        return false;
-    return true;
+    if (ValidateEllipse(*result))
+        return true;
+
+    // occur when ellipsoid 'behind' the camera
+    return false;
 }
 
 namespace internals

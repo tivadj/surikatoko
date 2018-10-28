@@ -52,15 +52,28 @@ public:
     Scalar& operator[] (size_t i)       { return mat_(i); };
 };
 
-struct Rect
+template <typename F>
+struct RectProto
 {
-    Scalar x, y, width, height;
+    F x, y, width, height;
+    int Right() const { return x + width; }
+    int Bottom() const { return y + height; }
 };
 
-struct Recti
+template <typename F>
+auto RectFromSides(F left, F top, F right, F bottom) -> RectProto<F>
 {
-    int x, y, width, height;
-};
+    return RectProto<F> {left, top, right - left, bottom - top};
+}
+
+using Rect = RectProto<Scalar>;
+using Recti = RectProto<int>;
+
+bool operator == (const Recti& lhs, const Recti& rhs);
+/// This is isued in GTest framework.
+std::ostream& operator<<(std::ostream& os, const Recti& r);
+std::optional<Recti> IntersectRects(const Recti& a, const Recti& b);
+Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom);
 
 struct Pointi
 {
@@ -321,6 +334,7 @@ void ExtractEllipsoidFromUncertaintyMat(
     Ellipsoid3DWithCenter* ellipsoid);
 
 bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw, RotatedEllipsoid3D* result);
+RotatedEllipsoid3D GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid);
 
 RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipsoid);
 
@@ -328,6 +342,7 @@ bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov);
 
 /// Camera axes are in XYZ=LUF (left, up, forward) mode. Camera is aligned with positive OZ direction.
 /// Camera plane (u,v) is defined by first two columns of camera orientation R (the third column is OZ direction).
+/// Ellipsoid must be in forefront of the camera, otherwise false is returned.
 /// source: "Perspective Projection of an Ellipsoid", David Eberly, GeometricTools, https://www.geometrictools.com/
 bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
     const Eigen::Matrix<Scalar, 3, 1>& cam_pos,

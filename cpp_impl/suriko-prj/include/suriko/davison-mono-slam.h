@@ -456,7 +456,7 @@ private:
     //inline SalPntInternal& GetSalPnt(SalPntId id);
     //inline const SalPntInternal& GetSalPnt(SalPntId id) const;
 
-    void LoadCameraPosDataFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const;
+    void LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const;
 
     void LoadSalientPointDataFromArray(gsl::span<const Scalar> src, SalientPointStateVars* result) const;
     SalientPointStateVars LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const;
@@ -574,6 +574,12 @@ private:
         SalPntProjectionIntermidVars *proj_hist) const;
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraStateVars& cam_state, const SalientPointStateVars& sal_pnt_vars, SalPntProjectionIntermidVars *proj_hist) const;
+
+    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
+    
+public:
+    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, FilterStageType filter_stage);
+private:
 
     void FixSymmetricMat(EigenDynMat* sym_mat) const;
 

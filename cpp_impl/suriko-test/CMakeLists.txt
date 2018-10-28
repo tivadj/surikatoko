@@ -4,6 +4,7 @@ add_executable(suriko-test
         main.cpp
         test-bundle-adj-kanatani.cpp
         test-eigen-helpers.cpp
+        test-geom.cpp
         test-obs-geom.cpp
         test-quaternion.cpp)
 

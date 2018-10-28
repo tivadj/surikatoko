@@ -6,6 +6,7 @@
 #include "suriko/approx-alg.h"
 #include "suriko/quat.h"
 #include "suriko/obs-geom.h"
+#include "suriko/opengl-helpers.h"
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/core/core.hpp> // cv::Mat
@@ -31,15 +32,6 @@ std::optional<WorkerChatMessage> PopMsgUnderLock(std::optional<WorkerChatMessage
     std::optional<WorkerChatMessage> result = *msg;
     *msg = std::nullopt;
     return result;
-}
-
-void LoadSE3TransformIntoOpengGLMat(const SE3Transform& cam_wfc, gsl::span<double> opengl_mat_by_col)
-{
-    Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::ColMajor>> opengl_mat(opengl_mat_by_col.data());
-    opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R.cast<double>();
-    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T.cast<double>();
-    opengl_mat.bottomLeftCorner<1, 3>().setZero();
-    opengl_mat(3, 3) = 1;
 }
 
 enum class CamDisplayType
@@ -521,6 +513,11 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
+    //glPushMatrix();
+    //std::array<double, 4*4>  hartley_zisserman_to_opengl_mat;
+    //GetOpenGLFromHartleyZissermanMat(gsl::make_span(hartley_zisserman_to_opengl_mat));
+    //glMultMatrixd(hartley_zisserman_to_opengl_mat.data());
+
     // world axes
     RenderAxes(1, 4);
 
@@ -555,6 +552,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
         std::array<double, 4 * 4> tracker_from_world_4x4_by_col{};
         const SE3Transform world_from_tracker = SE3Inv(ui_params.tracker_origin_from_world);
         LoadSE3TransformIntoOpengGLMat(world_from_tracker, tracker_from_world_4x4_by_col);
+
         glPushMatrix();
         glMultMatrixd(tracker_from_world_4x4_by_col.data());
 
@@ -894,15 +892,14 @@ std::shared_ptr<SceneVisualizationPangolinGui> SceneVisualizationPangolinGui::Ne
 
 void SceneVisualizationPangolinGui::SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, float back_dist)
 {
-    auto wfc = SE3Inv(tracker_origin_from_world);
     pangolin::OpenGlMatrix model_view_col_major;
 
     Eigen::Map< Eigen::Matrix<Scalar, 4, 4, Eigen::ColMajor>> eigen_mat(static_cast<Scalar*>(model_view_col_major.m));
-
     eigen_mat =
-        internals::SE3Mat(internals::RotMat(0, 1, 0, M_PI)) *  // to axis format of OpenGL
         internals::SE3Mat(Eigen::Matrix<Scalar, 3, 1>{0, 0, back_dist}) *
         internals::SE3Mat(tracker_origin_from_world.R, tracker_origin_from_world.T);
+
+    internals::ConvertAxesHartleyZissermanToOpenGL(gsl::make_span(model_view_col_major.m));
 
     view_state_3d_->SetModelViewMatrix(model_view_col_major);
 }
@@ -955,7 +952,7 @@ void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D
     }
 }
 
-void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
+void DrawEllipsoidContour(DavisonMonoSlam& tracker, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
     size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr)
 {
     // The set of ellipsoid 3D points, visible from given camera position, is in implicit form and to
@@ -964,21 +961,7 @@ void DrawEllipsoidContour(const DavisonMonoSlam& tracker, const CameraStateVars&
     // Instead, we project those contour 3D points onto the camera (z=1) and get the ellipse,
     // 3D points of which can be easily enumerated.
 
-    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
-    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
-
-    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
-    Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
-    Scalar lam = suriko::kCamPlaneZ;
-    Eigen::Matrix<Scalar, 3, 1> u = cam_wfc.leftCols<1>();
-    Eigen::Matrix<Scalar, 3, 1> v = cam_wfc.middleCols<1>(1);
-
-    Ellipse2DWithCenter ellipse_on_cam_plane;
-    bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam, &ellipse_on_cam_plane);
-    if (!op)
-        return;
-
-    RotatedEllipse2D rotated_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
+    RotatedEllipse2D rotated_ellipse = tracker.ProjectEllipsoidOnCameraOrApprox(ellipsoid, FilterStageType::Estimated);
 
     DrawDistortedEllipse(tracker, rotated_ellipse, dots_per_ellipse, sal_pnt_color_bgr, camera_image_bgr);
 }

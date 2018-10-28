@@ -512,7 +512,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
     if (!new_blobs.empty())
     {
         CameraStateVars cam_state;
-        LoadCameraPosDataFromArray(Span(estim_vars_, kCamStateComps), &cam_state);
+        LoadCameraStateVarsFromArray(Span(estim_vars_, kCamStateComps), &cam_state);
 
         for (auto blob_id : new_blobs)
         {
@@ -580,7 +580,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         const auto& Pprev = estim_vars_covar_;
 
         CameraStateVars cam_state;
-        LoadCameraPosDataFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
+        LoadCameraStateVarsFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
 
         Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_orient_wfc;
         RotMatFromQuat(gsl::make_span<const Scalar>(cam_state.orientation_wfc.data(), kQuat4), &cam_orient_wfc);
@@ -683,7 +683,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 
             // print norm of delta with gt (pos,orient)
             CameraStateVars cam_state_new;
-            LoadCameraPosDataFromArray(gsl::make_span<const Scalar>(estim_vars_.data(), kCamStateComps), &cam_state_new);
+            LoadCameraStateVarsFromArray(gsl::make_span<const Scalar>(estim_vars_.data(), kCamStateComps), &cam_state_new);
             Scalar d1 = (cam_orient_wfc_gt.T - cam_state_new.pos_w).norm();
             Scalar d2 = (cam_orient_wfc_quat - cam_state_new.orientation_wfc).norm();
             Scalar diff_gt = d1 + d2;
@@ -738,7 +738,7 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
             const EigenDynMat& Pprev = estim_vars_covar_;
 
             CameraStateVars cam_state;
-            LoadCameraPosDataFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
+            LoadCameraStateVarsFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
 
             Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_orient_wfc;
             RotMatFromQuat(gsl::make_span<const Scalar>(cam_state.orientation_wfc.data(), kQuat4), &cam_orient_wfc);
@@ -866,7 +866,7 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
                 const EigenDynMat& Pprev = estim_vars_covar_;
 
                 CameraStateVars cam_state;
-                LoadCameraPosDataFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
+                LoadCameraStateVarsFromArray(Span(derive_at_pnt, kCamStateComps), &cam_state);
 
                 Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_orient_wfc;
                 RotMatFromQuat(gsl::make_span<const Scalar>(cam_state.orientation_wfc.data(), kQuat4), &cam_orient_wfc);
@@ -1476,6 +1476,79 @@ suriko::Point2 DavisonMonoSlam::ProjectCameraPoint(const suriko::Point3& pnt_cam
     return result;
 }
 
+RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid,
+    const CameraStateVars& cam_state)
+{
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_wfc;
+    RotMatFromQuat(Span(cam_state.orientation_wfc), &cam_wfc);
+
+    SE3Transform se3_cam_wfc{ cam_wfc, cam_state.pos_w };
+    SE3Transform se3_cam_cfw = SE3Inv(se3_cam_wfc);
+
+    // approximate ellipsoid projection by projection of couple of points
+    RotatedEllipsoid3D rot_ellipsoid = GetRotatedEllipsoid(ellipsoid);
+
+    auto& tracker = *this;
+    auto project_on_cam = [&rot_ellipsoid, &se3_cam_cfw, &tracker](suriko::Point3 p_ellipse) ->suriko::Point2
+    {
+        Eigen::Matrix<Scalar, 3, 1> p_tracker = rot_ellipsoid.rot_mat_world_from_ellipse * p_ellipse.Mat();
+        suriko::Point3 p_cam = SE3Apply(se3_cam_cfw, p_tracker);
+        suriko::Point2 corner = tracker.ProjectCameraPoint(p_cam);
+        return corner;
+    };
+
+    std::array<suriko::Point3, 6> beacon_points = {
+        suriko::Point3 {rot_ellipsoid.semi_axes[0], 0, 0},
+        suriko::Point3 {0, rot_ellipsoid.semi_axes[1], 0},
+        suriko::Point3 {-rot_ellipsoid.semi_axes[0], 0, 0},
+        suriko::Point3 {0, -rot_ellipsoid.semi_axes[1], 0},
+        suriko::Point3 {0, 0, rot_ellipsoid.semi_axes[2]},
+        suriko::Point3 {0, 0, -rot_ellipsoid.semi_axes[2]}
+    };
+
+    // for now, just form a circle which encompass all projected points
+    suriko::Point2 ellip_center = project_on_cam(suriko::Point3{ 0, 0, 0 });
+    Scalar rad = 0;
+
+    for (const auto& p : beacon_points)
+    {
+        suriko::Point2 corner = project_on_cam(p);
+        Scalar dist = (corner.Mat() - ellip_center.Mat()).norm();
+        rad = std::max(rad, dist);
+    }
+
+    RotatedEllipse2D result;
+    result.center_e = ellip_center.Mat();
+    result.semi_axes = Eigen::Matrix<Scalar, 2, 1>{ rad, rad };
+    // axes of circle are always may be treated as aligned with the world axes
+    result.rot_mat_world_from_ellipse = Eigen::Matrix<Scalar, 2, 2>::Identity();
+    return result;
+}
+
+RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid,
+    FilterStageType filter_stage)
+{
+    CameraStateVars cam_state;
+    GetCameraStateVars(filter_stage, &cam_state);
+
+    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
+    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
+
+    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
+    Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
+    Scalar lam = suriko::kCamPlaneZ;
+    Eigen::Matrix<Scalar, 3, 1> u = cam_wfc.leftCols<1>();
+    Eigen::Matrix<Scalar, 3, 1> v = cam_wfc.middleCols<1>(1);
+
+    Ellipse2DWithCenter ellipse_on_cam_plane;
+    bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam, &ellipse_on_cam_plane);
+    if (op)
+    {
+        return GetRotatedEllipse2D(ellipse_on_cam_plane);
+    }
+    return ApproxProjectEllipsoidOnCameraByBeaconPoints(ellipsoid, cam_state);
+}
+
 void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(const SalPntInternal& sal_pnt,
     const CameraStateVars& cam_state,
     const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
@@ -1583,7 +1656,7 @@ void DavisonMonoSlam::FiniteDiff_hd_by_camera_state(const EigenDynVec& derive_at
         cam_state[var_ind] += finite_diff_eps;
 
         CameraStateVars cam_state_right;
-        LoadCameraPosDataFromArray(gsl::make_span<const Scalar>(cam_state.data(), kCamStateComps), &cam_state_right);
+        LoadCameraStateVarsFromArray(gsl::make_span<const Scalar>(cam_state.data(), kCamStateComps), &cam_state_right);
 
         Eigen::Matrix<Scalar, kPixPosComps, 1> hd_right = ProjectInternalSalientPoint(cam_state_right, sal_pnt, nullptr);
         
@@ -1591,7 +1664,7 @@ void DavisonMonoSlam::FiniteDiff_hd_by_camera_state(const EigenDynVec& derive_at
         cam_state[var_ind] -= 2 * finite_diff_eps;
 
         CameraStateVars cam_state_left;
-        LoadCameraPosDataFromArray(gsl::make_span<const Scalar>(cam_state.data(), kCamStateComps), &cam_state_left);
+        LoadCameraStateVarsFromArray(gsl::make_span<const Scalar>(cam_state.data(), kCamStateComps), &cam_state_left);
 
         Eigen::Matrix<Scalar, kPixPosComps, 1> hd_left = ProjectInternalSalientPoint(cam_state_left, sal_pnt, nullptr);
         hd_by_xc->middleCols<1>(var_ind) = (hd_right - hd_left) / (2 * finite_diff_eps);
@@ -1684,7 +1757,7 @@ void DavisonMonoSlam::FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> 
 
         CameraStateVars cam_right;
         auto cam_right_array = Span(mut_state);
-        LoadCameraPosDataFromArray(cam_right_array, &cam_right);
+        LoadCameraStateVarsFromArray(cam_right_array, &cam_right);
 
         // note, we do  not normalize quaternion after applying motion model because the finite difference increment which
         // has been applied to the state vector, breaks unity of quaternions. Then normalization of a quaternion propagates
@@ -1699,7 +1772,7 @@ void DavisonMonoSlam::FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> 
 
         CameraStateVars cam_left;
         auto cam_left_array = Span(mut_state);
-        LoadCameraPosDataFromArray(cam_left_array, &cam_left);
+        LoadCameraStateVarsFromArray(cam_left_array, &cam_left);
 
         Eigen::Matrix<Scalar, kCamStateComps, 1> value_left;
         PredictCameraMotionByKinematicModel(cam_left_array, Span(value_left), nullptr, norm_quat);
@@ -1860,7 +1933,7 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalPntFaceRect(const EigenDyn
         return std::nullopt;
 
     CameraStateVars cam_state;
-    LoadCameraPosDataFromArray(Span(src_estim_vars), &cam_state);
+    LoadCameraStateVarsFromArray(Span(src_estim_vars), &cam_state);
 
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_wfc;
     RotMatFromQuat(Span(cam_state.orientation_wfc), &cam_wfc);
@@ -1929,25 +2002,7 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::GetPredictedSalPntFaceRect(SalPn
     return GetSalPntFaceRect(src_estim_vars, id);
 }
 
-void DavisonMonoSlam::GetCameraStateVars(FilterStageType filter_step, CameraStateVars* result)
-{
-    EigenDynVec* src_estim_vars;
-    EigenDynMat* src_estim_vars_covar;
-    std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterState(filter_step);
-    LoadCameraPosDataFromArray(gsl::make_span<const Scalar>(src_estim_vars->data(), kCamStateComps), result);
-}
-
-void DavisonMonoSlam::GetCameraEstimatedVars(CameraStateVars* result)
-{
-    GetCameraStateVars(FilterStageType::Estimated, result);
-}
-
-void DavisonMonoSlam::GetCameraPredictedVars(CameraStateVars* result)
-{
-    GetCameraStateVars(FilterStageType::Predicted, result);
-}
-
-void DavisonMonoSlam::LoadCameraPosDataFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const
+void DavisonMonoSlam::LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const
 {
     DependsOnCameraPosPackOrder();
     CameraStateVars& c = *result;
@@ -1964,6 +2019,24 @@ void DavisonMonoSlam::LoadCameraPosDataFromArray(gsl::span<const Scalar> src, Ca
     c.angular_velocity_c[0] = src[10];
     c.angular_velocity_c[1] = src[11];
     c.angular_velocity_c[2] = src[12];
+}
+
+void DavisonMonoSlam::GetCameraStateVars(FilterStageType filter_step, CameraStateVars* result)
+{
+    EigenDynVec* src_estim_vars;
+    EigenDynMat* src_estim_vars_covar;
+    std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterState(filter_step);
+    LoadCameraStateVarsFromArray(gsl::make_span<const Scalar>(src_estim_vars->data(), kCamStateComps), result);
+}
+
+void DavisonMonoSlam::GetCameraEstimatedVars(CameraStateVars* result)
+{
+    GetCameraStateVars(FilterStageType::Estimated, result);
+}
+
+void DavisonMonoSlam::GetCameraPredictedVars(CameraStateVars* result)
+{
+    GetCameraStateVars(FilterStageType::Predicted, result);
 }
 
 void DavisonMonoSlam::GetCameraPosAndOrientationWithUncertainty(FilterStageType filter_stage,
@@ -2212,7 +2285,7 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError() const
     const auto& src_estim_vars = predicted_estim_vars_;
 
     CameraStateVars cam_state;
-    LoadCameraPosDataFromArray(Span(src_estim_vars, kCamStateComps), &cam_state);
+    LoadCameraStateVarsFromArray(Span(src_estim_vars, kCamStateComps), &cam_state);
 
     Scalar err_sum = 0;
     for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
@@ -2245,4 +2318,5 @@ bool DavisonMonoSlam::DebugPath(DebugPathEnum debug_path)
 {
     return (s_debug_path_ & debug_path) != DebugPathEnum::DebugNone;
 }
+
 }
