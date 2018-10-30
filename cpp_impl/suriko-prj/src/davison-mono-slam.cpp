@@ -466,7 +466,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
     // initial status of salient point is 'not observed'
     // later we will overwrite status for the matched salient points as 'matched'
     for (auto sal_pnt_id : sal_pnts_as_ids_)
-        GetSalPnt(sal_pnt_id).track_status = SalPntTrackStatus::Unobserved;
+        GetSalientPoint(sal_pnt_id).track_status = SalPntTrackStatus::Unobserved;
 
     corners_matcher_->AnalyzeFrame(frame_ind, image);
 
@@ -477,13 +477,10 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
     for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
     {
         Point2 coord = corners_matcher_->GetBlobCoord(blob_id);
-        SalPntInternal& sal_pnt = GetSalPnt(sal_pnt_id);
+        SalPntInternal& sal_pnt = GetSalientPoint(sal_pnt_id);
         sal_pnt.track_status = SalPntTrackStatus::Matched;
-        sal_pnt.pixel_coord_real = coord.Mat();
-
-        int rad_x_int = sal_pnt_patch_size_[0] / 2;
-        int rad_y_int = sal_pnt_patch_size_[1] / 2;
-        sal_pnt.template_top_left_int = Eigen::Matrix<int, kPixPosComps, 1> { coord[0] - rad_x_int, coord[1] - rad_y_int};
+        sal_pnt.pixel_coord_real = coord;
+        sal_pnt.template_top_left_int = TemplateTopLeftInt(coord);;
 
         latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
@@ -506,6 +503,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
         break;
     }
 
+
     // eagerly try allocate new salient points
     std::vector<CornersMatcherBlobId> new_blobs;
     this->corners_matcher_->RecruitNewSalientPoints(frame_ind, image, sal_pnts_as_ids_, matched_sal_pnts, &new_blobs);
@@ -526,7 +524,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
 
             ImageFrame patch_template = corners_matcher_->GetBlobPatchTemplate(blob_id, image);
 
-            SalPntId sal_pnt_id = AddSalientPoint(cam_state, coord.Mat(), patch_template, pnt_inv_dist_gt);
+            SalPntId sal_pnt_id = AddSalientPoint(cam_state, coord, patch_template, pnt_inv_dist_gt);
             latest_frame_sal_pnts_.insert(sal_pnt_id);
             corners_matcher_->OnSalientPointIsAssignedToBlobId(sal_pnt_id, blob_id, image);
         }
@@ -628,7 +626,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         {
             ++obs_sal_pnt_ind;
 
-            const SalPntInternal& sal_pnt = GetSalPnt(obs_sal_pnt_id);
+            const SalPntInternal& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
             Point2 corner_pix = sal_pnt.pixel_coord_real;
             zk.middleRows<kPixPosComps>(obs_sal_pnt_ind * kPixPosComps) = corner_pix.Mat();
 
@@ -731,7 +729,7 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
         Scalar diff_cov_total = 0;
         for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
         {
-            const SalPntInternal& sal_pnt = GetSalPnt(obs_sal_pnt_id);
+            const SalPntInternal& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
             // the point where derivatives are calculated at
             const EigenDynVec& derive_at_pnt = estim_vars_;
@@ -853,7 +851,7 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
 
         for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
         {
-            const SalPntInternal& sal_pnt = GetSalPnt(obs_sal_pnt_id);
+            const SalPntInternal& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
             // get observation corner
             Point2 corner_pix = sal_pnt.pixel_coord_real;
@@ -1151,11 +1149,8 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraStateVars
     sal_pnt.estim_vars_ind = sal_pnt_var_ind;
     sal_pnt.sal_pnt_ind = old_sal_pnts_count;
     sal_pnt.track_status = SalPntTrackStatus::New;
-    sal_pnt.pixel_coord_real = hd;
-    sal_pnt.template_top_left_int = Eigen::Matrix<int, kPixPosComps, 1>{
-        hd[0] - sal_pnt_patch_size_[0] / 2,
-        hd[1] - sal_pnt_patch_size_[1] / 2
-    };
+    sal_pnt.pixel_coord_real = corner_pix;
+    sal_pnt.template_top_left_int = TemplateTopLeftInt(corner_pix);
     sal_pnt.template_in_first_frame = std::move(patch_template.gray);
 #if defined(SRK_DEBUG)
     sal_pnt.template_rgb_in_first_frame_debug = std::move(patch_template.rgb_debug);
@@ -1167,9 +1162,9 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraStateVars
     return sal_pnt_id;
 }
 
-Eigen::Matrix<Scalar, kPixPosComps, 1> DavisonMonoSlam::GetSalPntPixelCoord(SalPntId sal_pnt_id) const
+suriko::Point2 DavisonMonoSlam::GetSalPntPixelCoord(SalPntId sal_pnt_id) const
 {
-    return GetSalPnt(sal_pnt_id).pixel_coord_real;
+    return GetSalientPoint(sal_pnt_id).pixel_coord_real;
 }
 
 void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2 corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const
@@ -1438,15 +1433,15 @@ Eigen::Matrix<Scalar, kPixPosComps,1> DavisonMonoSlam::ProjectCameraSalientPoint
     const Eigen::Matrix<Scalar, kEucl3, 1>& pnt_camera,
     SalPntProjectionIntermidVars *proj_hist) const
 {
-    // hc(X,Y,Z)->hu(uu,vu): project 3D salient point in camera-k onto image (pixels)
-    //const auto& sal_pnt_cam = sal_pnt_camk_scaled;
-    const auto& sal_pnt_cam = pnt_camera;
-    Eigen::Matrix<Scalar, kPixPosComps, 1> hu;
-    
     Scalar Cx = cam_intrinsics_.principal_point_pix[0];
     Scalar Cy = cam_intrinsics_.principal_point_pix[1];
     std::array<Scalar, 2> f_pix = cam_intrinsics_.FocalLengthPix();
 
+    // hc(X,Y,Z)->hu(uu,vu): project 3D salient point in camera-k onto image (pixels)
+    //const auto& sal_pnt_cam = sal_pnt_camk_scaled;
+    const auto& sal_pnt_cam = pnt_camera;
+    
+    Eigen::Matrix<Scalar, kPixPosComps, 1> hu;
     hu[0] = Cx - f_pix[0] * sal_pnt_cam[0] / sal_pnt_cam[2];
     hu[1] = Cy - f_pix[1] * sal_pnt_cam[1] / sal_pnt_cam[2];
 
@@ -1526,11 +1521,8 @@ RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(c
 }
 
 RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid,
-    FilterStageType filter_stage)
+    const CameraStateVars& cam_state)
 {
-    CameraStateVars cam_state;
-    GetCameraStateVars(filter_stage, &cam_state);
-
     Eigen::Matrix<Scalar, 3, 3> cam_wfc;
     RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
 
@@ -1637,7 +1629,7 @@ void DavisonMonoSlam::Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
         Hrowblock.resize(Eigen::NoChange, n);
         Hrowblock.setZero();
 
-        const SalPntInternal& sal_pnt = GetSalPnt(obs_sal_pnt_id);
+        const SalPntInternal& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
         Deriv_Hrowblock_by_estim_vars(sal_pnt, cam_state, cam_orient_wfc, derive_at_pnt, &Hrowblock);
 
         H.middleRows<kPixPosComps>(obs_sal_pnt_ind*kPixPosComps) = Hrowblock;
@@ -1898,7 +1890,7 @@ void DavisonMonoSlam::LoadSalientPointDataFromArray(gsl::span<const Scalar> src,
 DavisonMonoSlam::SalientPointStateVars DavisonMonoSlam::LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const
 {
     DavisonMonoSlam::SalientPointStateVars result;
-    const SalPntInternal& sal_pnt = GetSalPnt(sal_pnt_id);
+    const SalPntInternal& sal_pnt = GetSalientPoint(sal_pnt_id);
     LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &result);
     return result;
 }
@@ -1909,23 +1901,23 @@ size_t DavisonMonoSlam::SalientPointOffset(size_t sal_pnt_ind) const
     return kCamStateComps + sal_pnt_ind * kSalientPointComps;
 }
 
-SalPntInternal& DavisonMonoSlam::GetSalPnt(SalPntId id)
+SalPntInternal& DavisonMonoSlam::GetSalientPoint(SalPntId id)
 {
     return *id.sal_pnt_internal;
 }
 
-const SalPntInternal& DavisonMonoSlam::GetSalPnt(SalPntId id) const
+const SalPntInternal& DavisonMonoSlam::GetSalientPoint(SalPntId id) const
 {
     return *id.sal_pnt_internal;
 }
 
-std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalPntFaceRect(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const
+std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalientPointFaceRect(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const
 {
     // Let B be a plane through the salient point, orthogonal to direction from camera to this salient point.
     // Emit four rays from the camera center to four corners of the image patch.
     // These rays intersect plane B in four 3D points, which is the 3D boundary for the salient point's patch template.
 
-    const SalPntInternal& sal_pnt = GetSalPnt(sal_pnt_id);
+    const SalPntInternal& sal_pnt = GetSalientPoint(sal_pnt_id);
 
     const SalientPointStateVars sal_pnt_vars = LoadSalientPointDataFromSrcEstimVars(src_estim_vars, sal_pnt_id);
 
@@ -1945,7 +1937,7 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalPntFaceRect(const EigenDyn
 
     // select integer 2D boundary of a template patch on the image.
     using RealCorner = Eigen::Matrix<Scalar, 2, 1>;
-    auto top_left = RealCorner{ sal_pnt.template_top_left_int[0], sal_pnt.template_top_left_int[1] };
+    auto top_left = RealCorner{ sal_pnt.template_top_left_int.x, sal_pnt.template_top_left_int.y };
     auto bot_right = RealCorner{
         top_left[0] + sal_pnt_patch_size_[0] ,
         top_left[1] + sal_pnt_patch_size_[1]
@@ -1999,7 +1991,7 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalPntFaceRect(const EigenDyn
 std::optional<SalPntRectFacet> DavisonMonoSlam::GetPredictedSalPntFaceRect(SalPntId id) const
 {
     const auto& src_estim_vars = predicted_estim_vars_;
-    return GetSalPntFaceRect(src_estim_vars, id);
+    return GetSalientPointFaceRect(src_estim_vars, id);
 }
 
 void DavisonMonoSlam::LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const
@@ -2290,7 +2282,7 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError() const
     Scalar err_sum = 0;
     for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
     {
-        const SalPntInternal& sal_pnt = GetSalPnt(obs_sal_pnt_id);
+        const SalPntInternal& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
         SalientPointStateVars sal_pnt_vars;
         LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &sal_pnt_vars);
@@ -2304,6 +2296,16 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError() const
 
     return err_sum;
 }
+
+suriko::Pointi DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2& center) const
+{
+    int rad_x = sal_pnt_patch_size_[0] / 2;
+    int rad_y = sal_pnt_patch_size_[1] / 2;
+    return suriko::Pointi{
+        static_cast<int>(center[0] - rad_x),
+        static_cast<int>(center[1] - rad_y) };
+}
+
 void DavisonMonoSlam::FixSymmetricMat(EigenDynMat* sym_mat) const
 {
     auto& m = *sym_mat;

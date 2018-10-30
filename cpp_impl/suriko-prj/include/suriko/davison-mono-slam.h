@@ -68,9 +68,9 @@ struct SalPntInternal
     size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
 
     // The distorted coordinates in the current camera, corresponds to the center of the image template.
-    Eigen::Matrix<Scalar, kPixPosComps, 1> pixel_coord_real;
+    suriko::Point2 pixel_coord_real;
 
-    Eigen::Matrix<int, kPixPosComps, 1> template_top_left_int;
+    suriko::Pointi template_top_left_int;
 
     SalPntTrackStatus track_status;
 
@@ -82,16 +82,9 @@ struct SalPntInternal
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> OffsetFromTopLeft() const
     {
-        return pixel_coord_real - Eigen::Matrix<Scalar, kPixPosComps, 1>{template_top_left_int[0], template_top_left_int[1]};
+        return pixel_coord_real.Mat() - Eigen::Matrix<Scalar, kPixPosComps, 1>{template_top_left_int.x, template_top_left_int.y};
     }
 };
-
-static Pointi TemplateTopLeft(int center_x, int center_y, int templ_width, int templ_height)
-{
-    int rad_x = templ_width / 2;
-    int rad_y = templ_height / 2;
-    return Pointi{ center_x - rad_x, center_y - rad_y };
-}
 
 /// Represents publicly transferable key to refer to a salient point.
 /// It is valid even if other salient points are removed or new salient points added.
@@ -349,7 +342,7 @@ public:
     void SetCamera(const SE3Transform& cam_pos_cfw, Scalar estim_var_init_std);
     
     void SetInputNoiseStd(Scalar input_noise_std);
-    
+
     void ProcessFrame(size_t frame_ind, const ImageFrame& image);
 
     void PredictEstimVarsHelper();
@@ -367,7 +360,7 @@ public:
 
     void GetCameraEstimatedVarsUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
 
-    Eigen::Matrix<Scalar, kPixPosComps, 1> GetSalPntPixelCoord(SalPntId sal_pnt_id) const;
+    suriko::Point2 GetSalPntPixelCoord(SalPntId sal_pnt_id) const;
 
     void GetSalientPointEstimatedPosWithUncertainty(size_t salient_pnt_ind,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
@@ -383,8 +376,10 @@ public:
 
     const std::set<SalPntId>& GetSalientPoints() const;
 
-    SalPntInternal& GetSalPnt(SalPntId id);
-    const SalPntInternal& GetSalPnt(SalPntId id) const;
+    SalPntInternal& GetSalientPoint(SalPntId id);
+    const SalPntInternal& GetSalientPoint(SalPntId id) const;
+
+    suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center) const;
 
     /// This returns null if the salient point is in the infinity and finite coordinates of patch template can't be calculated.
     std::optional<SalPntRectFacet> GetPredictedSalPntFaceRect(SalPntId id) const;
@@ -472,7 +467,7 @@ private:
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
-    std::optional<SalPntRectFacet> GetSalPntFaceRect(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const;
+    std::optional<SalPntRectFacet> GetSalientPointFaceRect(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const;
 
     void PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const;
 
@@ -578,7 +573,7 @@ private:
     RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
     
 public:
-    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, FilterStageType filter_stage);
+    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
 private:
 
     void FixSymmetricMat(EigenDynMat* sym_mat) const;

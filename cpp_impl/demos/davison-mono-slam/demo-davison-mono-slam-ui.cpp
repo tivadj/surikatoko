@@ -389,7 +389,7 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
     if (!rect.has_value())
         return;
 
-    const SalPntInternal& sal_pnt = kalman_slam->GetSalPnt(sal_pnt_id);
+    const SalPntInternal& sal_pnt = kalman_slam->GetSalientPoint(sal_pnt_id);
 
     bool in_virtual_mode = sal_pnt.template_in_first_frame.empty();
     if (in_virtual_mode)
@@ -481,7 +481,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
 {
     for (DavisonMonoSlam::SalPntId sal_pnt_id : kalman_slam->GetSalientPoints())
     {
-        const SalPntInternal& sal_pnt = kalman_slam->GetSalPnt(sal_pnt_id);
+        const SalPntInternal& sal_pnt = kalman_slam->GetSalientPoint(sal_pnt_id);
 
         const size_t sal_pnt_ind = sal_pnt.sal_pnt_ind;
 
@@ -940,7 +940,7 @@ void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D
         // due to distortion, the pixel coordinates of contour will not form an ellipse
         // hence usage of 2D ellipse drawing functions is inappropriate
         // instead we just project 3D points onto the image
-        suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(suriko::Point3(pos_camera[0], pos_camera[1], 1));
+        suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(suriko::Point3(pos_camera[0], pos_camera[1], kCamPlaneZ));
 
         cv::Point pnt_int{ static_cast<int>(pnt_pix[0]), static_cast<int>(pnt_pix[1]) };
 
@@ -961,8 +961,7 @@ void DrawEllipsoidContour(DavisonMonoSlam& tracker, const CameraStateVars& cam_s
     // Instead, we project those contour 3D points onto the camera (z=1) and get the ellipse,
     // 3D points of which can be easily enumerated.
 
-    RotatedEllipse2D rotated_ellipse = tracker.ProjectEllipsoidOnCameraOrApprox(ellipsoid, FilterStageType::Estimated);
-
+    RotatedEllipse2D rotated_ellipse = tracker.ProjectEllipsoidOnCameraOrApprox(ellipsoid, cam_state);
     DrawDistortedEllipse(tracker, rotated_ellipse, dots_per_ellipse, sal_pnt_color_bgr, camera_image_bgr);
 }
 #endif

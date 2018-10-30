@@ -13,7 +13,7 @@ class Point2 {
     Eigen::Matrix<Scalar,2,1> mat_;
 public:
     Point2() = default;
-    Point2(const Eigen::Matrix<Scalar, 2, 1> &m) : mat_(m) {}
+    explicit Point2(const Eigen::Matrix<Scalar, 2, 1> &m) : mat_(m) {}
 
     template <typename F0, typename F1>
     Point2(const F0 &x, const F1 &y) {
@@ -28,6 +28,12 @@ public:
 
     Scalar  operator[] (size_t i) const { return mat_(i); };
     Scalar& operator[] (size_t i)       { return mat_(i); };
+};
+
+struct Pointi
+{
+    int x, y;
+    auto Mat() const { return Eigen::Matrix<int, 2, 1> { x, y}; }
 };
 
 //auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2;
@@ -74,11 +80,6 @@ bool operator == (const Recti& lhs, const Recti& rhs);
 std::ostream& operator<<(std::ostream& os, const Recti& r);
 std::optional<Recti> IntersectRects(const Recti& a, const Recti& b);
 Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom);
-
-struct Pointi
-{
-    int x, y;
-};
 
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
 
