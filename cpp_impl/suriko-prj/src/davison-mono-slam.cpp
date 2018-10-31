@@ -1529,13 +1529,16 @@ RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const Ellipso
     RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
 
     Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
-    Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
-    Scalar lam = suriko::kCamPlaneZ;
     Eigen::Matrix<Scalar, 3, 1> u = cam_wfc.leftCols<1>();
     Eigen::Matrix<Scalar, 3, 1> v = cam_wfc.middleCols<1>(1);
 
+    // convert camera plane n*x=lam into world coordinates
+    Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
+    Scalar lam_cam = suriko::kCamPlaneZ;
+    Scalar lam_world = cam_state.pos_w.transpose() * n + lam_cam;
+
     Ellipse2DWithCenter ellipse_on_cam_plane;
-    bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam, &ellipse_on_cam_plane);
+    bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam_world, &ellipse_on_cam_plane);
     if (op)
     {
         return GetRotatedEllipse2D(ellipse_on_cam_plane);
