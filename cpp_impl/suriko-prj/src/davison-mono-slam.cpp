@@ -1486,10 +1486,12 @@ RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(c
     auto& tracker = *this;
     auto project_on_cam = [&rot_ellipsoid, &se3_cam_cfw, &tracker](suriko::Point3 p_ellipse) ->suriko::Point2
     {
-        Eigen::Matrix<Scalar, 3, 1> p_tracker = rot_ellipsoid.rot_mat_world_from_ellipse * p_ellipse.Mat();
+        Eigen::Matrix<Scalar, 3, 1> p_tracker = rot_ellipsoid.rot_mat_world_from_ellipse * (rot_ellipsoid.center_e + p_ellipse.Mat());
         suriko::Point3 p_cam = SE3Apply(se3_cam_cfw, p_tracker);
-        suriko::Point2 corner = tracker.ProjectCameraPoint(p_cam);
-        return corner;
+        
+        // project point onto camera plane Z=1, but do NOT convert into image pixel coordinates
+        suriko::Point2 result{ p_cam[0] / p_cam[2], p_cam[1] / p_cam[2] };
+        return result;
     };
 
     std::array<suriko::Point3, 6> beacon_points = {
