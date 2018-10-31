@@ -140,6 +140,8 @@ public:
 /// (alpha_x = focal_length_x_meters / pixel_width_meters)
 struct CameraIntrinsicParams
 {
+    std::array<int,2> image_size;  // [width, height] image resolution
+
     std::array<Scalar, 2> principal_point_pix; // [Cx,Cy] in pixels
 
     Scalar focal_length_mm;  // =f, focal length in millimiters

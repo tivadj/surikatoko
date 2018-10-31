@@ -64,7 +64,7 @@ void RenderAxes(Scalar axis_seg_len, float line_width)
     glLineWidth(old_line_width);
 }
 
-void RenderSchematicCamera(const SE3Transform& cam_wfc, const std::array<float, 3>& track_color, CamDisplayType cam_disp_type)
+void RenderSchematicCamera(const SE3Transform& cam_wfc, const CameraIntrinsicParams& cam_instrinsics, const std::array<float, 3>& track_color, CamDisplayType cam_disp_type)
 {
     if (cam_disp_type == CamDisplayType::None)
         return;
@@ -77,15 +77,20 @@ void RenderSchematicCamera(const SE3Transform& cam_wfc, const std::array<float, 
     glMultMatrixd(opengl_mat_by_col.data());
 
     // draw camera in the local coordinates
-    constexpr Scalar ax = 0.4;
-    constexpr Scalar hw = ax / 3; // halfwidth
-    constexpr double cam_skel[5][3] = {
+    constexpr Scalar cam_z = kCamPlaneZ;
+
+    std::array<Scalar, 2> alpha = cam_instrinsics.FocalLengthPix();
+    Scalar half_width = static_cast<Scalar>(cam_instrinsics.image_size[0] / 2.0) / alpha[0];
+    Scalar half_height = static_cast<Scalar>(cam_instrinsics.image_size[0] / 2.0) / alpha[1];
+
+    double cam_skel[5][3] = {
         {0, 0, 0},
-        {hw, hw, ax}, // left top
-        {-hw, hw, ax }, // right top
-        {-hw, -hw, ax}, // right bot
-        {hw, -hw, ax}, // left bot
+        {half_width, half_height, cam_z}, // left top
+        {-half_width, half_height, cam_z }, // right top
+        {-half_width, -half_height, cam_z}, // right bot
+        {half_width, -half_height, cam_z}, // left bot
     };
+
 
     if (cam_disp_type == CamDisplayType::Dot)
     {
@@ -97,7 +102,7 @@ void RenderSchematicCamera(const SE3Transform& cam_wfc, const std::array<float, 
     }
     else if (cam_disp_type == CamDisplayType::Schematic)
     {
-        RenderAxes(ax, 2);
+        RenderAxes(cam_z, 2);
 
         glColor3fv(track_color.data());
         glLineWidth(1);
@@ -322,6 +327,7 @@ bool RenderUncertaintyEllipsoidBySampling(const Eigen::Matrix<Scalar, 3, 1>& cam
 }
 
 void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
+    const CameraIntrinsicParams& cam_instrinsics,
     const std::array<GLfloat, 3>& track_color,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
@@ -349,9 +355,9 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
 
         bool last = i == gt_cam_orient_cfw.size() - 1;
         if (last)
-            RenderSchematicCamera(cam_wfc, track_color, last_cam_disp_type);
+            RenderSchematicCamera(cam_wfc, cam_instrinsics, track_color, last_cam_disp_type);
         else
-            RenderSchematicCamera(cam_wfc, track_color, mid_cam_disp_type);
+            RenderSchematicCamera(cam_wfc, cam_instrinsics, track_color, mid_cam_disp_type);
 
         cam_pos_world_prev = cam_pos_world;
         cam_pos_world_prev_inited = true;
@@ -505,7 +511,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
     }
 }
 
-void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
+void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar ellipsoid_cut_thr,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
     CamDisplayType last_cam_disp_type,
@@ -526,7 +532,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
     {
         std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
         CamDisplayType gt_last_camera = CamDisplayType::None;
-        RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, track_color, display_trajectory,
+        RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, cam_instrinsics, track_color, display_trajectory,
             mid_cam_disp_type,
             gt_last_camera);
     }
@@ -564,7 +570,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
         if (ui_params.cam_orient_cfw_history != nullptr)
         {
             std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
-            RenderCameraTrajectory(*ui_params.cam_orient_cfw_history, actual_track_color, display_trajectory,
+            RenderCameraTrajectory(*ui_params.cam_orient_cfw_history, cam_instrinsics, actual_track_color, display_trajectory,
                 mid_cam_disp_type,
                 last_cam_disp_type);
         }
@@ -678,7 +684,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
 
     CamDisplayType last_cam_disp_type = CamDisplayType::Schematic;
 
-    RenderScene(ui_params, ui_params.kalman_slam, ui_params.ellipsoid_cut_thr,
+    RenderScene(ui_params, ui_params.kalman_slam, cam_instrinsics_, ui_params.ellipsoid_cut_thr,
                 display_trajectory,
                 mid_cam_disp_type,
                 last_cam_disp_type,

@@ -110,7 +110,8 @@ public:
 
     std::chrono::milliseconds ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(1000);  // makes ui thread more 'lightweight'
     std::chrono::milliseconds ui_loop_prolong_period_ = std::chrono::milliseconds(3000);  // time from user input till ui loop finishes
-    size_t dots_per_uncert_ellipse_ = 12;
+    size_t dots_per_uncert_ellipse_ = 4;
+    CameraIntrinsicParams cam_instrinsics_;
 private:
     bool got_user_input_ = false;  // indicates that a user made some input (pressed a key or clicked a mouse button)
     std::optional<int> key_;

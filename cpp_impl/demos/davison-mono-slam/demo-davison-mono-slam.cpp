@@ -985,9 +985,15 @@ DEFINE_double(camera_princip_point_x, 162.0, "");
 DEFINE_double(camera_princip_point_y, 125.0, "");
 DEFINE_double(camera_focal_length_pix_x, 195.0, "");
 DEFINE_double(camera_focal_length_pix_y, 195.0, "");
-DEFINE_double(camera_init_pos_x, 0.0, "");
-DEFINE_double(camera_init_pos_y, 0.0, "");
-DEFINE_double(camera_init_pos_z, 0.0, "");
+DEFINE_double(camera_look_from_x, 0.0, "");
+DEFINE_double(camera_look_from_y, 0.0, "");
+DEFINE_double(camera_look_from_z, 0.0, "");
+DEFINE_double(camera_look_to_x, 0.0, "");
+DEFINE_double(camera_look_to_y, 0.0, "");
+DEFINE_double(camera_look_to_z, 1.0, "");
+DEFINE_double(camera_up_x, 0.0, "");
+DEFINE_double(camera_up_y, 1.0, "");
+DEFINE_double(camera_up_z, 0.0, "");
 
 int DavisonMonoSlamDemo(int argc, char* argv[])
 {
@@ -1064,9 +1070,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     LOG(INFO) << "frames_count=" << frames_count;
 #endif
 
-    std::array<size_t, 2> img_size = { FLAGS_camera_image_width, FLAGS_camera_image_height };
-    LOG(INFO) << "img_size=[" << img_size[0] << "," << img_size[1] << "] pix";
-
     // focal_len_pix = focal_len_mm / pixel_size_mm
     std::array<Scalar, 2> foc_len_pix = { FLAGS_camera_focal_length_pix_x, FLAGS_camera_focal_length_pix_y };
 
@@ -1077,10 +1080,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     float pix_size_x = focal_length_mm / foc_len_pix[0];
 
     CameraIntrinsicParams cam_intrinsics;
+    cam_intrinsics.image_size = { FLAGS_camera_image_width, FLAGS_camera_image_height };
     cam_intrinsics.principal_point_pix = { FLAGS_camera_princip_point_x, FLAGS_camera_princip_point_y };
     cam_intrinsics.focal_length_mm = focal_length_mm;
     cam_intrinsics.pixel_size_mm = { pix_size_x , pix_size_y };
 
+    LOG(INFO) << "img_size=[" << cam_intrinsics.image_size[0] << "," << cam_intrinsics.image_size[1] << "] pix";
     LOG(INFO) << "foc_len="
         << cam_intrinsics.focal_length_mm << " mm" << " PixelSize[dx,dy]=[" 
         << cam_intrinsics.pixel_size_mm[0] << ","
@@ -1125,12 +1130,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
     tracker.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
     
-    auto init_cam_pos_wfc = SE3Transform::NoTransform();
-    init_cam_pos_wfc.T = Eigen::Matrix<Scalar, 3, 1>{ FLAGS_camera_init_pos_x, FLAGS_camera_init_pos_y, FLAGS_camera_init_pos_z };
-    //init_cam_pos_wfc.T = Eigen::Matrix<Scalar, 3, 1>{ -2, 0.5, -0.5 };
-    //init_cam_pos_wfc.T = Eigen::Matrix<Scalar, 3, 1>{0, 0, 0};
-    tracker.SetCamera(SE3Inv(init_cam_pos_wfc), FLAGS_kalman_estim_var_init_std);
-    //tracker.SetCamera(SE3Inv(LookAtLufWfc({-2, 0.5, 0.5}, {0, 0, 3}, {0, 1, 0})), FLAGS_kalman_estim_var_init_std);
+    SE3Transform cam_cfw = SE3Inv(LookAtLufWfc(
+        { FLAGS_camera_look_from_x, FLAGS_camera_look_from_y, FLAGS_camera_look_from_z },
+        { FLAGS_camera_look_to_x, FLAGS_camera_look_to_y, FLAGS_camera_look_to_z },
+        { FLAGS_camera_up_x, FLAGS_camera_up_y, FLAGS_camera_up_z }));
+    tracker.SetCamera(cam_cfw, FLAGS_kalman_estim_var_init_std);
 
     tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
     tracker.support_inf_sal_pnts_ = FLAGS_kalman_support_inf_sal_pnts;
@@ -1178,7 +1182,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
 
 #if defined(SRK_HAS_OPENCV)
-    cv::Mat camera_image_bgr = cv::Mat::zeros((int)img_size[1], (int)img_size[0], CV_8UC3);
+    cv::Mat camera_image_bgr = cv::Mat::zeros(cam_intrinsics.image_size[1], (int)cam_intrinsics.image_size[0], CV_8UC3);
 #endif
 #if defined(SRK_HAS_PANGOLIN)
     // across threads shared data
@@ -1214,6 +1218,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             pangolin_gui->ui_loop_prolong_period_ = std::chrono::milliseconds(FLAGS_ui_loop_prolong_period_ms);
             pangolin_gui->ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
             pangolin_gui->dots_per_uncert_ellipse_ = FLAGS_ui_dots_per_uncert_ellipse;
+            pangolin_gui->cam_instrinsics_ = cam_intrinsics;
             pangolin_gui->InitUI();
             int back_dist = 5;
             pangolin_gui->SetCameraBehindTrackerOnce(tracker_origin_from_world, back_dist);
