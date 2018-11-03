@@ -147,6 +147,20 @@ void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D
 /// Draw visible from given camera contour of ellipsoid.
 void DrawEllipsoidContour(DavisonMonoSlam& tracker, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
     size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr);
+
+void DrawScene(DavisonMonoSlam& tracker, const cv::Mat& background_image_bgr, Scalar ellipse_cut_thr, int dots_per_uncert_ellipse, cv::Mat* out_image_bgr);
+
+class DavisonMonoSlam2DDrawer
+{
+public:
+    void DrawScene(DavisonMonoSlam& tracker, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const;
+    
+    void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt,
+        cv::Mat* out_image_bgr) const;
+public:
+    Scalar ellipse_cut_thr_;
+    int dots_per_uncert_ellipse_;
+};
 #endif
 
 }

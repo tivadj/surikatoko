@@ -6,6 +6,7 @@
 #include "suriko/quat.h"
 #include "suriko/eigen-helpers.hpp"
 #include "suriko/rand-stuff.h"
+#include <opencv2/imgproc.hpp>
 
 namespace suriko
 {
@@ -39,6 +40,15 @@ auto SpanAu(EigenMat& m, size_t count) -> gsl::span<typename EigenMat::Scalar>
     typedef typename EigenMat::Scalar S;
     // fails: m.data()=const double* and it doesn't match gsl::span<double>
     return gsl::make_span<S>(m.data(), static_cast<typename gsl::span<S>::index_type>(count));
+}
+
+void CopyBgr(const ImageFrame& image, cv::Mat* out_image_bgr)
+{
+#if defined(SRK_DEBUG)
+    image.bgr_debug.copyTo(*out_image_bgr);
+#else
+    cv::cvtColor(image.gray, *out_image_bgr, CV_GRAY2BGR);
+#endif
 }
 
 DavisonMonoSlamInternalsLogger::DavisonMonoSlamInternalsLogger(DavisonMonoSlam* tracker)
@@ -296,19 +306,31 @@ void DavisonMonoSlam::CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azim
 }
 
 template <typename EigenMat>
-void CheckUncertCovMat(const EigenMat& m)
+void CheckUncertCovMat(const EigenMat& pos_uncert)
 {
-    // determinant must be posi tive for expression 1/sqrt(det(Sig)*(2pi)^3) to exist
-    auto det = m.determinant();
+    // determinant must be positive for expression 1/sqrt(det(Sig)*(2pi)^3) to exist
+    auto det = pos_uncert.determinant();
     SRK_ASSERT(det > 0);
+
+    Eigen::Matrix<Scalar, kEucl3, 1> pnt_pos{ 0, 0, 0 };
+    Ellipsoid3DWithCenter ellipsoid;
+    constexpr Scalar ellipse_cut_thr = 0.05;
+    ExtractEllipsoidFromUncertaintyMat(pnt_pos, pos_uncert, ellipse_cut_thr, &ellipsoid);
+
+    bool ok = ValidateEllipsoid(ellipsoid);
+    SRK_ASSERT(ok);
+
+    constexpr bool can_throw = false;
+    RotatedEllipsoid3D rot_ellipsoid;
+    ok = GetRotatedEllipsoid(ellipsoid, can_throw, &rot_ellipsoid);
+    SRK_ASSERT(ok);
 }
 
 void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar) const
 {
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_pos_cov = estim_vars_covar_.block<kEucl3, kEucl3>(0, 0);
-    auto cam_pos_cov_inv = cam_pos_cov.inverse().eval();
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_pos_cov = src_estim_vars_covar.block<kEucl3, kEucl3>(0, 0);
     CheckUncertCovMat(cam_pos_cov);
 
     size_t sal_pnts_count = SalientPointsCount();
@@ -1151,9 +1173,9 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraStateVars
     sal_pnt.track_status = SalPntTrackStatus::New;
     sal_pnt.pixel_coord_real = corner_pix;
     sal_pnt.template_top_left_int = TemplateTopLeftInt(corner_pix);
-    sal_pnt.template_in_first_frame = std::move(patch_template.gray);
+    sal_pnt.template_gray_in_first_frame = std::move(patch_template.gray);
 #if defined(SRK_DEBUG)
-    sal_pnt.template_rgb_in_first_frame_debug = std::move(patch_template.rgb_debug);
+    sal_pnt.template_bgr_in_first_frame_debug = std::move(patch_template.bgr_debug);
 #endif
 
     SalPntId sal_pnt_id = SalPntId(sal_pnts_.back().get());
@@ -1537,13 +1559,20 @@ RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const Ellipso
     Scalar lam_cam = suriko::kCamPlaneZ;
     Scalar lam_world = cam_state.pos_w.transpose() * n + lam_cam;
 
+    RotatedEllipse2D result_ellipse;
+
     Ellipse2DWithCenter ellipse_on_cam_plane;
     bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam_world, &ellipse_on_cam_plane);
     if (op)
     {
-        return GetRotatedEllipse2D(ellipse_on_cam_plane);
+        result_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
     }
-    return ApproxProjectEllipsoidOnCameraByBeaconPoints(ellipsoid, cam_state);
+    else
+    {
+        result_ellipse = ApproxProjectEllipsoidOnCameraByBeaconPoints(ellipsoid, cam_state);
+    }
+
+    return result_ellipse;
 }
 
 void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(const SalPntInternal& sal_pnt,

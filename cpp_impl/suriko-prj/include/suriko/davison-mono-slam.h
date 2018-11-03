@@ -49,9 +49,11 @@ struct ImageFrame
 {
     cv::Mat gray;
 #if defined(SRK_DEBUG)
-    cv::Mat rgb_debug;
+    cv::Mat bgr_debug;
 #endif
 };
+
+void CopyBgr(const ImageFrame& image, cv::Mat* out_image_bgr);
 
 /// Status of a salient point during tracking.
 enum class SalPntTrackStatus
@@ -75,9 +77,9 @@ struct SalPntInternal
     SalPntTrackStatus track_status;
 
     // Rectangular portion of the gray image corresponding to salient point, projected in current frame.
-    cv::Mat template_in_first_frame;
+    cv::Mat template_gray_in_first_frame;
 #if defined(SRK_DEBUG)
-    cv::Mat template_rgb_in_first_frame_debug;
+    cv::Mat template_bgr_in_first_frame_debug;
 #endif
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> OffsetFromTopLeft() const
@@ -386,6 +388,8 @@ public:
     /// This returns null if the salient point is in the infinity and finite coordinates of patch template can't be calculated.
     std::optional<SalPntRectFacet> GetPredictedSalPntFaceRect(SalPntId id) const;
 
+    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
+
     void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
     CornersMatcherBase& CornersMatcher();
 
@@ -574,10 +578,6 @@ private:
 
     RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
     
-public:
-    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
-private:
-
     void FixSymmetricMat(EigenDynMat* sym_mat) const;
 
     static bool DebugPath(DebugPathEnum debug_path);

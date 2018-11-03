@@ -397,7 +397,7 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
 
     const SalPntInternal& sal_pnt = kalman_slam->GetSalientPoint(sal_pnt_id);
 
-    bool in_virtual_mode = sal_pnt.template_in_first_frame.empty();
+    bool in_virtual_mode = sal_pnt.template_gray_in_first_frame.empty();
     if (in_virtual_mode)
     {
         // in virtual mode render just an outline of the patch
@@ -430,26 +430,26 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
         glGenTextures(1 /*num of textures*/, &texId);
 
         // always convert to RGB because OpenGL can't get gray images as an input (glTexImage2D.format parameter)
-        const GLenum src_texture_format = GL_RGB;
-        cv::Mat patch_rgb;
+        const GLenum src_texture_format = GL_BGR;
+        cv::Mat patch_bgr;
 #if defined(SRK_DEBUG)
-        patch_rgb = sal_pnt.template_rgb_in_first_frame_debug.clone();  // need cloning because it farther flipped
+        patch_bgr = sal_pnt.template_bgr_in_first_frame_debug.clone();  // need cloning because it farther flipped
 #else
-        cv::cvtColor(sal_pnt.template_in_first_frame, patch_rgb, CV_GRAY2RGB);
+        cv::cvtColor(sal_pnt.template_gray_in_first_frame, patch_bgr, CV_GRAY2BGR);
 #endif
         // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture
         // OpenCV stores images from top to bottom, while the GL uses bottom to top
-        cv::flip(patch_rgb, patch_rgb, 0 /*0=around x-axis*/);
+        cv::flip(patch_bgr, patch_bgr, 0 /*0=around x-axis*/);
 
         //set length of one complete row in data (doesn't need to equal image.cols)
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, patch_rgb.step / patch_rgb.elemSize());
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, patch_bgr.step / patch_bgr.elemSize());
 
         //use fast 4-byte alignment (default anyway) if possible
-        glPixelStorei(GL_UNPACK_ALIGNMENT, (patch_rgb.step & 3) ? 1 : 4);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, (patch_bgr.step & 3) ? 1 : 4);
 
         glBindTexture(GL_TEXTURE_2D, texId);
-        const GLenum gl_texture_format = GL_RGB;  // GL_LUMINANCE (for gray) or GL_RGB, both work
-        glTexImage2D(GL_TEXTURE_2D, 0, gl_texture_format, texWidth, texHeight, 0, src_texture_format, GL_UNSIGNED_BYTE, patch_rgb.data);
+        const GLenum gl_texture_format = GL_BGR;  // GL_LUMINANCE (for gray) or GL_RGB, both work
+        glTexImage2D(GL_TEXTURE_2D, 0, gl_texture_format, texWidth, texHeight, 0, src_texture_format, GL_UNSIGNED_BYTE, patch_bgr.data);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);  // do not mix texture color with background
@@ -507,7 +507,7 @@ void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
         glVertex3d(sal_pnt_pos[0], sal_pnt_pos[1], sal_pnt_pos[2]);
         glEnd();
 
-        RenderSalientPointPatchTemplate(kalman_slam, sal_pnt_id);
+        //RenderSalientPointPatchTemplate(kalman_slam, sal_pnt_id);
     }
 }
 
@@ -969,6 +969,40 @@ void DrawEllipsoidContour(DavisonMonoSlam& tracker, const CameraStateVars& cam_s
 
     RotatedEllipse2D rotated_ellipse = tracker.ProjectEllipsoidOnCameraOrApprox(ellipsoid, cam_state);
     DrawDistortedEllipse(tracker, rotated_ellipse, dots_per_ellipse, sal_pnt_color_bgr, camera_image_bgr);
+}
+
+void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt, 
+    cv::Mat* out_image_bgr) const
+{
+    CameraStateVars cam_state;
+    tracker.GetCameraEstimatedVars(&cam_state);
+
+    auto[w, h] = tracker.sal_pnt_patch_size_;
+    cv::rectangle(*out_image_bgr,
+        cv::Rect{ sal_pnt.template_top_left_int.x, sal_pnt.template_top_left_int.y, w, h },
+        cv::Scalar::all(0));
+
+    Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
+    tracker.GetSalientPointEstimatedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+
+    Ellipsoid3DWithCenter ellipsoid;
+    ExtractEllipsoidFromUncertaintyMat(sal_pnt_pos, sal_pnt_pos_uncert, ellipse_cut_thr_, &ellipsoid);
+
+    std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
+    cv::Scalar sal_pnt_color_bgr{ sal_pnt_color[2], sal_pnt_color[1], sal_pnt_color[0] };
+    DrawEllipsoidContour(tracker, cam_state, ellipsoid, dots_per_uncert_ellipse_, sal_pnt_color_bgr, out_image_bgr);
+}
+
+void DavisonMonoSlam2DDrawer::DrawScene(DavisonMonoSlam& tracker, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const
+{
+    background_image_bgr.copyTo(*out_image_bgr);
+
+    for (SalPntId sal_pnt_id : tracker.GetSalientPoints())
+    {
+        const SalPntInternal& sal_pnt = tracker.GetSalientPoint(sal_pnt_id);
+        DrawEstimatedSalientPoint(tracker, sal_pnt, out_image_bgr);
+    }
 }
 #endif
 

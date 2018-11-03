@@ -357,6 +357,8 @@ class ImagePatchCornersMatcher : public CornersMatcherBase
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
     Scalar ellisoid_cut_thr_;
+    std::function<void(DavisonMonoSlam&, const SalPntInternal&, cv::Mat*)> draw_sal_pnt_fun_;
+    std::function<void(std::string_view, cv::Mat)> show_image_fun_;
 public:
     ImagePatchCornersMatcher(DavisonMonoSlam* kalman_tracker)
         :kalman_tracker_(kalman_tracker)
@@ -391,7 +393,7 @@ public:
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
             const SalPntInternal& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
-            cv::matchTemplate(frame_image.gray, sal_pnt.template_in_first_frame, match_score_image, method);
+            cv::matchTemplate(frame_image.gray, sal_pnt.template_gray_in_first_frame, match_score_image, method);
             cv::normalize(match_score_image, match_score_image, 0, 1, cv::NORM_MINMAX, -1);
 
             double minVal;
@@ -545,7 +547,7 @@ public:
         std::vector<PosAndErr> best_match_poses;
         auto min_err_value = std::numeric_limits<Scalar>::max();
         int match_templ_calls_counter = 0;                            // records the number of calls to match patch template
-        const auto& template_gray = sal_pnt.template_in_first_frame;
+        const auto& template_gray = sal_pnt.template_gray_in_first_frame;
         auto match_templ_at = [this, &template_gray,&frame_image,&best_match_poses, &min_err_value,&match_templ_calls_counter](Pointi center)
         {
             ++match_templ_calls_counter;
@@ -670,7 +672,6 @@ public:
             ellipse_bounds_cam.y + ellipse_bounds_cam.height, suriko::kCamPlaneZ });
 
         // axes in camera plane are opposite to axes of image pixel
-        // just using min/max to avoid safely find bounds
         std::swap(top_left_pix, bot_right_pix);
 
         int x1 = static_cast<int>(top_left_pix.Mat()[0]);
@@ -678,9 +679,9 @@ public:
         int y1 = static_cast<int>(top_left_pix.Mat()[1]);
         int y2 = static_cast<int>(bot_right_pix.Mat()[1]);
 
-        int patch_rad_x = sal_pnt.template_in_first_frame.cols / 2;
-        int patch_rad_y = sal_pnt.template_in_first_frame.rows / 2;
-
+        // truncate to upper integer to include some extra space of an ellipse
+        x2 += 1;
+        y2 += 1;
 
         Recti bounds_pix;
         bounds_pix.x = x1;
@@ -708,18 +709,30 @@ public:
 
         const Recti search_rect = search_rect_opt.value();
 
-        static cv::Mat image_gray_with_match;
+        static bool debug_template_bounds = false;
+        if (debug_template_bounds)
+            LOG(INFO) << "patch_bnds=[" << search_rect.x << "," << search_rect.y << "," << search_rect.width << "," << search_rect.height
+                << " (" << search_rect.x + search_rect.width/2 <<"," << search_rect.y + search_rect.height/2 << ")";
+
+        static cv::Mat image_with_match_bgr;
         static bool debug_ui = false;
         if (debug_ui)
         {
-            frame_image.gray.copyTo(image_gray_with_match);
+            CopyBgr(frame_image, &image_with_match_bgr);
+
+            if (this->draw_sal_pnt_fun_ != nullptr)
+                draw_sal_pnt_fun_(tracker, sal_pnt, &image_with_match_bgr);
+
             cv::Rect patch_rect{
                 sal_pnt.template_top_left_int.x, sal_pnt.template_top_left_int.y,
                 tracker.sal_pnt_patch_size_[0], tracker.sal_pnt_patch_size_[1] };
-            cv::rectangle(image_gray_with_match, patch_rect, cv::Scalar::all(0));
+            cv::rectangle(image_with_match_bgr, patch_rect, cv::Scalar::all(0));
 
             cv::Rect search_rect_cv{ search_rect.x, search_rect.y, search_rect.width, search_rect.height };
-            cv::rectangle(image_gray_with_match, search_rect_cv, cv::Scalar::all(255));
+            cv::rectangle(image_with_match_bgr, search_rect_cv, cv::Scalar::all(255));
+
+            if (show_image_fun_ != nullptr)
+                show_image_fun_("Match.search_rect", image_with_match_bgr);
         }
 
         TemplateMatchResult match_result = MatchSalPntTemplateCenterInRect(sal_pnt, frame_image, search_rect);
@@ -853,8 +866,8 @@ public:
 
 #if defined(SRK_DEBUG)
         cv::Mat patch;
-        image.rgb_debug(patch_bounds).copyTo(patch);
-        patch_template.rgb_debug = patch;
+        image.bgr_debug(patch_bounds).copyTo(patch);
+        patch_template.bgr_debug = patch;
 #endif
         return patch_template;
     }
@@ -1101,6 +1114,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cam_distort_params.k1 = 0;
     cam_distort_params.k2 = 0;
 
+    //
+    DavisonMonoSlam2DDrawer drawer;
+    drawer.dots_per_uncert_ellipse_ = FLAGS_ui_dots_per_uncert_ellipse;
+    drawer.ellipse_cut_thr_ = FLAGS_kalman_ellipsoid_cut_thr;
+
     // the origin of a tracker (sometimes cam0)
     SE3Transform tracker_origin_from_world;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
@@ -1172,6 +1190,16 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         auto corners_matcher = std::make_unique<ImagePatchCornersMatcher>(&tracker);
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_kalman_stop_on_sal_pnt_moved_too_far;
         corners_matcher->ellisoid_cut_thr_ = FLAGS_kalman_ellipsoid_cut_thr;
+        corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& tracker,const SalPntInternal& sal_pnt, cv::Mat* out_image_bgr)
+        {
+            drawer.DrawEstimatedSalientPoint(tracker, sal_pnt, out_image_bgr);
+        };
+        corners_matcher->show_image_fun_ = [](std::string_view wnd_name, const cv::Mat& image_bgr)
+        {
+#if defined(SRK_HAS_OPENCV)
+            cv::imshow(wnd_name.data(), image_bgr);
+#endif
+        };
         tracker.SetCornersMatcher(std::move(corners_matcher));
     }
 #endif
@@ -1250,9 +1278,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         cv::cvtColor(image_bgr, image_gray, CV_BGR2GRAY);
         image.gray = image_gray;
 #if defined(SRK_DEBUG)
-        cv::Mat image_rgb;
-        cv::cvtColor(image_bgr, image_rgb, CV_BGR2RGB);
-        image.rgb_debug = image_rgb;
+        image.bgr_debug = image_bgr;
 #endif
 #endif
         auto& corners_matcher = tracker.CornersMatcher();
@@ -1316,31 +1342,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             strbuf << "f=" << frame_ind;
             cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
-            image_bgr.copyTo(camera_image_bgr);
-            
-            CameraStateVars cam_state;
-            tracker.GetCameraEstimatedVars(&cam_state);
-
-            auto [w,h] = tracker.sal_pnt_patch_size_;
-            for (SalPntId sal_pnt_id : tracker.GetSalientPoints())
-            {
-                const SalPntInternal& sal_pnt = tracker.GetSalientPoint(sal_pnt_id);
-                cv::rectangle(camera_image_bgr, 
-                    cv::Rect{ sal_pnt.template_top_left_int.x, sal_pnt.template_top_left_int.y, w, h },
-                    cv::Scalar::all(0));
-
-                Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
-                Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
-                tracker.GetSalientPointEstimatedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
-
-                Ellipsoid3DWithCenter ellipsoid;
-                ExtractEllipsoidFromUncertaintyMat(sal_pnt_pos, sal_pnt_pos_uncert, FLAGS_kalman_ellipsoid_cut_thr, &ellipsoid);
-
-
-                std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
-                cv::Scalar sal_pnt_color_bgr{ sal_pnt_color[2], sal_pnt_color[1], sal_pnt_color[0] };
-                DrawEllipsoidContour(tracker, cam_state, ellipsoid, FLAGS_ui_dots_per_uncert_ellipse, sal_pnt_color_bgr, &camera_image_bgr);
-            }
+            drawer.DrawScene(tracker, image_bgr, &camera_image_bgr);
 #endif
             cv::imshow("front-camera", camera_image_bgr);
             cv::waitKey(1); // allow to refresh an opencv view
