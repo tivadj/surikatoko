@@ -80,8 +80,8 @@ void RenderSchematicCamera(const SE3Transform& cam_wfc, const CameraIntrinsicPar
     constexpr Scalar cam_z = kCamPlaneZ;
 
     std::array<Scalar, 2> alpha = cam_instrinsics.FocalLengthPix();
-    Scalar half_width = static_cast<Scalar>(cam_instrinsics.image_size[0] / 2.0) / alpha[0];
-    Scalar half_height = static_cast<Scalar>(cam_instrinsics.image_size[0] / 2.0) / alpha[1];
+    Scalar half_width = static_cast<Scalar>(cam_instrinsics.image_size.width / 2.0) / alpha[0];
+    Scalar half_height = static_cast<Scalar>(cam_instrinsics.image_size.height / 2.0) / alpha[1];
 
     double cam_skel[5][3] = {
         {0, 0, 0},
@@ -190,10 +190,7 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
         ws[sorted_semi_axes[Middle].first] = eucl[1];  // ellipse OY
         ws[sorted_semi_axes[Smallest].first] = 0;
 
-        // map to the original ellipse with axes not parallel to world axes
-        ws += rot_ellipsoid.center_e;
-
-        Eigen::Matrix<Scalar, 3, 1> pos_world = rot_ellipsoid.rot_mat_world_from_ellipse * ws;
+        auto pos_world = SE3Apply(rot_ellipsoid.world_from_ellipse, suriko::Point3{ ws });
         glVertex3d(pos_world[0], pos_world[1], pos_world[2]);
     }
     glEnd();
@@ -221,17 +218,14 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
             ws[sorted_semi_axes[Smallest].first] = eucl[1];  // ellipse OY
             ws[sorted_semi_axes[Largest].first] = 0;
 
-            // map to the original ellipse with axes not parallel to world axes
-            ws += rot_ellipsoid.center_e;
-
-            Eigen::Matrix<Scalar, 3, 1> pos_world = rot_ellipsoid.rot_mat_world_from_ellipse * ws;
+            auto pos_world = SE3Apply(rot_ellipsoid.world_from_ellipse, ws);
             glVertex3d(pos_world[0], pos_world[1], pos_world[2]);
         }
         glEnd();
     }
 }
 
-void RenderUncertaintyEllipsoid(
+void RenderPosUncertaintyMatAsEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& pos,
     const Eigen::Matrix<Scalar, 3, 3>& pos_uncert,
     Scalar ellipsoid_cut_thr,
@@ -364,7 +358,7 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
     }
 }
 
-std::array<GLfloat, 3> GetSalientPointColor(const SalPntInternal& sal_pnt)
+std::array<GLfloat, 3> GetSalientPointColor(const SalPntPatch& sal_pnt)
 {
     std::array<GLfloat, 3> new_sal_pnt_color{ 0, 255, 0 }; // green
     std::array<GLfloat, 3> matched_sal_pnt_color{ 255, 0, 0 }; // red
@@ -389,13 +383,13 @@ std::array<GLfloat, 3> GetSalientPointColor(const SalPntInternal& sal_pnt)
     return *sal_pnt_color;
 }
 
-void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
+void RenderSalientPointPatchTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
 {
-    std::optional<SalPntRectFacet> rect = kalman_slam->GetPredictedSalPntFaceRect(sal_pnt_id);
+    std::optional<SalPntRectFacet> rect = mono_slam->GetPredictedSalPntFaceRect(sal_pnt_id);
     if (!rect.has_value())
         return;
 
-    const SalPntInternal& sal_pnt = kalman_slam->GetSalientPoint(sal_pnt_id);
+    const SalPntPatch& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
 
     bool in_virtual_mode = sal_pnt.template_gray_in_first_frame.empty();
     if (in_virtual_mode)
@@ -421,8 +415,8 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
     else
     {
         // render an image of rectangular patch, associated with salient point
-        const GLsizei texWidth = kalman_slam->sal_pnt_patch_size_[0];
-        const GLsizei texHeight = kalman_slam->sal_pnt_patch_size_[1];
+        const GLsizei texWidth = mono_slam->sal_pnt_patch_size_.width;
+        const GLsizei texHeight = mono_slam->sal_pnt_patch_size_.height;
 
         // bind the texture
         glEnable(GL_TEXTURE_2D);
@@ -480,38 +474,38 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* kalman_slam, DavisonMonoSl
     }
 }
 
-void RenderMap(DavisonMonoSlam* kalman_slam, Scalar ellipsoid_cut_thr,
+void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
     bool display_3D_uncertainties,
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
-    for (DavisonMonoSlam::SalPntId sal_pnt_id : kalman_slam->GetSalientPoints())
+    for (DavisonMonoSlam::SalPntId sal_pnt_id : mono_slam->GetSalientPoints())
     {
-        const SalPntInternal& sal_pnt = kalman_slam->GetSalientPoint(sal_pnt_id);
+        const SalPntPatch& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
 
         const size_t sal_pnt_ind = sal_pnt.sal_pnt_ind;
 
         Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
-        kalman_slam->GetSalientPointEstimatedPosWithUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+        mono_slam->GetSalientPointEstimatedPosWithUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
         std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
         glColor3fv(sal_pnt_color.data());
 
         if (display_3D_uncertainties)
         {
-            RenderUncertaintyEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
+            RenderPosUncertaintyMatAsEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
         }
 
         glBegin(GL_POINTS);
         glVertex3d(sal_pnt_pos[0], sal_pnt_pos[1], sal_pnt_pos[2]);
         glEnd();
 
-        //RenderSalientPointPatchTemplate(kalman_slam, sal_pnt_id);
+        RenderSalientPointPatchTemplate(mono_slam, sal_pnt_id);
     }
 }
 
-void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar ellipsoid_cut_thr,
+void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar ellipsoid_cut_thr,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
     CamDisplayType last_cam_disp_type,
@@ -564,7 +558,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
 
         RenderAxes(0.5, 2); // axes of the tracker's origin (=cam0)
 
-        RenderMap(kalman_slam, ellipsoid_cut_thr, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
+        RenderMap(mono_slam, ellipsoid_cut_thr, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
 
         // orientation of schematic camera is taken from history
         if (ui_params.cam_orient_cfw_history != nullptr)
@@ -580,12 +574,12 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* kalman_slam, 
             Eigen::Matrix<Scalar, 3, 1> cam_pos;
             Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
             Eigen::Matrix<Scalar, 4, 1> cam_orient_quat_wfc;
-            kalman_slam->GetCameraEstimatedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat_wfc);
+            mono_slam->GetCameraEstimatedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat_wfc);
 
             Eigen::Matrix<Scalar, 3, 3> cam_orient_wfc;
             RotMatFromQuat(gsl::make_span<const Scalar>(cam_orient_quat_wfc.data(), 4), &cam_orient_wfc);
 
-            RenderUncertaintyEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
+            RenderPosUncertaintyMatAsEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
         }
 
         glPopMatrix();
@@ -684,7 +678,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
 
     CamDisplayType last_cam_disp_type = CamDisplayType::Schematic;
 
-    RenderScene(ui_params, ui_params.kalman_slam, cam_instrinsics_, ui_params.ellipsoid_cut_thr,
+    RenderScene(ui_params, ui_params.mono_slam, cam_instrinsics_, ui_params.ellipsoid_cut_thr,
                 display_trajectory,
                 mid_cam_disp_type,
                 last_cam_disp_type,
@@ -821,7 +815,7 @@ void SceneVisualizationPangolinGui::OnKeyPressed(int key)
 
     // check if worker request finishing UI thread
     const auto& ui_params = s_ui_params_;
-    if (ui_params.kalman_slam->in_multi_threaded_mode_)
+    if (ui_params.mono_slam->in_multi_threaded_mode_)
     {
         if (multi_threaded_.form_state == FormState::WaitKey &&
             ui_params.worker_chat->ui_wait_key_predicate_(key))
@@ -843,7 +837,7 @@ void SceneVisualizationPangolinGui::OnKeyPressed(int key)
     switch (key)
     {
     case pangolin::PANGO_KEY_ESCAPE:
-        if (ui_params.kalman_slam->in_multi_threaded_mode_)
+        if (ui_params.mono_slam->in_multi_threaded_mode_)
         {
             {
                 std::lock_guard<std::mutex> lk(ui_params.worker_chat->the_mutex);
@@ -927,7 +921,7 @@ void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value a
 
 #if defined(SRK_HAS_OPENCV)
 
-void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr)
+void DrawDistortedEllipse(const DavisonMonoSlam& mono_slam, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr)
 {
     std::optional<cv::Point> pnt_int_prev;
     for (size_t i = 0; i <= dots_per_ellipse; ++i)
@@ -936,17 +930,12 @@ void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D
         suriko::Point2 eucl = EllipsePntPolarToEuclid(ellipse.semi_axes[0], ellipse.semi_axes[1], theta);
 
         Eigen::Matrix<Scalar, 2, 1> ws = eucl.Mat();
-
-        // map to the original ellipse with axes not parallel to world axes
-        ws += ellipse.center_e;
-
-        // the 'world' for ellipse is the OX and OY of camera
-        Eigen::Matrix<Scalar, 2, 1> pos_camera = ellipse.rot_mat_world_from_ellipse * ws;
+        suriko::Point2 pos_camera = SE2Apply(ellipse.world_from_ellipse, suriko::Point2{ ws });
 
         // due to distortion, the pixel coordinates of contour will not form an ellipse
         // hence usage of 2D ellipse drawing functions is inappropriate
         // instead we just project 3D points onto the image
-        suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(suriko::Point3(pos_camera[0], pos_camera[1], kCamPlaneZ));
+        suriko::Point2 pnt_pix = mono_slam.ProjectCameraPoint(suriko::Point3(pos_camera[0], pos_camera[1], kCamPlaneZ));
 
         cv::Point pnt_int{ static_cast<int>(pnt_pix[0]), static_cast<int>(pnt_pix[1]) };
 
@@ -958,7 +947,7 @@ void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D
     }
 }
 
-void DrawEllipsoidContour(DavisonMonoSlam& tracker, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
+void DrawEllipsoidContour(DavisonMonoSlam& mono_slam, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
     size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr)
 {
     // The set of ellipsoid 3D points, visible from given camera position, is in implicit form and to
@@ -967,41 +956,40 @@ void DrawEllipsoidContour(DavisonMonoSlam& tracker, const CameraStateVars& cam_s
     // Instead, we project those contour 3D points onto the camera (z=1) and get the ellipse,
     // 3D points of which can be easily enumerated.
 
-    RotatedEllipse2D rotated_ellipse = tracker.ProjectEllipsoidOnCameraOrApprox(ellipsoid, cam_state);
-    DrawDistortedEllipse(tracker, rotated_ellipse, dots_per_ellipse, sal_pnt_color_bgr, camera_image_bgr);
+    RotatedEllipse2D rotated_ellipse = mono_slam.ProjectEllipsoidOnCameraOrApprox(ellipsoid, cam_state);
+    DrawDistortedEllipse(mono_slam, rotated_ellipse, dots_per_ellipse, sal_pnt_color_bgr, camera_image_bgr);
 }
 
-void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt, 
+void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt, 
     cv::Mat* out_image_bgr) const
 {
-    CameraStateVars cam_state;
-    tracker.GetCameraEstimatedVars(&cam_state);
+    CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();
 
-    auto[w, h] = tracker.sal_pnt_patch_size_;
+    auto[w, h] = mono_slam.sal_pnt_patch_size_;
     cv::rectangle(*out_image_bgr,
         cv::Rect{ sal_pnt.template_top_left_int.x, sal_pnt.template_top_left_int.y, w, h },
         cv::Scalar::all(0));
 
     Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
     Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
-    tracker.GetSalientPointEstimatedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+    mono_slam.GetSalientPointEstimatedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
     Ellipsoid3DWithCenter ellipsoid;
     ExtractEllipsoidFromUncertaintyMat(sal_pnt_pos, sal_pnt_pos_uncert, ellipse_cut_thr_, &ellipsoid);
 
     std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
     cv::Scalar sal_pnt_color_bgr{ sal_pnt_color[2], sal_pnt_color[1], sal_pnt_color[0] };
-    DrawEllipsoidContour(tracker, cam_state, ellipsoid, dots_per_uncert_ellipse_, sal_pnt_color_bgr, out_image_bgr);
+    DrawEllipsoidContour(mono_slam, cam_state, ellipsoid, dots_per_uncert_ellipse_, sal_pnt_color_bgr, out_image_bgr);
 }
 
-void DavisonMonoSlam2DDrawer::DrawScene(DavisonMonoSlam& tracker, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const
+void DavisonMonoSlam2DDrawer::DrawScene(DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const
 {
     background_image_bgr.copyTo(*out_image_bgr);
 
-    for (SalPntId sal_pnt_id : tracker.GetSalientPoints())
+    for (SalPntId sal_pnt_id : mono_slam.GetSalientPoints())
     {
-        const SalPntInternal& sal_pnt = tracker.GetSalientPoint(sal_pnt_id);
-        DrawEstimatedSalientPoint(tracker, sal_pnt, out_image_bgr);
+        const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
+        DrawEstimatedSalientPoint(mono_slam, sal_pnt, out_image_bgr);
     }
 }
 #endif

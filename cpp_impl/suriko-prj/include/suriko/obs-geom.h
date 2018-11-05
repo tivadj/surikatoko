@@ -88,6 +88,21 @@ Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom);
 
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
 
+struct SE2Transform
+{
+    Eigen::Matrix<Scalar, 2, 1> T;
+    Eigen::Matrix<Scalar, 2, 2> R;
+
+    SE2Transform() = default;
+    SE2Transform(const Eigen::Matrix<Scalar, 2, 2>& R, const Eigen::Matrix<Scalar, 2, 1>& T) : R(R), T(T) {}
+
+    static SE2Transform NoTransform() {
+        return SE2Transform(
+            Eigen::Matrix<Scalar, 2, 2>::Identity(),
+            Eigen::Matrix<Scalar, 2, 1>::Zero());
+    }
+};
+
 /// SE3=Special Euclidean transformation in 3D.
 /// Direct camera movement transforms 3D points from camera frame into world frame.
 /// Inverse camera movement transforms 3D points from world frame into camera frame.
@@ -107,6 +122,7 @@ struct SE3Transform
 };
 
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform;
+auto SE2Apply(const SE2Transform& rt, const suriko::Point2& x)->suriko::Point2;
 auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3;
 auto SE3Compose(const SE3Transform& rt1, const SE3Transform& rt2) -> suriko::SE3Transform;
 auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_world) -> suriko::SE3Transform;
@@ -310,17 +326,15 @@ Rect GetEllipseBounds(const Ellipse2DWithCenter& ellipse);
 /// Represents a 2D ellipse, for which the eigenvectors are found.
 struct RotatedEllipse2D
 {
-    Eigen::Matrix<Scalar, 2, 1> center_e;  // center in the coordinates of ellipse
     Eigen::Matrix<Scalar, 2, 1> semi_axes;
-    Eigen::Matrix<Scalar, 2, 2> rot_mat_world_from_ellipse;
+    SE2Transform world_from_ellipse;
 };
 
 /// Represents a 2D ellipse, for which the eigenvectors are found.
 struct RotatedEllipsoid3D
 {
-    Eigen::Matrix<Scalar, 3, 1> center_e;
     Eigen::Matrix<Scalar, 3, 1> semi_axes;
-    Eigen::Matrix<Scalar, 3, 3> rot_mat_world_from_ellipse;
+    SE3Transform world_from_ellipse;
 };
 
 void PickPointOnEllipsoid(

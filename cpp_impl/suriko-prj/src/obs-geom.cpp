@@ -75,6 +75,11 @@ auto SE3Inv(const SE3Transform& rt) -> SE3Transform {
     return result;
 }
 
+auto SE2Apply(const SE2Transform& rt, const suriko::Point2& x)->suriko::Point2
+{
+    return suriko::Point2 { rt.R * x.Mat() + rt.T };
+}
+
 auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3
 {
     // 0-copy
@@ -395,7 +400,8 @@ template <size_t N>
 bool IsOrthogonal(const Eigen::Matrix<Scalar,N,N>& R, std::string* msg) {
     Scalar rtol = 1.0e-3;
     Scalar atol = 1.0e-3;
-    bool is_ident = (R.transpose() * R).isIdentity(atol);
+    auto rt_r = (R.transpose() * R).eval();
+    bool is_ident = rt_r.isIdentity(atol);
     if (!is_ident)
     {
         if (msg != nullptr)
@@ -843,8 +849,8 @@ bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw,
     SRK_ASSERT(is_ortho); // further relying on inv(R)=Rt
 
     //
-    result->rot_mat_world_from_ellipse = R;
-    result->center_e = R.transpose() * ellipsoid.center;
+    result->world_from_ellipse.R = R;
+    result->world_from_ellipse.T = ellipsoid.center;
 
     Eigen::Matrix<Scalar, 3, 1> dd = eigen_solver.eigenvalues();
 
@@ -878,8 +884,8 @@ RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipse)
 
     //
     RotatedEllipse2D result;
-    result.rot_mat_world_from_ellipse = R;
-    result.center_e = R.transpose() * ellipse.center;
+    result.world_from_ellipse.R = R;
+    result.world_from_ellipse.T = ellipse.center;
 
     Eigen::Matrix<Scalar, 2, 1> dd = eigen_solver.eigenvalues();
     result.semi_axes[0] = std::sqrt(ellipse.right_side / dd[0]);

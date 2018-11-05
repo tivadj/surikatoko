@@ -17,7 +17,7 @@ namespace suriko_demos_davison_mono_slam
 {
 using namespace suriko;
 
-std::array<GLfloat, 3> GetSalientPointColor(const SalPntInternal& sal_pnt);
+std::array<GLfloat, 3> GetSalientPointColor(const SalPntPatch& sal_pnt);
 
 #if defined(SRK_HAS_PANGOLIN)
 enum class UIChatMessage
@@ -49,7 +49,7 @@ std::optional<WorkerChatMessage> PopMsgUnderLock(std::optional<WorkerChatMessage
 
 struct UIThreadParams
 {
-    DavisonMonoSlam* kalman_slam;
+    DavisonMonoSlam* mono_slam;
     SE3Transform tracker_origin_from_world;
     Scalar ellipsoid_cut_thr;
     bool wait_for_user_input_after_each_frame;
@@ -142,20 +142,18 @@ void SceneVisualizationThread(UIThreadParams ui_params);
 
 #if defined(SRK_HAS_OPENCV)
 /// Draws ellipse in camera plane by dividing it into points and projecting/distorting them into pixels.
-void DrawDistortedEllipse(const DavisonMonoSlam& tracker, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr);
+void DrawDistortedEllipse(const DavisonMonoSlam& mono_slam, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr);
 
 /// Draw visible from given camera contour of ellipsoid.
-void DrawEllipsoidContour(DavisonMonoSlam& tracker, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
+void DrawEllipsoidContour(DavisonMonoSlam& mono_slam, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
     size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr);
-
-void DrawScene(DavisonMonoSlam& tracker, const cv::Mat& background_image_bgr, Scalar ellipse_cut_thr, int dots_per_uncert_ellipse, cv::Mat* out_image_bgr);
 
 class DavisonMonoSlam2DDrawer
 {
 public:
-    void DrawScene(DavisonMonoSlam& tracker, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const;
+    void DrawScene(DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const;
     
-    void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt,
+    void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt,
         cv::Mat* out_image_bgr) const;
 public:
     Scalar ellipse_cut_thr_;

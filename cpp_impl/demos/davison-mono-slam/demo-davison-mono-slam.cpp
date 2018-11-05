@@ -168,8 +168,8 @@ class DemoCornersMatcher : public CornersMatcherBase
 {
     const std::vector<SE3Transform>& gt_cam_orient_cfw_;
     FragmentMap& entire_map_;
-    std::array<size_t, 2> img_size_;
-    const DavisonMonoSlam* kalman_tracker_;
+    suriko::Sizei img_size_;
+    const DavisonMonoSlam* mono_slam_;
     bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
     std::vector<BlobInfo> detected_blobs_; // blobs detected in current frame
 public:
@@ -180,9 +180,9 @@ public:
     std::mt19937 gen_{292};
     std::uniform_real_distribution<float> uniform_distr_{};
 public:
-    DemoCornersMatcher(const DavisonMonoSlam* kalman_tracker, const std::vector<SE3Transform>& gt_cam_orient_cfw, FragmentMap& entire_map,
-        const std::array<size_t, 2>& img_size)
-        : kalman_tracker_(kalman_tracker),
+    DemoCornersMatcher(const DavisonMonoSlam* mono_slam, const std::vector<SE3Transform>& gt_cam_orient_cfw, FragmentMap& entire_map,
+        const suriko::Sizei& img_size)
+        : mono_slam_(mono_slam),
         gt_cam_orient_cfw_(gt_cam_orient_cfw),
         entire_map_(entire_map),
         img_size_(img_size)
@@ -212,12 +212,12 @@ public:
             suriko::Point3 pnt_tracker = PosTrackerOriginFromWorld(gt_cam_orient_cfw_, salient_point_world, tracker_origin_from_world_);
 
             suriko::Point3 pnt_camera = SE3Apply(cami_from_tracker, pnt_tracker);
-            suriko::Point2 pnt_pix = kalman_tracker_->ProjectCameraPoint(pnt_camera);
+            suriko::Point2 pnt_pix = mono_slam_->ProjectCameraPoint(pnt_camera);
             Scalar pix_x = pnt_pix[0];
             Scalar pix_y = pnt_pix[1];
             bool hit_wnd =
-                pix_x >= 0 && pix_x < (Scalar)img_size_[0] &&
-                pix_y >= 0 && pix_y < (Scalar)img_size_[1];
+                pix_x >= 0 && pix_x < (Scalar)img_size_.width &&
+                pix_y >= 0 && pix_y < (Scalar)img_size_.height;
             if (!hit_wnd)
                 continue;
 
@@ -357,7 +357,7 @@ class ImagePatchCornersMatcher : public CornersMatcherBase
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
     Scalar ellisoid_cut_thr_;
-    std::function<void(DavisonMonoSlam&, const SalPntInternal&, cv::Mat*)> draw_sal_pnt_fun_;
+    std::function<void(DavisonMonoSlam&, const SalPntPatch&, cv::Mat*)> draw_sal_pnt_fun_;
     std::function<void(std::string_view, cv::Mat)> show_image_fun_;
     std::optional<suriko::Sizei> min_search_rect_size_;
     std::optional<Scalar> min_templ_corr_coeff_;
@@ -374,8 +374,8 @@ public:
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts)
     {
-        int result_cols = frame_image.gray.cols - kalman_tracker_->sal_pnt_patch_size_[0] + 1;
-        int result_rows = frame_image.gray.rows - kalman_tracker_->sal_pnt_patch_size_[1] + 1;
+        int result_cols = frame_image.gray.cols - kalman_tracker_->sal_pnt_patch_size_.width + 1;
+        int result_rows = frame_image.gray.rows - kalman_tracker_->sal_pnt_patch_size_.height + 1;
         cv::Mat match_score_image;
         match_score_image.create(result_rows, result_cols, CV_32FC1);
 
@@ -394,7 +394,7 @@ public:
 
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
-            const SalPntInternal& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
+            const SalPntPatch& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
             cv::matchTemplate(frame_image.gray, sal_pnt.template_gray_in_first_frame, match_score_image, method);
             cv::normalize(match_score_image, match_score_image, 0, 1, cv::NORM_MINMAX, -1);
 
@@ -411,7 +411,7 @@ public:
             if (debug_ui)
             {
                 frame_image.gray.copyTo(image_gray_with_match);
-                cv::Rect rect{ matched_loc_top_left.x, matched_loc_top_left.y, kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1] };
+                cv::Rect rect{ matched_loc_top_left.x, matched_loc_top_left.y, kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height };
                 cv::rectangle(image_gray_with_match, rect, cv::Scalar::all(0));
             }
 
@@ -431,8 +431,8 @@ public:
                 SRK_ASSERT(true);
             }
 
-            int rad_x_int = kalman_tracker_->sal_pnt_patch_size_[0] / 2;
-            int rad_y_int = kalman_tracker_->sal_pnt_patch_size_[1] / 2;
+            int rad_x_int = kalman_tracker_->sal_pnt_patch_size_.width / 2;
+            int rad_y_int = kalman_tracker_->sal_pnt_patch_size_.height / 2;
 
             auto center = suriko::Pointi{ maxLoc.x + rad_x_int, maxLoc.y + rad_y_int };
             if (match_pnt_center.has_value())
@@ -464,7 +464,7 @@ public:
     {
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
-            const SalPntInternal& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
+            const SalPntPatch& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
 
             std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt, frame_image, ellisoid_cut_thr_);
             bool is_lost = !match_pnt_center.has_value();
@@ -600,7 +600,7 @@ public:
         int executed_match_templ_calls;
     };
 
-    TemplateMatchResult MatchSalPntTemplateCenterInRect(const SalPntInternal& sal_pnt, const ImageFrame& frame_image, Recti search_rect, int match_impl)
+    TemplateMatchResult MatchSalPntTemplateCenterInRect(const SalPntPatch& sal_pnt, const ImageFrame& frame_image, Recti search_rect, int match_impl)
     {
         Pointi search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
         const int search_radius_left = search_rect.width / 2;
@@ -613,9 +613,9 @@ public:
 
         // template mean and variance
         Scalar templ_mean = GetGrayPatchMean(sal_pnt.template_gray_in_first_frame, Pointi{ 0,0 },
-            kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1]);
+            kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height);
         Scalar templ_var_sum = GetGrayPatchDiffSqrSum(sal_pnt.template_gray_in_first_frame, Pointi{ 0,0 },
-            kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1], templ_mean);
+            kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height, templ_mean);
         Scalar templ_var = std::sqrt(templ_var_sum);
 
         struct PosAndErr
@@ -650,7 +650,7 @@ public:
             {
 
                 Scalar img_mean = GetGrayPatchMean(frame_image.gray, patch_top_left,
-                    kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1]);
+                    kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height);
 
                 CorrelationCoeffData corr_data = CalcCorrCoeff(frame_image, template_gray, patch_top_left, img_mean, templ_mean);
                 corr_coeff = corr_data.corr_prod_sum / (std::sqrt(corr_data.image_diff_sqr_sum) * templ_var);
@@ -761,33 +761,27 @@ public:
 
     Rect GetEllipseBounds2(const RotatedEllipse2D& rotated_ellipse)
     {
-        Scalar r1 = rotated_ellipse.rot_mat_world_from_ellipse(0, 0);
-        Scalar r2 = rotated_ellipse.rot_mat_world_from_ellipse(0, 1);
-        Scalar r3 = rotated_ellipse.rot_mat_world_from_ellipse(1, 0);
-        Scalar r4 = rotated_ellipse.rot_mat_world_from_ellipse(1, 1);
+        Scalar r1 = rotated_ellipse.world_from_ellipse.R(0, 0);
+        Scalar r2 = rotated_ellipse.world_from_ellipse.R(0, 1);
+        Scalar r3 = rotated_ellipse.world_from_ellipse.R(1, 0);
+        Scalar r4 = rotated_ellipse.world_from_ellipse.R(1, 1);
         Scalar a = rotated_ellipse.semi_axes[0];
         Scalar b = rotated_ellipse.semi_axes[1];
 
-        Scalar den = r1 * r4 - r2 * r3;
+        Scalar den_abs = std::abs(r1 * r4 - r2 * r3);
 
         Scalar x1, x2;
         {
             Scalar discr_sqrt = std::sqrt(b * b * r3 * r3 + a * a * r4 * r4);
-            Scalar part1 = rotated_ellipse.center_e[0] * r4 - rotated_ellipse.center_e[1] * r3;
-            x1 = (part1 - discr_sqrt) / den;
-            x2 = (part1 + discr_sqrt) / den;
+            x1 = rotated_ellipse.world_from_ellipse.T[0] - discr_sqrt / den_abs;
+            x2 = rotated_ellipse.world_from_ellipse.T[0] + discr_sqrt / den_abs;
         }
         Scalar y1, y2;
         {
             Scalar discr_sqrt = std::sqrt(b * b * r1 * r1 + a * a * r2 * r2);
-            Scalar part1 = rotated_ellipse.center_e[1] * r1 - rotated_ellipse.center_e[0] * r2;
-            y1 = (part1 - discr_sqrt) / den;
-            y2 = (part1 + discr_sqrt) / den;
+            y1 = rotated_ellipse.world_from_ellipse.T[1] - discr_sqrt / den_abs;
+            y2 = rotated_ellipse.world_from_ellipse.T[1] + discr_sqrt / den_abs;
         }
-
-        // denominator can be negative
-        if (x1 > x2) std::swap(x1, x2);
-        if (y1 > y2) std::swap(y1, y2);
 
         Rect result;
         result.x = x1;
@@ -797,25 +791,24 @@ public:
         return result;
     }
 
-    Recti PredictSalientPointSearchRect(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt, const ImageFrame& next_frame_image,
+    Recti PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt, const ImageFrame& next_frame_image,
         Scalar ellisoid_cut_thr)
     {
         Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
-        tracker.GetSalientPointPredictedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+        mono_slam.GetSalientPointPredictedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
         Ellipsoid3DWithCenter ellipsoid;
         ExtractEllipsoidFromUncertaintyMat(sal_pnt_pos, sal_pnt_pos_uncert, ellisoid_cut_thr, &ellipsoid);
 
-        CameraStateVars cam_state;
-        tracker.GetCameraPredictedVars(&cam_state);
+        CameraStateVars cam_state = mono_slam.GetCameraPredictedVars();
 
-        RotatedEllipse2D rotated_ellipse = tracker.ProjectEllipsoidOnCameraOrApprox(ellipsoid, cam_state);
+        RotatedEllipse2D rotated_ellipse = mono_slam.ProjectEllipsoidOnCameraOrApprox(ellipsoid, cam_state);
         Rect ellipse_bounds_cam = GetEllipseBounds2(rotated_ellipse);
 
         // convert bounds of ellipse in the camera plane into bounds in image pixel coordinates
-        suriko::Point2 top_left_pix = tracker.ProjectCameraPoint(suriko::Point3{ ellipse_bounds_cam.x, ellipse_bounds_cam.y, suriko::kCamPlaneZ });
-        suriko::Point2 bot_right_pix = tracker.ProjectCameraPoint(suriko::Point3{ 
+        suriko::Point2 top_left_pix = mono_slam.ProjectCameraPoint(suriko::Point3{ ellipse_bounds_cam.x, ellipse_bounds_cam.y, suriko::kCamPlaneZ });
+        suriko::Point2 bot_right_pix = mono_slam.ProjectCameraPoint(suriko::Point3{ 
             ellipse_bounds_cam.x + ellipse_bounds_cam.width, 
             ellipse_bounds_cam.y + ellipse_bounds_cam.height, suriko::kCamPlaneZ });
 
@@ -862,18 +855,18 @@ public:
         return result;
     }
 
-    std::optional<suriko::Point2> MatchSalientPointCenter(DavisonMonoSlam& tracker, const SalPntInternal& sal_pnt, const ImageFrame& frame_image,
+    std::optional<suriko::Point2> MatchSalientPointCenter(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt, const ImageFrame& frame_image,
         Scalar ellisoid_cut_thr)
     {
-        Recti search_rect_unbounded = PredictSalientPointSearchRect(tracker, sal_pnt, frame_image, ellisoid_cut_thr);
+        Recti search_rect_unbounded = PredictSalientPointSearchRect(mono_slam, sal_pnt, frame_image, ellisoid_cut_thr);
         
         if (min_search_rect_size_.has_value())
             search_rect_unbounded = ClampRectWhenFixedCenter(search_rect_unbounded, min_search_rect_size_.value());
 
         Recti image_bounds = { 0, 0, frame_image.gray.cols, frame_image.gray.rows };
         
-        int radx = tracker.sal_pnt_patch_size_[0] / 2;
-        int rady = tracker.sal_pnt_patch_size_[1] / 2;
+        int radx = mono_slam.sal_pnt_patch_size_.width / 2;
+        int rady = mono_slam.sal_pnt_patch_size_.height / 2;
         Recti image_sensitive_portion = DeflateRect(image_bounds, radx, rady, radx, rady);
         
         std::optional<Recti> search_rect_opt = IntersectRects(search_rect_unbounded, image_sensitive_portion);
@@ -897,16 +890,16 @@ public:
             CopyBgr(frame_image, &image_with_match_bgr);
 
             //if (this->draw_sal_pnt_fun_ != nullptr)
-            //    draw_sal_pnt_fun_(tracker, sal_pnt, &image_with_match_bgr);
+            //    draw_sal_pnt_fun_(mono_slam, sal_pnt, &image_with_match_bgr);
 
             cv::Rect search_rect_cv{ search_rect.x, search_rect.y, search_rect.width, search_rect.height };
             cv::rectangle(image_with_match_bgr, search_rect_cv, cv::Scalar::all(255));
 
             // patch bounds in new frame
-            suriko::Pointi new_top_left = tracker.TemplateTopLeftInt(match_result.center);
+            suriko::Pointi new_top_left = mono_slam.TemplateTopLeftInt(match_result.center);
             cv::Rect patch_rect{
                 new_top_left.x, new_top_left.y,
-                tracker.sal_pnt_patch_size_[0], tracker.sal_pnt_patch_size_[1] };
+                mono_slam.sal_pnt_patch_size_.width, mono_slam.sal_pnt_patch_size_.height };
             cv::rectangle(image_with_match_bgr, patch_rect, cv::Scalar(172,172,0));
 
             if (show_image_fun_ != nullptr)
@@ -964,7 +957,7 @@ public:
         detector_->compute(image.gray, keypoints, descr_per_row);
 
         std::vector<cv::KeyPoint> sparse_keypoints;
-        const float rad_diag = std::sqrt(suriko::Sqr(kalman_tracker_->sal_pnt_patch_size_[0]) + suriko::Sqr(kalman_tracker_->sal_pnt_patch_size_[1])) / 2;
+        const float rad_diag = std::sqrt(suriko::Sqr(kalman_tracker_->sal_pnt_patch_size_.width) + suriko::Sqr(kalman_tracker_->sal_pnt_patch_size_.height)) / 2;
         FilterOutClosest(keypoints, rad_diag, &sparse_keypoints);
 
         cv::Mat sparse_img;
@@ -1039,17 +1032,17 @@ public:
     {
         const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
 
-        int rad_x_int = kalman_tracker_->sal_pnt_patch_size_[0] / 2;
-        int rad_y_int = kalman_tracker_->sal_pnt_patch_size_[1] / 2;
+        int rad_x_int = kalman_tracker_->sal_pnt_patch_size_.width / 2;
+        int rad_y_int = kalman_tracker_->sal_pnt_patch_size_.height / 2;
 
         int center_x = (int)kp.pt.x;
         int center_y = (int)kp.pt.y;
-        cv::Rect patch_bounds{ center_x - rad_x_int, center_y - rad_y_int, kalman_tracker_->sal_pnt_patch_size_[0], kalman_tracker_->sal_pnt_patch_size_[1] };
+        cv::Rect patch_bounds{ center_x - rad_x_int, center_y - rad_y_int, kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height };
 
         cv::Mat patch_gray;
         image.gray(patch_bounds).copyTo(patch_gray);
-        SRK_ASSERT(patch_gray.rows == kalman_tracker_->sal_pnt_patch_size_[1]);
-        SRK_ASSERT(patch_gray.cols == kalman_tracker_->sal_pnt_patch_size_[0]);
+        SRK_ASSERT(patch_gray.rows == kalman_tracker_->sal_pnt_patch_size_.height);
+        SRK_ASSERT(patch_gray.cols == kalman_tracker_->sal_pnt_patch_size_.width);
 
         ImageFrame patch_template{};
         patch_template.gray = patch_gray;
@@ -1172,6 +1165,7 @@ DEFINE_bool(kalman_stop_on_sal_pnt_moved_too_far, false, "width of patch templat
 DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
 DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
+DEFINE_int32(kalman_debug_max_sal_pnt_count, -1, "[default=-1(none)] number of salient points won't be greater than this value");
 DEFINE_bool(kalman_fake_localization, false, "");
 DEFINE_bool(kalman_fake_sal_pnt_init_inv_dist, false, "");
 DEFINE_double(kalman_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
@@ -1220,12 +1214,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     std::vector<SE3Transform> gt_cam_orient_cfw; // ground truth camera orientation transforming into camera from world
 
     WorldBounds wb{};
-    wb.XMin = FLAGS_world_xmin;
-    wb.XMax = FLAGS_world_xmax;
-    wb.YMin = FLAGS_world_ymin;
-    wb.YMax = FLAGS_world_ymax;
-    wb.ZMin = FLAGS_world_zmin;
-    wb.ZMax = FLAGS_world_zmax;
+    wb.x_min = FLAGS_world_xmin;
+    wb.x_max = FLAGS_world_xmax;
+    wb.y_min = FLAGS_world_ymin;
+    wb.y_max = FLAGS_world_ymax;
+    wb.z_min = FLAGS_world_zmin;
+    wb.z_max = FLAGS_world_zmax;
     std::array<Scalar, 3> cell_size = { FLAGS_world_cell_size_x, FLAGS_world_cell_size_y, FLAGS_world_cell_size_z };
 
     std::random_device rd;  //Will be used to obtain a seed for the random number engine
@@ -1291,7 +1285,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cam_intrinsics.focal_length_mm = focal_length_mm;
     cam_intrinsics.pixel_size_mm = { pix_size_x , pix_size_y };
 
-    LOG(INFO) << "img_size=[" << cam_intrinsics.image_size[0] << "," << cam_intrinsics.image_size[1] << "] pix";
+    LOG(INFO) << "img_size=[" << cam_intrinsics.image_size.width << "," << cam_intrinsics.image_size.height << "] pix";
     LOG(INFO) << "foc_len="
         << cam_intrinsics.focal_length_mm << " mm" << " PixelSize[dx,dy]=[" 
         << cam_intrinsics.pixel_size_mm[0] << ","
@@ -1330,43 +1324,45 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         debug_path = debug_path | DavisonMonoSlam::DebugPathEnum::DebugPredictedVarsCov;
     DavisonMonoSlam::SetDebugPath(debug_path);
 
-    DavisonMonoSlam tracker{ };
-    tracker.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
-    tracker.between_frames_period_ = 1;
-    tracker.cam_intrinsics_ = cam_intrinsics;
-    tracker.cam_distort_params_ = cam_distort_params;
-    tracker.sal_pnt_init_inv_dist_ = FLAGS_kalman_sal_pnt_init_inv_dist;
-    tracker.sal_pnt_init_inv_dist_std_ = FLAGS_kalman_sal_pnt_init_inv_dist_std;
-    tracker.SetInputNoiseStd(FLAGS_kalman_input_noise_std);
-    tracker.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
-    tracker.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
+    DavisonMonoSlam mono_slam{ };
+    mono_slam.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
+    mono_slam.between_frames_period_ = 1;
+    mono_slam.cam_intrinsics_ = cam_intrinsics;
+    mono_slam.cam_distort_params_ = cam_distort_params;
+    mono_slam.sal_pnt_init_inv_dist_ = FLAGS_kalman_sal_pnt_init_inv_dist;
+    mono_slam.sal_pnt_init_inv_dist_std_ = FLAGS_kalman_sal_pnt_init_inv_dist_std;
+    mono_slam.SetInputNoiseStd(FLAGS_kalman_input_noise_std);
+    mono_slam.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
+    mono_slam.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
     
     SE3Transform cam_cfw = SE3Inv(LookAtLufWfc(
         { FLAGS_camera_look_from_x, FLAGS_camera_look_from_y, FLAGS_camera_look_from_z },
         { FLAGS_camera_look_to_x, FLAGS_camera_look_to_y, FLAGS_camera_look_to_z },
         { FLAGS_camera_up_x, FLAGS_camera_up_y, FLAGS_camera_up_z }));
-    tracker.SetCamera(cam_cfw, FLAGS_kalman_estim_var_init_std);
+    mono_slam.SetCamera(cam_cfw, FLAGS_kalman_estim_var_init_std);
 
-    tracker.kalman_update_impl_ = FLAGS_kalman_update_impl;
-    tracker.support_inf_sal_pnts_ = FLAGS_kalman_support_inf_sal_pnts;
-    tracker.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
-    tracker.debug_ellipsoid_cut_thr_ = FLAGS_kalman_ellipsoid_cut_thr;
+    mono_slam.kalman_update_impl_ = FLAGS_kalman_update_impl;
+    mono_slam.support_inf_sal_pnts_ = FLAGS_kalman_support_inf_sal_pnts;
+    mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
+    mono_slam.debug_ellipsoid_cut_thr_ = FLAGS_kalman_ellipsoid_cut_thr;
+    if (FLAGS_kalman_debug_max_sal_pnt_count != -1)
+        mono_slam.debug_max_sal_pnt_coun_ = FLAGS_kalman_debug_max_sal_pnt_count;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    tracker.fake_localization_ = FLAGS_kalman_fake_localization;
-    tracker.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
-    tracker.gt_cami_from_tracker_fun_ = [&gt_cam_orient_cfw, tracker_origin_from_world](size_t frame_ind) -> SE3Transform
+    mono_slam.fake_localization_ = FLAGS_kalman_fake_localization;
+    mono_slam.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
+    mono_slam.gt_cami_from_tracker_fun_ = [&gt_cam_orient_cfw, tracker_origin_from_world](size_t frame_ind) -> SE3Transform
     {
         SE3Transform c = CurCamFromTrackerOrigin(gt_cam_orient_cfw, frame_ind, tracker_origin_from_world);
         return c;
     };    
 #endif
 
-    tracker.PredictEstimVarsHelper();
+    mono_slam.PredictEstimVarsHelper();
     LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
 
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     {
-        auto corners_matcher = std::make_unique<DemoCornersMatcher>(&tracker, gt_cam_orient_cfw, entire_map, img_size);
+        auto corners_matcher = std::make_unique<DemoCornersMatcher>(&mono_slam, gt_cam_orient_cfw, entire_map, cam_intrinsics.image_size);
         corners_matcher->tracker_origin_from_world_ = tracker_origin_from_world;
 
         if (FLAGS_kalman_max_new_blobs_in_first_frame > 0)
@@ -1376,19 +1372,19 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         if (FLAGS_kalman_match_blob_prob > 0)
             corners_matcher->match_blob_prob_ = FLAGS_kalman_match_blob_prob;
 
-        tracker.SetCornersMatcher(std::move(corners_matcher));
+        mono_slam.SetCornersMatcher(std::move(corners_matcher));
     }
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
     {
-        auto corners_matcher = std::make_unique<ImagePatchCornersMatcher>(&tracker);
+        auto corners_matcher = std::make_unique<ImagePatchCornersMatcher>(&mono_slam);
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_kalman_stop_on_sal_pnt_moved_too_far;
         corners_matcher->ellisoid_cut_thr_ = FLAGS_kalman_ellipsoid_cut_thr;
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_kalman_templ_min_search_rect_width, FLAGS_kalman_templ_min_search_rect_height };
         if (FLAGS_kalman_templ_min_corr_coeff > -1)
             corners_matcher->min_templ_corr_coeff_ = FLAGS_kalman_templ_min_corr_coeff;
-        corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& tracker,const SalPntInternal& sal_pnt, cv::Mat* out_image_bgr)
+        corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& mono_slam,const SalPntPatch& sal_pnt, cv::Mat* out_image_bgr)
         {
-            drawer.DrawEstimatedSalientPoint(tracker, sal_pnt, out_image_bgr);
+            drawer.DrawEstimatedSalientPoint(mono_slam, sal_pnt, out_image_bgr);
         };
         corners_matcher->show_image_fun_ = [](std::string_view wnd_name, const cv::Mat& image_bgr)
         {
@@ -1396,17 +1392,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             cv::imshow(wnd_name.data(), image_bgr);
 #endif
         };
-        tracker.SetCornersMatcher(std::move(corners_matcher));
+        mono_slam.SetCornersMatcher(std::move(corners_matcher));
     }
 #endif
 
     if (FLAGS_ctrl_collect_tracker_internals)
     {
-        tracker.SetStatsLogger(std::make_unique<DavisonMonoSlamInternalsLogger>(&tracker));
+        mono_slam.SetStatsLogger(std::make_unique<DavisonMonoSlamInternalsLogger>(&mono_slam));
     }
 
 #if defined(SRK_HAS_OPENCV)
-    cv::Mat camera_image_bgr = cv::Mat::zeros(cam_intrinsics.image_size[1], (int)cam_intrinsics.image_size[0], CV_8UC3);
+    cv::Mat camera_image_bgr = cv::Mat::zeros(cam_intrinsics.image_size.height, (int)cam_intrinsics.image_size.width, CV_8UC3);
 #endif
 #if defined(SRK_HAS_PANGOLIN)
     // across threads shared data
@@ -1416,7 +1412,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     UIThreadParams ui_params {};
     ui_params.wait_for_user_input_after_each_frame = FLAGS_ctrl_wait_after_each_frame;
-    ui_params.kalman_slam = &tracker;
+    ui_params.mono_slam = &mono_slam;
     ui_params.tracker_origin_from_world = tracker_origin_from_world;
     ui_params.ellipsoid_cut_thr = FLAGS_kalman_ellipsoid_cut_thr;
     ui_params.cam_orient_cfw_history = &cam_orient_cfw_history;
@@ -1477,7 +1473,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         image.bgr_debug = image_bgr;
 #endif
 #endif
-        auto& corners_matcher = tracker.CornersMatcher();
+        auto& corners_matcher = mono_slam.CornersMatcher();
         corners_matcher.AnalyzeFrame(frame_ind, image);
 
         // process the frame
@@ -1485,13 +1481,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         {
             auto t1 = std::chrono::high_resolution_clock::now();
 
-            tracker.ProcessFrame(frame_ind, image);
+            mono_slam.ProcessFrame(frame_ind, image);
 
             auto t2 = std::chrono::high_resolution_clock::now();
             frame_process_time = t2 - t1;
 
-            CameraStateVars cam_state;
-            tracker.GetCameraEstimatedVars(&cam_state);
+            CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();
             SE3Transform actual_cam_wfc(RotMat(cam_state.orientation_wfc), cam_state.pos_w);
             SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
 #if defined(SRK_HAS_PANGOLIN)
@@ -1505,22 +1500,22 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         VLOG(4) << "f=" << frame_ind
             << " fps=" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f)
-            << " tracks_count=" << tracker.SalientPointsCount();
+            << " tracks_count=" << mono_slam.SalientPointsCount();
 
 #if defined(SRK_HAS_OPENCV)
         if (FLAGS_ctrl_visualize_during_processing)
         {
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-            camera_image_rgb.setTo(0);
+            camera_image_bgr.setTo(0);
             const SE3Transform& rt_cfw = gt_cam_orient_cfw[frame_ind];
-            auto project_fun = [&rt_cfw, &tracker](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+            auto project_fun = [&rt_cfw, &mono_slam](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
             {
                 suriko::Point3 pnt_cam = SE3Apply(rt_cfw, sal_pnt_world);
-                suriko::Point2 pnt_pix = tracker.ProjectCameraPoint(pnt_cam);
+                suriko::Point2 pnt_pix = mono_slam.ProjectCameraPoint(pnt_cam);
                 return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
             };
             constexpr Scalar f0 = 1;
-            suriko_demos::Draw2DProjectedAxes(f0, project_fun, &camera_image_rgb);
+            suriko_demos::Draw2DProjectedAxes(f0, project_fun, &camera_image_bgr);
 
             //
             auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&corners_matcher);
@@ -1530,15 +1525,15 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 {
                     Scalar pix_x = blob_info.Coord[0];
                     Scalar pix_y = blob_info.Coord[1];
-                    camera_image_rgb.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
+                    camera_image_bgr.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
                 }
             }
 
             std::stringstream strbuf;
             strbuf << "f=" << frame_ind;
-            cv::putText(camera_image_rgb, cv::String(strbuf.str()), cv::Point(10, (int)img_size[1] - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
+            cv::putText(camera_image_bgr, cv::String(strbuf.str()), cv::Point(10, (int)cam_intrinsics.image_size.height - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
-            drawer.DrawScene(tracker, image_bgr, &camera_image_bgr);
+            drawer.DrawScene(mono_slam, image_bgr, &camera_image_bgr);
 #endif
             cv::imshow("front-camera", camera_image_bgr);
             cv::waitKey(1); // allow to refresh an opencv view
@@ -1588,7 +1583,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 
                 const bool suppress_observations = (key == 's');
 
-                auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&tracker.CornersMatcher());
+                auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&mono_slam.CornersMatcher());
                 if (a_corners_matcher != nullptr)
                     a_corners_matcher->SetSuppressObservations(suppress_observations);
             }
@@ -1664,7 +1659,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #endif
 
         //
-    const DavisonMonoSlamTrackerInternalsHist& internal_stats = tracker.StatsLogger()->BuildStats();
+    const DavisonMonoSlamTrackerInternalsHist& internal_stats = mono_slam.StatsLogger()->BuildStats();
 
     bool dump_op = WriteTrackerInternalsToFile("davison_tracker_internals.json", internal_stats);
     if (FLAGS_ctrl_collect_tracker_internals && !dump_op)

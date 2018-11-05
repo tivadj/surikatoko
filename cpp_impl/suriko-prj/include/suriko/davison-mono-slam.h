@@ -63,8 +63,8 @@ enum class SalPntTrackStatus
     Unobserved   // undetected in current frame
 };
 
-/// Represents 3D salient points.
-struct SalPntInternal
+/// Represents the portion of the image, which is the projection of salient image into a camera.
+struct SalPntPatch
 {
     size_t estim_vars_ind; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
     size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
@@ -94,12 +94,12 @@ struct SalPntId
 {
     union
     {
-        SalPntInternal* sal_pnt_internal;
+        SalPntPatch* sal_pnt_internal;
         ptrdiff_t sal_pnt_as_bits_internal;
     };
 
     SalPntId() = default;
-    SalPntId(SalPntInternal* sal_pnt) : sal_pnt_internal(sal_pnt) {}
+    SalPntId(SalPntPatch* sal_pnt) : sal_pnt_internal(sal_pnt) {}
     operator bool() const { return sal_pnt_internal != nullptr; }
 };
 inline bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal < y.sal_pnt_as_bits_internal; }
@@ -142,7 +142,7 @@ public:
 /// (alpha_x = focal_length_x_meters / pixel_width_meters)
 struct CameraIntrinsicParams
 {
-    std::array<int,2> image_size;  // [width, height] image resolution
+    suriko::Sizei image_size;  // [width, height] image resolution
 
     std::array<Scalar, 2> principal_point_pix; // [Cx,Cy] in pixels
 
@@ -217,13 +217,13 @@ class DavisonMonoSlam;
 class DavisonMonoSlamInternalsLogger
 {
     using Clock = std::chrono::high_resolution_clock;
-    DavisonMonoSlam* tracker_ = nullptr;
+    DavisonMonoSlam* mono_slam_ = nullptr;
     DavisonMonoSlamTrackerInternalsSlice cur_stats_;
     DavisonMonoSlamTrackerInternalsHist hist_;
     Clock::time_point frame_start_time_point_;
     Clock::time_point frame_finish_time_point_;
 public:
-    DavisonMonoSlamInternalsLogger(DavisonMonoSlam* tracker);
+    DavisonMonoSlamInternalsLogger(DavisonMonoSlam* mono_slam);
     virtual ~DavisonMonoSlamInternalsLogger() = default;
 
     virtual void StartNewFrameStats();
@@ -265,7 +265,7 @@ private:
 
     EigenDynVec estim_vars_; // x[13+N*6], camera position plus all salient points
     EigenDynMat estim_vars_covar_; // P[13+N*6, 13+N*6], state's covariance matrix
-    std::vector<std::unique_ptr<SalPntInternal>> sal_pnts_; // the set of tracked salient points
+    std::vector<std::unique_ptr<SalPntPatch>> sal_pnts_; // the set of tracked salient points
     std::set<SalPntId> sal_pnts_as_ids_; // the set ids of tracked salient points
     std::set<SalPntId> latest_frame_sal_pnts_; // contains subset of salient points which were tracked in the latest frame
 
@@ -284,7 +284,9 @@ public:
     
     // width and height of a patch template of a salient point
     // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
-    std::array<int, 2> sal_pnt_patch_size_ = { 15, 15 };
+    suriko::Sizei sal_pnt_patch_size_ = { 15, 15 };
+
+    std::optional<int> debug_max_sal_pnt_coun_;
 
     // camera
     CameraIntrinsicParams cam_intrinsics_{};
@@ -355,8 +357,8 @@ public:
 
     size_t EstimatedVarsCount() const;
 
-    void GetCameraEstimatedVars(CameraStateVars* result);
-    void GetCameraPredictedVars(CameraStateVars* result);
+    CameraStateVars GetCameraEstimatedVars();
+    CameraStateVars GetCameraPredictedVars();
 
     void GetCameraEstimatedPosAndOrientationWithUncertainty(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
@@ -380,8 +382,8 @@ public:
 
     const std::set<SalPntId>& GetSalientPoints() const;
 
-    SalPntInternal& GetSalientPoint(SalPntId id);
-    const SalPntInternal& GetSalientPoint(SalPntId id) const;
+    SalPntPatch& GetSalientPoint(SalPntId id);
+    const SalPntPatch& GetSalientPoint(SalPntId id) const;
 
     suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center) const;
 
@@ -422,7 +424,7 @@ private:
 
     auto GetFilterState(FilterStageType filter_stage) -> std::tuple<EigenDynVec*, EigenDynMat*>;
 
-    void GetCameraStateVars(FilterStageType filter_stage, CameraStateVars* result);
+    CameraStateVars GetCameraStateVars(FilterStageType filter_stage);
 
     void GetCameraPosAndOrientationWithUncertainty(FilterStageType filter_stage,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
@@ -489,12 +491,12 @@ private:
     void FiniteDiff_cam_state_by_input_noise(Scalar finite_diff_eps,
         Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const;
 
-    void Deriv_Hrowblock_by_estim_vars(const SalPntInternal& sal_pnt,
+    void Deriv_Hrowblock_by_estim_vars(const SalPntPatch& sal_pnt,
         const CameraStateVars& cam_state, const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
         const EigenDynVec& derive_at_pnt,
         Eigen::Matrix<Scalar, kPixPosComps, Eigen::Dynamic>* Hrowblock_by_estim_vars) const;
 
-    void Deriv_hd_by_cam_state_and_sal_pnt(const SalPntInternal& sal_pnt,
+    void Deriv_hd_by_cam_state_and_sal_pnt(const SalPntPatch& sal_pnt,
         const CameraStateVars& cam_state, const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
         const EigenDynVec& derive_at_pnt,
         Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam_state,
@@ -552,7 +554,7 @@ private:
         Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_xc) const;
     
     void FiniteDiff_hd_by_sal_pnt_state(const CameraStateVars& cam_state, 
-        const SalPntInternal& sal_pnt,
+        const SalPntPatch& sal_pnt,
         const EigenDynVec& derive_at_pnt,
         Scalar finite_diff_eps,
         Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_y) const;
