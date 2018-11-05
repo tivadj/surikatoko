@@ -58,6 +58,11 @@ public:
     Scalar& operator[] (size_t i)       { return mat_(i); };
 };
 
+struct Sizei
+{
+    int width, height;
+};
+
 template <typename F>
 struct RectProto
 {
