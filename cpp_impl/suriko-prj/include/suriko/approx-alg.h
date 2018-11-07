@@ -45,4 +45,8 @@ constexpr auto Pow4(F x) -> F { return x*x*x*x; }
 
 template <typename F>
 constexpr auto Sign(F x) -> int { return x >= 0 ? 1 : -1; }
+
+template <typename F>
+constexpr auto CeilPow2N(F x) { return std::pow(2, std::ceil(std::log2(x))); };
+
 }

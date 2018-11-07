@@ -10,7 +10,7 @@
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/core/core.hpp> // cv::Mat
-#include <opencv2/imgproc.hpp> // cv::circle
+#include <opencv2/imgproc.hpp> // cv::circle, cv::resize
 #endif
 
 #if defined(SRK_HAS_PANGOLIN)
@@ -415,45 +415,67 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam
     else
     {
         // render an image of rectangular patch, associated with salient point
-        const GLsizei texWidth = mono_slam->sal_pnt_patch_size_.width;
-        const GLsizei texHeight = mono_slam->sal_pnt_patch_size_.height;
+        // NOTE: glTexImage2D requires a texture size to be 2^N
+        const GLsizei tex_width = static_cast<GLsizei>(CeilPow2N(mono_slam->sal_pnt_patch_size_.width));
+        const GLsizei tex_height = static_cast<GLsizei>(CeilPow2N(mono_slam->sal_pnt_patch_size_.height));
 
-        // bind the texture
         glEnable(GL_TEXTURE_2D);
-        GLuint texId = -1;
-        glGenTextures(1 /*num of textures*/, &texId);
 
-        // always convert to RGB because OpenGL can't get gray images as an input (glTexImage2D.format parameter)
-        const GLenum src_texture_format = GL_BGR;
-        cv::Mat patch_bgr;
+        std::array<GLuint, 1> texId{ 0 };
+        glGenTextures((GLsizei)texId.size() /*num of textures*/, texId.data());
+
+        // always convert to RGB/BGR because OpenGL can't get gray images as an input (glTexImage2D.format parameter)
+        GLenum src_texture_format = GL_BGR;
+        static cv::Mat tex_bgr(tex_height, tex_width, CV_8UC3);
+
+        // put patch into the bottom-left corner of the texture
+        cv::Rect patch_bounds{ 0, tex_height - mono_slam->sal_pnt_patch_size_.height, mono_slam->sal_pnt_patch_size_.width, mono_slam->sal_pnt_patch_size_.height };
+        cv::Mat patch_submat{ tex_bgr, patch_bounds };
+
+        bool patch_constructed = false;
 #if defined(SRK_DEBUG)
-        patch_bgr = sal_pnt.template_bgr_in_first_frame_debug.clone();  // need cloning because it farther flipped
-#else
-        cv::cvtColor(sal_pnt.template_gray_in_first_frame, patch_bgr, CV_GRAY2BGR);
+        // visualize colored patches if available as it simplifies recognition of a scene
+        // NOTE: need a copy of the patch because later it is flipped
+        if (!sal_pnt.template_bgr_in_first_frame_debug.empty())
+        {
+            sal_pnt.template_bgr_in_first_frame_debug.copyTo(patch_submat);
+            patch_constructed = true;
+        }
 #endif
+        if (!patch_constructed)
+        {
+            cv::cvtColor(sal_pnt.template_gray_in_first_frame, patch_submat, CV_GRAY2BGR);
+        }
+
         // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture
         // OpenCV stores images from top to bottom, while the GL uses bottom to top
-        cv::flip(patch_bgr, patch_bgr, 0 /*0=around x-axis*/);
+        cv::flip(tex_bgr, tex_bgr, 0 /*0=around x-axis*/);
 
         //set length of one complete row in data (doesn't need to equal image.cols)
-        glPixelStorei(GL_UNPACK_ROW_LENGTH, patch_bgr.step / patch_bgr.elemSize());
+        const int row_length = static_cast<int>(tex_bgr.step / tex_bgr.elemSize());
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
 
         //use fast 4-byte alignment (default anyway) if possible
-        glPixelStorei(GL_UNPACK_ALIGNMENT, (patch_bgr.step & 3) ? 1 : 4);
+        const int row_alignment = static_cast<int>((tex_bgr.step & 3) ? 1 : 4);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, row_alignment);
 
-        glBindTexture(GL_TEXTURE_2D, texId);
-        const GLenum gl_texture_format = GL_BGR;  // GL_LUMINANCE (for gray) or GL_RGB, both work
-        glTexImage2D(GL_TEXTURE_2D, 0, gl_texture_format, texWidth, texHeight, 0, src_texture_format, GL_UNSIGNED_BYTE, patch_bgr.data);
+        glBindTexture(GL_TEXTURE_2D, texId[0]);
+        const GLint gl_texture_format = GL_RGB;  // GL_LUMINANCE (for color->gray conversion) or GL_RGB, both work
+        glTexImage2D(GL_TEXTURE_2D, 0, gl_texture_format, tex_width, tex_height, 0, src_texture_format, GL_UNSIGNED_BYTE, tex_bgr.data);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);  // do not mix texture color with background
 
+        // patch is in the bottom-left corner of the texture
+        GLfloat tex_max_x = static_cast<GLfloat>(mono_slam->sal_pnt_patch_size_.width) / tex_width;
+        GLfloat tex_max_y = static_cast<GLfloat>(mono_slam->sal_pnt_patch_size_.height) / tex_height;
+
         using PointIndAndTexCoord = std::tuple<size_t, std::array <GLfloat, 2>>;
         std::array< PointIndAndTexCoord, 4> vertex_and_tex_coords = {
-            PointIndAndTexCoord { SalPntRectFacet::kTopRightInd, {1.0f, 1.0f}},
-            PointIndAndTexCoord { SalPntRectFacet::kTopLeftInd, {0.0f, 1.0f}},
+            PointIndAndTexCoord { SalPntRectFacet::kTopRightInd, {tex_max_x, tex_max_y}},
+            PointIndAndTexCoord { SalPntRectFacet::kTopLeftInd, {0.0f, tex_max_y}},
             PointIndAndTexCoord { SalPntRectFacet::kBotLeftInd, {0.0f, 0.0f}},
-            PointIndAndTexCoord { SalPntRectFacet::kBotRightInd, {1.0f, 0.0f}},
+            PointIndAndTexCoord { SalPntRectFacet::kBotRightInd, {tex_max_x, 0.0f}},
         };
 
         glBegin(GL_QUADS);
@@ -469,7 +491,7 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam
         glEnd();
 
         // clear the texture
-        glDeleteTextures(1, &texId);
+        glDeleteTextures((GLsizei)texId.size(), texId.data());
         glDisable(GL_TEXTURE_2D); // may be unnecessary
     }
 }
