@@ -30,6 +30,7 @@ set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/virt-world/scene-generator.h
         )
 set(lib_srcs
+        ${PROJECT_SOURCE_DIR}/src/auto-project-ellipsoid-on-camera.cpp
         ${PROJECT_SOURCE_DIR}/src/bundle-adj-kanatani.cpp
         ${PROJECT_SOURCE_DIR}/src/davison-mono-slam.cpp
         ${PROJECT_SOURCE_DIR}/src/mat-serialization.cpp

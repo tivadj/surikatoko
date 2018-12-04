@@ -333,6 +333,7 @@ struct RotatedEllipse2D
 /// Represents a 2D ellipse, for which the eigenvectors are found.
 struct RotatedEllipsoid3D
 {
+    static constexpr Scalar kRightSide = 1; // right side in x^2/a^2+y^2/b^2+z^2/c^2==1
     Eigen::Matrix<Scalar, 3, 1> semi_axes;
     SE3Transform world_from_ellipse;
 };
@@ -353,12 +354,18 @@ void ExtractEllipsoidFromUncertaintyMat(
     const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
     Ellipsoid3DWithCenter* ellipsoid);
 
+void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
+    Scalar ellipsoid_cut_thr,
+    RotatedEllipsoid3D* result);
+
+bool EqRotEllip(const RotatedEllipsoid3D& lhs, const RotatedEllipsoid3D& rhs, Scalar diff);
+
 bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw, RotatedEllipsoid3D* result);
 RotatedEllipsoid3D GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid);
 
 RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipsoid);
 
-bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov);
+bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov, bool cov_mat_directly_to_rot_ellipsoid);
 
 /// Camera axes are in XYZ=LUF (left, up, forward) mode. Camera is aligned with positive OZ direction.
 /// Camera plane (u,v) is defined by first two columns of camera orientation R (the third column is OZ direction).
@@ -371,6 +378,19 @@ bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
     const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
     Ellipse2DWithCenter* result);
 
+bool ProjectEllipsoidOnCamera(const RotatedEllipsoid3D& rot_ellip,
+    const Eigen::Matrix<Scalar, 3, 1>& eye,
+    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
+    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
+    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
+    Ellipse2DWithCenter* result);
+
+bool IntersectRotEllipsoidAndPlane(const RotatedEllipsoid3D& rot_ellip,
+    const Eigen::Matrix<Scalar, 3, 1>& eye,
+    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
+    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
+    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
+    Ellipse2DWithCenter* result);
 
 namespace internals
 {

@@ -94,4 +94,12 @@ auto AllFiniteNotMax(const Eigen::Matrix<_Scalar, _Rows, _Cols, _Options, _MaxRo
         }
     return m.allFinite();
 }
+
+template <typename EigenMat>
+void FixAlmostSymmetricMat(EigenMat* almost_sym_mat)
+{
+    auto& m = *almost_sym_mat;
+    m = (m + m.transpose()).eval() / 2;
+}
+
 }

@@ -149,19 +149,21 @@ DavisonMonoSlamTrackerInternalsHist& DavisonMonoSlamInternalsLogger::BuildStats(
 // static
 DavisonMonoSlam::DebugPathEnum DavisonMonoSlam::s_debug_path_ = DebugPathEnum::DebugNone;
 
+static constexpr Scalar estim_var_init_std = 1;
+
 DavisonMonoSlam::DavisonMonoSlam()
 {
     SetInputNoiseStd(input_noise_std_);
 
-    Scalar estim_var_init_std = 1;
     ResetCamera(estim_var_init_std);
 }
 
-void DavisonMonoSlam::ResetCamera(Scalar estim_var_init_std)
+void DavisonMonoSlam::ResetCamera(Scalar estim_var_init_std, bool init_estim_vars)
 {
     // state vector
     size_t n = kCamStateComps;
-    estim_vars_.setZero(n, 1);
+    if (init_estim_vars)
+        estim_vars_.setZero(n, 1);
     gsl::span<Scalar> state_span = gsl::make_span(estim_vars_.data(), n);
 
     // camera position
@@ -189,7 +191,11 @@ void DavisonMonoSlam::ResetCamera(Scalar estim_var_init_std)
     Scalar estim_var_init_variance = suriko::Sqr(estim_var_init_std);
 
     // state uncertainty matrix
-    estim_vars_covar_.setZero(n, n);
+    if (init_estim_vars)
+        estim_vars_covar_.setZero(n, n);
+    else
+        estim_vars_covar_.topLeftCorner< kCamStateComps, kCamStateComps>().setZero();
+
     // camera position
     estim_vars_covar_(0, 0) = estim_var_init_variance;
     estim_vars_covar_(1, 1) = estim_var_init_variance;
@@ -305,24 +311,35 @@ void DavisonMonoSlam::CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azim
 }
 
 template <typename EigenMat>
-void CheckUncertCovMat(const EigenMat& pos_uncert)
+void CheckUncertCovMat(const EigenMat& pos_uncert, bool cov_mat_directly_to_rot_ellipsoid)
 {
-    // determinant must be positive for expression 1/sqrt(det(Sig)*(2pi)^3) to exist
-    auto det = pos_uncert.determinant();
-    SRK_ASSERT(det > 0);
+    constexpr Scalar ellipse_cut_thr = 0.05;
 
     Eigen::Matrix<Scalar, kEucl3, 1> pnt_pos{ 0, 0, 0 };
-    Ellipsoid3DWithCenter ellipsoid;
-    constexpr Scalar ellipse_cut_thr = 0.05;
-    ExtractEllipsoidFromUncertaintyMat(pnt_pos, pos_uncert, ellipse_cut_thr, &ellipsoid);
+    if (!cov_mat_directly_to_rot_ellipsoid)
+    {
+        // determinant must be positive for expression 1/sqrt(det(Sig)*(2pi)^3) to exist
+        auto det = pos_uncert.determinant();
+        SRK_ASSERT(det > 0);
 
-    bool ok = ValidateEllipsoid(ellipsoid);
-    SRK_ASSERT(ok);
+        Ellipsoid3DWithCenter ellipsoid;
+        ExtractEllipsoidFromUncertaintyMat(pnt_pos, pos_uncert, ellipse_cut_thr, &ellipsoid);
 
-    constexpr bool can_throw = false;
-    RotatedEllipsoid3D rot_ellipsoid;
-    ok = GetRotatedEllipsoid(ellipsoid, can_throw, &rot_ellipsoid);
-    SRK_ASSERT(ok);
+        bool ok = ValidateEllipsoid(ellipsoid);
+        SRK_ASSERT(ok);
+
+        constexpr bool can_throw = false;
+        RotatedEllipsoid3D rot_ellipsoid;
+        ok = GetRotatedEllipsoid(ellipsoid, can_throw, &rot_ellipsoid);
+        SRK_ASSERT(ok);
+    }
+    else
+    {
+        RotatedEllipsoid3D rot_ellipsoid2;
+        GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, ellipse_cut_thr, &rot_ellipsoid2);
+        //bool diff_ok = EqRotEllip(rot_ellipsoid, rot_ellipsoid2, 0.1);
+        //SRK_ASSERT(diff_ok);
+    }
 }
 
 void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
@@ -330,7 +347,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     const EigenDynMat& src_estim_vars_covar) const
 {
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_pos_cov = src_estim_vars_covar.block<kEucl3, kEucl3>(0, 0);
-    CheckUncertCovMat(cam_pos_cov);
+    CheckUncertCovMat(cam_pos_cov, cov_mat_directly_to_rot_ellipsoid_.value());
 
     size_t sal_pnts_count = SalientPointsCount();
     for (size_t salient_pnt_ind = 0; salient_pnt_ind < sal_pnts_count; ++salient_pnt_ind)
@@ -338,7 +355,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
         Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
         LoadSalientPointPosWithUncertainty(src_estim_vars, src_estim_vars_covar, salient_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
-        CheckUncertCovMat(sal_pnt_pos_uncert);
+        CheckUncertCovMat(sal_pnt_pos_uncert, cov_mat_directly_to_rot_ellipsoid_.value());
     }
 }
 
@@ -995,6 +1012,8 @@ void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
         std::array<Scalar, kQuat4> tracker_from_cami_quat;
         QuatFromRotationMatNoRChecks(tracker_from_cami.R, tracker_from_cami_quat);
 
+        ResetCamera(estim_var_init_std, false);
+
         // camera position
         DependsOnCameraPosPackOrder();
         estim_vars_[0] = tracker_from_cami.T[0];
@@ -1149,7 +1168,7 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraStateVars
         Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
         LoadSalientPointPosWithUncertainty(estim_vars_, estim_vars_covar_, old_sal_pnts_count, &sal_pnt_pos, &sal_pnt_pos_uncert);
 
-        bool ok = CanExtractEllipsoid(sal_pnt_pos_uncert);
+        bool ok = CanExtractEllipsoid(sal_pnt_pos_uncert, cov_mat_directly_to_rot_ellipsoid_.value());
         SRK_ASSERT(ok);
     }
 
@@ -1162,8 +1181,16 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraStateVars
         Eigen::Matrix<Scalar, 3, 3> pos_uncert;
         LoadSalientPointPosWithUncertainty(estim_vars_, estim_vars_covar_, salient_pnt_ind, &pos_mean, &pos_uncert);
 
-        Ellipsoid3DWithCenter ellipsoid;
-        ExtractEllipsoidFromUncertaintyMat(pos_mean, pos_uncert, 0.05, &ellipsoid);
+        if (!cov_mat_directly_to_rot_ellipsoid_.value())
+        {
+            Ellipsoid3DWithCenter ellipsoid;
+            ExtractEllipsoidFromUncertaintyMat(pos_mean, pos_uncert, 0.05, &ellipsoid);
+        }
+        else
+        {
+            RotatedEllipsoid3D rot_ellipsoid2;
+            GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pos_mean, 0.05, &rot_ellipsoid2);
+        }
         SRK_ASSERT(true);
     }
 
@@ -1498,6 +1525,13 @@ suriko::Point2 DavisonMonoSlam::ProjectCameraPoint(const suriko::Point3& pnt_cam
 RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid,
     const CameraStateVars& cam_state)
 {
+    RotatedEllipsoid3D rot_ellipsoid = GetRotatedEllipsoid(ellipsoid);
+    return ApproxProjectEllipsoidOnCameraByBeaconPoints(rot_ellipsoid, cam_state);
+}
+
+RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid,
+    const CameraStateVars& cam_state)
+{
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_wfc;
     RotMatFromQuat(Span(cam_state.orientation_wfc), &cam_wfc);
 
@@ -1505,7 +1539,6 @@ RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(c
     SE3Transform se3_cam_cfw = SE3Inv(se3_cam_wfc);
 
     // approximate ellipsoid projection by projection of couple of points
-    RotatedEllipsoid3D rot_ellipsoid = GetRotatedEllipsoid(ellipsoid);
 
     auto& mono_slam = *this;
     auto project_on_cam = [&rot_ellipsoid, &se3_cam_cfw, &mono_slam](suriko::Point3 p_ellipse) ->suriko::Point2
@@ -1572,6 +1605,81 @@ RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const Ellipso
     {
         result_ellipse = ApproxProjectEllipsoidOnCameraByBeaconPoints(ellipsoid, cam_state);
     }
+
+    return result_ellipse;
+}
+
+RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellip, const CameraStateVars& cam_state,
+    int* impl_with)
+{
+    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
+    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
+
+    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
+    Eigen::Matrix<Scalar, 3, 1> u_world = cam_wfc.leftCols<1>();
+    Eigen::Matrix<Scalar, 3, 1> v_world = cam_wfc.middleCols<1>(1);
+
+    // convert camera plane n*x=lam into world coordinates
+    
+    // n_world=Rwc*n_cam=col<3rd>(Rwc), because n_cam=OZ=(0 0 1)
+    Eigen::Matrix<Scalar, 3, 1> n_world = cam_wfc.rightCols<1>();
+
+    Scalar lam_cam = suriko::kCamPlaneZ;
+    Scalar lam_world = cam_state.pos_w.transpose() * n_world + lam_cam;
+
+    // check if eye is inside the ellipsoid
+    SE3Transform ellip_from_world = SE3Inv(rot_ellip.world_from_ellipse);
+    suriko::Point3 eye_in_ellip = SE3Apply(ellip_from_world, eye);
+    Scalar ellip_pnt =
+        suriko::Sqr(eye_in_ellip[0]) / suriko::Sqr(rot_ellip.semi_axes[0]) +
+        suriko::Sqr(eye_in_ellip[1]) / suriko::Sqr(rot_ellip.semi_axes[1]) +
+        suriko::Sqr(eye_in_ellip[2]) / suriko::Sqr(rot_ellip.semi_axes[2]);
+    bool eye_inside_ellip = ellip_pnt <= RotatedEllipsoid3D::kRightSide;
+
+    Ellipse2DWithCenter ellipse_on_cam_plane;
+    bool found_ellipse_with_center = false;
+
+    int impl = -1;
+
+    if (eye_inside_ellip)
+    {
+        bool op2 = IntersectRotEllipsoidAndPlane(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
+        if (op2)
+        {
+            found_ellipse_with_center = true;
+            impl = 2;
+        }
+        else
+        {
+            // Eye _inside_ the uncertainty ellipsoid, behind the camera plane. Ellipsoid is so short, that it doesn't cross the camera plane.
+            // This feature should not be tracked.
+            // for now, return approximate ellipse
+        }
+    }
+    else
+    {
+        bool op = ProjectEllipsoidOnCamera(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
+        if (op)
+        {
+            found_ellipse_with_center = true;
+            impl = 1;
+        }
+    }
+
+    RotatedEllipse2D result_ellipse;
+    if (found_ellipse_with_center)
+    {
+        result_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
+    }
+    else
+    {
+        result_ellipse = ApproxProjectEllipsoidOnCameraByBeaconPoints(rot_ellip, cam_state);
+        impl = 3;
+    }
+
+    SRK_ASSERT(impl != -1);
+    if (impl_with != nullptr)
+        *impl_with = impl;
 
     return result_ellipse;
 }
@@ -2346,8 +2454,7 @@ suriko::Pointi DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2& center)
 
 void DavisonMonoSlam::FixSymmetricMat(EigenDynMat* sym_mat) const
 {
-    auto& m = *sym_mat;
-    m = (m + m.transpose()).eval() / 2;
+    FixAlmostSymmetricMat(sym_mat);
 }
 
 void DavisonMonoSlam::SetDebugPath(DebugPathEnum debug_path)

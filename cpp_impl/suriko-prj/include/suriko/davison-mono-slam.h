@@ -307,6 +307,8 @@ public:
     // extra scaling is done when projecting an estimated salient point into an image.
     bool support_inf_sal_pnts_ = true;
 
+    std::optional<bool> cov_mat_directly_to_rot_ellipsoid_;
+
     bool fix_estim_vars_covar_symmetry_ = false;
 private:
     std::unique_ptr<CornersMatcherBase> corners_matcher_;
@@ -391,6 +393,7 @@ public:
     std::optional<SalPntRectFacet> GetPredictedSalPntFaceRect(SalPntId id) const;
 
     RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
+    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr);
 
     void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
     CornersMatcherBase& CornersMatcher();
@@ -416,7 +419,7 @@ private:
         Scalar inverse_dist_rho; // inverse distance (=rho) from the first camera, where the salient point was seen the first time, to this salient point
     };
 
-    void ResetCamera(Scalar estim_var_init_std);
+    void ResetCamera(Scalar estim_var_init_std, bool init_estim_vars = true);
 
     void CheckCameraAndSalientPointsCovs(
         const EigenDynVec& src_estim_vars,
@@ -579,6 +582,7 @@ private:
     Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraStateVars& cam_state, const SalientPointStateVars& sal_pnt_vars, SalPntProjectionIntermidVars *proj_hist) const;
 
     RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
+    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state);
     
     void FixSymmetricMat(EigenDynMat* sym_mat) const;
 
