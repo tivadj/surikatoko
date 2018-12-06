@@ -154,7 +154,7 @@ class DavisonMonoSlam2DDrawer
 public:
     void DrawScene(DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const;
     
-    void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt,
+    void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
         cv::Mat* out_image_bgr) const;
 public:
     Scalar ellipse_cut_thr_;

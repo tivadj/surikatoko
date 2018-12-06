@@ -168,6 +168,8 @@ struct CameraStateVars
     Eigen::Matrix<Scalar, kAngVelocComps, 1> angular_velocity_c; // in camera frame
 };
 
+SE3Transform CamWfc(const CameraStateVars& cam_state);
+
 enum class FilterStageType
 {
     Estimated,  // current state, k
@@ -303,10 +305,6 @@ public:
     /// 3. Process [x,y] component of each corner individually. Require inverting 2m scalars.
     int kalman_update_impl_ = 0;
 
-    // true to correctly handle salient points in infinity. For this to work,
-    // extra scaling is done when projecting an estimated salient point into an image.
-    bool support_inf_sal_pnts_ = true;
-
     std::optional<bool> cov_mat_directly_to_rot_ellipsoid_;
 
     bool fix_estim_vars_covar_symmetry_ = false;
@@ -370,11 +368,11 @@ public:
 
     suriko::Point2 GetSalPntPixelCoord(SalPntId sal_pnt_id) const;
 
-    void GetSalientPointEstimatedPosWithUncertainty(size_t salient_pnt_ind,
+    bool GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
 
-    void GetSalientPointPredictedPosWithUncertainty(size_t salient_pnt_ind,
+    bool GetSalientPointPredicted3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
 
@@ -390,7 +388,7 @@ public:
     suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center) const;
 
     /// This returns null if the salient point is in the infinity and finite coordinates of patch template can't be calculated.
-    std::optional<SalPntRectFacet> GetPredictedSalPntFaceRect(SalPntId id) const;
+    std::optional<SalPntRectFacet> GetEstimatedSalPntFaceRect(SalPntId sal_pnt_id) const;
 
     RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
     RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr);
@@ -434,7 +432,7 @@ private:
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
         Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat);
 
-    void GetSalientPointPosWithUncertainty(FilterStageType filter_stage, size_t salient_pnt_ind,
+    bool GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType filter_stage, SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
 
@@ -465,20 +463,26 @@ private:
     void LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const;
 
     void LoadSalientPointDataFromArray(gsl::span<const Scalar> src, SalientPointStateVars* result) const;
-    SalientPointStateVars LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const;
+    SalientPointStateVars LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
 
     void PropagateSalPntPosUncertainty(const SalientPointStateVars& sal_pnt,
         const Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>& sal_pnt_covar,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
 
-    void LoadSalientPointPosWithUncertainty(
+    bool GetSalientPoint3DPosWithUncertainty(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar,
-        size_t salient_pnt_ind,
+        const SalPntPatch& sal_pnt,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
-    std::optional<SalPntRectFacet> GetSalientPointFaceRect(const EigenDynVec& src_estim_vars, SalPntId sal_pnt_id) const;
+    /// Ensures that given salient point can be correctly handled (rendering, position prediction etc).
+    void CheckSalientPoint(
+        const EigenDynVec& src_estim_vars,
+        const EigenDynMat& src_estim_vars_covar, 
+        const SalPntPatch& sal_pnt) const;
+
+    std::optional<SalPntRectFacet> GetSalientPointFaceRect(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
 
     void PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const;
 
@@ -574,9 +578,10 @@ private:
         const Eigen::Matrix<Scalar, kEucl3, 1>& pnt_camera,
         SalPntProjectionIntermidVars *proj_hist) const;
 
-    Eigen::Matrix<Scalar, kEucl3, 1> InternalSalientPointToCamera(
+    std::optional<Eigen::Matrix<Scalar, kEucl3, 1>> InternalSalientPointToCamera(
         const SalientPointStateVars& sal_pnt_vars,
         const CameraStateVars& cam_state,
+        bool scaled_by_inv_dist,
         SalPntProjectionIntermidVars *proj_hist) const;
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraStateVars& cam_state, const SalientPointStateVars& sal_pnt_vars, SalPntProjectionIntermidVars *proj_hist) const;
@@ -597,6 +602,5 @@ inline DavisonMonoSlam::DebugPathEnum operator&(DavisonMonoSlam::DebugPathEnum a
 {
     return static_cast<DavisonMonoSlam::DebugPathEnum>(static_cast<int>(a) & static_cast<int>(b));
 }
-
 
 }

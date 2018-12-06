@@ -357,7 +357,7 @@ class ImagePatchCornersMatcher : public CornersMatcherBase
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
     Scalar ellisoid_cut_thr_;
-    std::function<void(DavisonMonoSlam&, const SalPntPatch&, cv::Mat*)> draw_sal_pnt_fun_;
+    std::function<void(DavisonMonoSlam&, SalPntId, cv::Mat*)> draw_sal_pnt_fun_;
     std::function<void(std::string_view, cv::Mat)> show_image_fun_;
     std::optional<suriko::Sizei> min_search_rect_size_;
     std::optional<Scalar> min_templ_corr_coeff_;
@@ -416,7 +416,7 @@ public:
                 cv::rectangle(image_gray_with_match, rect, cv::Scalar::all(0));
             }
 
-            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt, frame_image, ellisoid_cut_thr_, cov_mat_directly_to_rot_ellipsoid_.value());
+            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt_id, frame_image, ellisoid_cut_thr_, cov_mat_directly_to_rot_ellipsoid_.value());
 
             bool ok = match_pnt_center.has_value();
             if (ok)
@@ -467,7 +467,7 @@ public:
         {
             const SalPntPatch& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
 
-            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt, frame_image, ellisoid_cut_thr_, cov_mat_directly_to_rot_ellipsoid_.value());
+            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt_id, frame_image, ellisoid_cut_thr_, cov_mat_directly_to_rot_ellipsoid_.value());
             bool is_lost = !match_pnt_center.has_value();
             if (is_lost)
                 continue;
@@ -792,18 +792,37 @@ public:
         return result;
     }
 
-    Recti PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt, const ImageFrame& next_frame_image,
+    Recti PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const ImageFrame& next_frame_image,
         Scalar ellisoid_cut_thr, bool cov_mat_directly_to_rot_ellipsoid)
     {
+        CameraStateVars cam_state = mono_slam.GetCameraPredictedVars();
+        SE3Transform cam_wfc = CamWfc(cam_state);
+        SE3Transform cam_cfw = SE3Inv(cam_wfc);
+
         Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
         Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
-        mono_slam.GetSalientPointPredictedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
-
-        CameraStateVars cam_state = mono_slam.GetCameraPredictedVars();
+        bool got_3d_pos = mono_slam.GetSalientPointPredicted3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
+        if (!got_3d_pos)
+        {
+            // salient points in infinity; just project it on the camera and specify the fixed circle around it
+            auto pos_cam = SE3Apply(cam_cfw, suriko::Point3{ sal_pnt_pos });
+            suriko::Point2 pix = mono_slam.ProjectCameraPoint(pos_cam);
+            int x = pix[0];
+            int y = pix[1];
+            int width = 11;
+            int height = 11;
+            int half_width = width/2;
+            int half_height = height/2;
+            return Recti{ x - half_width, y - half_height, width, height };
+        }
 
         RotatedEllipse2D rotated_ellipse;
         if (cov_mat_directly_to_rot_ellipsoid)
         {
+            // wrong: cov_mat->ellipsoid->rot_ellipsoid->ellipse
+            // wrong: cov_mat->           rot_ellipsoid->ellipse
+            // hypot: cov_mat->                          ellipse
+            // TODO: we must construct 2D ellipse directly from cov mat (to support points in infinity)
             RotatedEllipsoid3D rot_ellipsoid;
             GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellisoid_cut_thr, &rot_ellipsoid);
 
@@ -868,10 +887,10 @@ public:
         return result;
     }
 
-    std::optional<suriko::Point2> MatchSalientPointCenter(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt, const ImageFrame& frame_image,
+    std::optional<suriko::Point2> MatchSalientPointCenter(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const ImageFrame& frame_image,
         Scalar ellisoid_cut_thr, bool cov_mat_directly_to_rot_ellipsoid)
     {
-        Recti search_rect_unbounded = PredictSalientPointSearchRect(mono_slam, sal_pnt, frame_image, ellisoid_cut_thr, cov_mat_directly_to_rot_ellipsoid);
+        Recti search_rect_unbounded = PredictSalientPointSearchRect(mono_slam, sal_pnt_id, frame_image, ellisoid_cut_thr, cov_mat_directly_to_rot_ellipsoid);
         
         if (min_search_rect_size_.has_value())
             search_rect_unbounded = ClampRectWhenFixedCenter(search_rect_unbounded, min_search_rect_size_.value());
@@ -892,6 +911,8 @@ public:
         if (debug_template_bounds)
             LOG(INFO) << "patch_bnds=[" << search_rect.x << "," << search_rect.y << "," << search_rect.width << "," << search_rect.height
                 << " (" << search_rect.x + search_rect.width/2 <<"," << search_rect.y + search_rect.height/2 << ")";
+
+        const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
         static int match_impl = 2; // 1=diff.sqr.sum, 2=correlation coefficient
         TemplateMatchResult match_result = MatchSalPntTemplateCenterInRect(sal_pnt, frame_image, search_rect, match_impl);
@@ -1166,7 +1187,6 @@ DEFINE_double(kalman_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist_std, 1, "");
 DEFINE_double(kalman_measurm_noise_std, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
-DEFINE_bool(kalman_support_inf_sal_pnts, true, "true to handle salient points in infinity, by multiplying by rho when projecting salient points");
 DEFINE_double(kalman_max_new_blobs_in_first_frame, 7, "");
 DEFINE_double(kalman_max_new_blobs_per_frame, 1, "");
 DEFINE_double(kalman_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
@@ -1361,7 +1381,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #endif
 
     mono_slam.kalman_update_impl_ = FLAGS_kalman_update_impl;
-    mono_slam.support_inf_sal_pnts_ = FLAGS_kalman_support_inf_sal_pnts;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
     mono_slam.debug_ellipsoid_cut_thr_ = FLAGS_kalman_ellipsoid_cut_thr;
     if (FLAGS_kalman_debug_max_sal_pnt_count != -1)
@@ -1401,9 +1420,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_kalman_templ_min_search_rect_width, FLAGS_kalman_templ_min_search_rect_height };
         if (FLAGS_kalman_templ_min_corr_coeff > -1)
             corners_matcher->min_templ_corr_coeff_ = FLAGS_kalman_templ_min_corr_coeff;
-        corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& mono_slam,const SalPntPatch& sal_pnt, cv::Mat* out_image_bgr)
+        corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, cv::Mat* out_image_bgr)
         {
-            drawer.DrawEstimatedSalientPoint(mono_slam, sal_pnt, out_image_bgr);
+            drawer.DrawEstimatedSalientPoint(mono_slam, sal_pnt_id, out_image_bgr);
         };
         corners_matcher->show_image_fun_ = [](std::string_view wnd_name, const cv::Mat& image_bgr)
         {

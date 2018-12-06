@@ -20,6 +20,8 @@ using namespace std::literals::chrono_literals;
 using namespace suriko;
 using namespace suriko::internals;
 
+constexpr void MarkUsedTrackerStateToVisualize() {}
+
 std::optional<UIChatMessage> PopMsgUnderLock(std::optional<UIChatMessage>* msg)
 {
     std::optional<UIChatMessage> result = *msg;
@@ -398,7 +400,8 @@ std::array<GLfloat, 3> GetSalientPointColor(const SalPntPatch& sal_pnt)
 
 void RenderSalientPointPatchTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
 {
-    std::optional<SalPntRectFacet> rect = mono_slam->GetPredictedSalPntFaceRect(sal_pnt_id);
+    MarkUsedTrackerStateToVisualize();
+    std::optional<SalPntRectFacet> rect = mono_slam->GetEstimatedSalPntFaceRect(sal_pnt_id);
     if (!rect.has_value())
         return;
 
@@ -519,25 +522,30 @@ void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
     {
         const SalPntPatch& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
 
-        const size_t sal_pnt_ind = sal_pnt.sal_pnt_ind;
-
-        Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
-        Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
-        mono_slam->GetSalientPointEstimatedPosWithUncertainty(sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
-
         std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
         glColor3fv(sal_pnt_color.data());
 
-        if (display_3D_uncertainties)
+        Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
+        Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
+        bool got_3d_pos = mono_slam->GetSalientPointEstimated3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
+        if (got_3d_pos)
         {
-            RenderPosUncertaintyMatAsEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc, cov_mat_directly_to_rot_ellipsoid);
+            if (display_3D_uncertainties)
+            {
+                RenderPosUncertaintyMatAsEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc, cov_mat_directly_to_rot_ellipsoid);
+            }
+
+            glBegin(GL_POINTS);
+            glVertex3d(sal_pnt_pos[0], sal_pnt_pos[1], sal_pnt_pos[2]);
+            glEnd();
+
+            RenderSalientPointPatchTemplate(mono_slam, sal_pnt_id);
         }
-
-        glBegin(GL_POINTS);
-        glVertex3d(sal_pnt_pos[0], sal_pnt_pos[1], sal_pnt_pos[2]);
-        glEnd();
-
-        RenderSalientPointPatchTemplate(mono_slam, sal_pnt_id);
+        else
+        {
+            // TODO: sal pnt in inf; render
+            // render unity direction vector from the center of the first camera the salient point is seen
+        }
     }
 }
 
@@ -998,15 +1006,21 @@ void DrawEllipsoidContour(DavisonMonoSlam& mono_slam, const CameraStateVars& cam
     DrawDistortedEllipse(mono_slam, rotated_ellipse, dots_per_ellipse, sal_pnt_color_bgr, camera_image_bgr);
 }
 
-void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, const SalPntPatch& sal_pnt, 
+void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
     cv::Mat* out_image_bgr) const
 {
     CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();
 
     Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
     Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
-    mono_slam.GetSalientPointEstimatedPosWithUncertainty(sal_pnt.sal_pnt_ind, &sal_pnt_pos, &sal_pnt_pos_uncert);
+    bool got_3d_pos = mono_slam.GetSalientPointEstimated3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
+    if (!got_3d_pos)
+    {
+        // TODO: draw salient point in infinity as a '+' sign
+        return;
+    }
 
+    const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
     std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
     cv::Scalar sal_pnt_color_bgr{ sal_pnt_color[2], sal_pnt_color[1], sal_pnt_color[0] };
 
@@ -1060,8 +1074,7 @@ void DavisonMonoSlam2DDrawer::DrawScene(DavisonMonoSlam& mono_slam, const cv::Ma
 
     for (SalPntId sal_pnt_id : mono_slam.GetSalientPoints())
     {
-        const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
-        DrawEstimatedSalientPoint(mono_slam, sal_pnt, out_image_bgr);
+        DrawEstimatedSalientPoint(mono_slam, sal_pnt_id, out_image_bgr);
     }
 }
 #endif
