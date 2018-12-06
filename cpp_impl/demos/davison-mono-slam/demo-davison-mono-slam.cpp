@@ -1505,7 +1505,19 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         auto image_file_path = dir_entry.path();
         auto path_str = image_file_path.string();
         LOG(INFO) << path_str;
+        
         cv::Mat image_bgr = cv::imread(image_file_path.string());
+        bool match_size =
+            image_bgr.cols == cam_intrinsics.image_size.width &&
+            image_bgr.rows == cam_intrinsics.image_size.height;
+        if (!match_size)
+        {
+            LOG(ERROR)
+                << "got image of sizeWxH=[" << image_bgr.cols << "," << image_bgr.rows << "] "
+                << "but expected sizeWxH=[" << cam_intrinsics.image_size.width << "," << cam_intrinsics.image_size.height << "]";
+            break;
+        }
+
         cv::Mat image_gray;
         cv::cvtColor(image_bgr, image_gray, CV_BGR2GRAY);
         image.gray = image_gray;
