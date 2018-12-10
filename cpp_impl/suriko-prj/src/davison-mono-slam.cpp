@@ -330,35 +330,14 @@ void DavisonMonoSlam::CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azim
 }
 
 template <typename EigenMat>
-void CheckUncertCovMat(const EigenMat& pos_uncert, bool cov_mat_directly_to_rot_ellipsoid)
+void CheckUncertCovMat(const EigenMat& pos_uncert)
 {
     constexpr Scalar ellipse_cut_thr = 0.05;
 
     Eigen::Matrix<Scalar, kEucl3, 1> pnt_pos{ 0, 0, 0 };
-    if (!cov_mat_directly_to_rot_ellipsoid)
-    {
-        // determinant must be positive for expression 1/sqrt(det(Sig)*(2pi)^3) to exist
-        auto det = pos_uncert.determinant();
-        SRK_ASSERT(det > 0);
 
-        Ellipsoid3DWithCenter ellipsoid;
-        ExtractEllipsoidFromUncertaintyMat(pnt_pos, pos_uncert, ellipse_cut_thr, &ellipsoid);
-
-        bool ok = ValidateEllipsoid(ellipsoid);
-        SRK_ASSERT(ok);
-
-        constexpr bool can_throw = false;
-        RotatedEllipsoid3D rot_ellipsoid;
-        ok = GetRotatedEllipsoid(ellipsoid, can_throw, &rot_ellipsoid);
-        SRK_ASSERT(ok);
-    }
-    else
-    {
-        RotatedEllipsoid3D rot_ellipsoid2;
-        GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, ellipse_cut_thr, &rot_ellipsoid2);
-        //bool diff_ok = EqRotEllip(rot_ellipsoid, rot_ellipsoid2, 0.1);
-        //SRK_ASSERT(diff_ok);
-    }
+    RotatedEllipsoid3D rot_ellipsoid;
+    GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, ellipse_cut_thr, &rot_ellipsoid);
 }
 
 void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
@@ -366,7 +345,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     const EigenDynMat& src_estim_vars_covar) const
 {
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_pos_cov = src_estim_vars_covar.block<kEucl3, kEucl3>(0, 0);
-    CheckUncertCovMat(cam_pos_cov, cov_mat_directly_to_rot_ellipsoid_.value());
+    CheckUncertCovMat(cam_pos_cov);
 
     for (SalPntId sal_pnt_id : GetSalientPoints())
     {
@@ -1583,118 +1562,13 @@ RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(c
     return result;
 }
 
-RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid,
-    const CameraStateVars& cam_state)
-{
-    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
-    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
-
-    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
-    Eigen::Matrix<Scalar, 3, 1> u = cam_wfc.leftCols<1>();
-    Eigen::Matrix<Scalar, 3, 1> v = cam_wfc.middleCols<1>(1);
-
-    // convert camera plane n*x=lam into world coordinates
-    Eigen::Matrix<Scalar, 3, 1> n = cam_wfc.rightCols<1>();
-    Scalar lam_cam = suriko::kCamPlaneZ;
-    Scalar lam_world = cam_state.pos_w.transpose() * n + lam_cam;
-
-    RotatedEllipse2D result_ellipse;
-
-    Ellipse2DWithCenter ellipse_on_cam_plane;
-    bool op = ProjectEllipsoidOnCamera(ellipsoid, eye, u, v, n, lam_world, &ellipse_on_cam_plane);
-    if (op)
-    {
-        result_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
-    }
-    else
-    {
-        result_ellipse = ApproxProjectEllipsoidOnCameraByBeaconPoints(ellipsoid, cam_state);
-    }
-
-    return result_ellipse;
-}
-
-RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellip, const CameraStateVars& cam_state,
-    int* impl_with)
-{
-    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
-    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
-
-    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
-    Eigen::Matrix<Scalar, 3, 1> u_world = cam_wfc.leftCols<1>();
-    Eigen::Matrix<Scalar, 3, 1> v_world = cam_wfc.middleCols<1>(1);
-
-    // convert camera plane n*x=lam into world coordinates
-    
-    // n_world=Rwc*n_cam=col<3rd>(Rwc), because n_cam=OZ=(0 0 1)
-    Eigen::Matrix<Scalar, 3, 1> n_world = cam_wfc.rightCols<1>();
-
-    Scalar lam_cam = suriko::kCamPlaneZ;
-    Scalar lam_world = cam_state.pos_w.transpose() * n_world + lam_cam;
-
-    // check if eye is inside the ellipsoid
-    SE3Transform ellip_from_world = SE3Inv(rot_ellip.world_from_ellipse);
-    suriko::Point3 eye_in_ellip = SE3Apply(ellip_from_world, eye);
-    Scalar ellip_pnt =
-        suriko::Sqr(eye_in_ellip[0]) / suriko::Sqr(rot_ellip.semi_axes[0]) +
-        suriko::Sqr(eye_in_ellip[1]) / suriko::Sqr(rot_ellip.semi_axes[1]) +
-        suriko::Sqr(eye_in_ellip[2]) / suriko::Sqr(rot_ellip.semi_axes[2]);
-    bool eye_inside_ellip = ellip_pnt <= RotatedEllipsoid3D::kRightSide;
-
-    Ellipse2DWithCenter ellipse_on_cam_plane;
-    bool found_ellipse_with_center = false;
-
-    int impl = -1;
-
-    if (eye_inside_ellip)
-    {
-        bool op2 = IntersectRotEllipsoidAndPlane(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
-        if (op2)
-        {
-            found_ellipse_with_center = true;
-            impl = 2;
-        }
-        else
-        {
-            // Eye _inside_ the uncertainty ellipsoid, behind the camera plane. Ellipsoid is so short, that it doesn't cross the camera plane.
-            // This feature should not be tracked.
-            // for now, return approximate ellipse
-        }
-    }
-    else
-    {
-        bool op = ProjectEllipsoidOnCamera(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
-        if (op)
-        {
-            found_ellipse_with_center = true;
-            impl = 1;
-        }
-    }
-
-    RotatedEllipse2D result_ellipse;
-    if (found_ellipse_with_center)
-    {
-        result_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
-    }
-    else
-    {
-        result_ellipse = ApproxProjectEllipsoidOnCameraByBeaconPoints(rot_ellip, cam_state);
-        impl = 3;
-    }
-
-    SRK_ASSERT(impl != -1);
-    if (impl_with != nullptr)
-        *impl_with = impl;
-
-    return result_ellipse;
-}
-
 void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(const SalPntPatch& sal_pnt,
     const CameraStateVars& cam_state,
     const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
     const EigenDynVec& derive_at_pnt,
     Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam_state,
-    Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt) const
+    Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt,
+    Eigen::Matrix<Scalar, kPixPosComps, 1>* hd) const
 {
     // project salient point into current camera
 
@@ -1703,7 +1577,10 @@ void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(const SalPntPatch& sal_p
     LoadSalientPointDataFromArray(Span(derive_at_pnt).subspan(off, kSalientPointComps), &sal_pnt_vars);
 
     SalPntProjectionIntermidVars proj_hist{};
-    Eigen::Matrix<Scalar, kPixPosComps, 1> hd = ProjectInternalSalientPoint(cam_state, sal_pnt_vars, &proj_hist);
+    Eigen::Matrix<Scalar, kPixPosComps, 1> h_distorted = ProjectInternalSalientPoint(cam_state, sal_pnt_vars, &proj_hist);
+
+    if (hd != nullptr)
+        *hd = h_distorted;
 
     // calculate derivatives
 
@@ -2239,7 +2116,9 @@ void DavisonMonoSlam::PropagateSalPntPosUncertainty(const SalientPointStateVars&
     const Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>& sal_pnt_covar,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const
 {
-    // propagate camera pos (Xc,Yc,Zc) and (theta-azimuth, phi-elevation,rho) into salient point pos (X,Y,Z)
+    // 3D position (X,Y,Z) of a salient point in the world frame depends on 6x1 variables of the salient point
+    // (Xf, Yf, Zf,theta-azimuth, phi-elevation,rho) and doesn't depend on pos of any camera (Xc,Yc,Zc)
+    // sal_pnt(X,Y,Z)=fun(sal_pnt_6x1)
     Eigen::Matrix<Scalar, kEucl3, kSalientPointComps> jacob;
     jacob.setZero();
     jacob.leftCols<kEucl3>() = Eigen::Matrix < Scalar, kEucl3, kEucl3>::Identity();
@@ -2249,23 +2128,22 @@ void DavisonMonoSlam::PropagateSalPntPosUncertainty(const SalientPointStateVars&
     Scalar cos_phi = std::cos(sal_pnt_vars.elevation_phi_w);
     Scalar sin_phi = std::sin(sal_pnt_vars.elevation_phi_w);
 
-    SRK_ASSERT(!IsClose(0, sal_pnt_vars.inverse_dist_rho));
+    SRK_ASSERT(!IsClose(0, sal_pnt_vars.inverse_dist_rho));  // fails when dist=inf and rho=0
 
-    Scalar s1 = 1 / sal_pnt_vars.inverse_dist_rho;
+    Scalar dist = 1 / sal_pnt_vars.inverse_dist_rho;
 
     // deriv of (Xc,Yc,Zc) by theta-azimuth
-    jacob(0, kEucl3) = s1 * cos_phi * cos_theta;
+    jacob(0, kEucl3) = dist * cos_phi * cos_theta;
     jacob(1, kEucl3) = 0;
-    jacob(2, kEucl3) = -s1 * cos_phi * sin_theta;
+    jacob(2, kEucl3) = -dist * cos_phi * sin_theta;
 
     // deriv of (Xc,Yc,Zc) by phi-elevation
-    jacob(0, kEucl3 + 1) = -s1 * sin_phi * sin_theta;
-    jacob(1, kEucl3 + 1) = -s1 * cos_phi;
-    jacob(2, kEucl3 + 1) = -s1 * sin_phi * cos_theta;
+    jacob(0, kEucl3 + 1) = -dist * sin_phi * sin_theta;
+    jacob(1, kEucl3 + 1) = -dist * cos_phi;
+    jacob(2, kEucl3 + 1) = -dist * sin_phi * cos_theta;
 
     // deriv of (Xc,Yc,Zc) by rho
-    SRK_ASSERT(sal_pnt_vars.inverse_dist_rho > 0);
-    Scalar dist2 = 1 / suriko::Sqr(sal_pnt_vars.inverse_dist_rho);  // fails when dist=inf and rho=0
+    Scalar dist2 = 1 / suriko::Sqr(sal_pnt_vars.inverse_dist_rho);
     jacob(0, kEucl3 + 2) = -dist2 * cos_phi * sin_theta;
     jacob(1, kEucl3 + 2) = dist2 * sin_phi;
     jacob(2, kEucl3 + 2) = -dist2 * cos_phi * cos_theta;
@@ -2277,6 +2155,73 @@ void DavisonMonoSlam::PropagateSalPntPosUncertainty(const SalientPointStateVars&
     auto& unc = *sal_pnt_pos_uncert;
     unc = jacob * orig_uncert * jacob.transpose();
     SRK_ASSERT(unc.allFinite());
+}
+
+auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) 
+    -> MeanAndCov2D
+{
+    EigenDynVec* src_estim_vars;
+    EigenDynMat* src_estim_vars_covar;
+    std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterState(filter_stage);
+    
+    const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
+    
+    return GetSalientPointProjected2DPosWithUncertainty(*src_estim_vars, *src_estim_vars_covar, sal_pnt);
+}
+
+auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
+    const EigenDynVec& src_estim_vars,
+    const EigenDynMat& src_estim_vars_covar,
+    const SalPntPatch& sal_pnt) ->MeanAndCov2D
+{
+    // fun(camera frame, salient point) -> pixel_coord, 13->2
+    // collect 13x13 covariance matrix for
+    // 3x1 rwc = camera position
+    // 4x1 qwc = camera orientation
+    // 6x1 yrho = salient point
+    constexpr size_t kInSigmaSize = kEucl3 + kQuat4 + kSalientPointComps;
+    Eigen::Matrix<Scalar, kInSigmaSize, kInSigmaSize> sig_input;
+
+    // 1. Populate input covariance (of the camera frame (3+4) and the salient point (6))
+
+    constexpr static size_t kRQ = kEucl3 + kQuat4;
+
+    sig_input.topLeftCorner<kRQ, kRQ>() = src_estim_vars_covar.topLeftCorner<kRQ, kRQ>(); // cam pos and quaternion
+    sig_input.bottomRightCorner<kSalientPointComps, kSalientPointComps>() =
+        src_estim_vars_covar.block<kSalientPointComps, kSalientPointComps>(sal_pnt.estim_vars_ind, sal_pnt.estim_vars_ind); // salient point
+
+    // 3x6 dr by dy
+    auto dr_by_dy = src_estim_vars_covar.block<kEucl3, kSalientPointComps>(0, sal_pnt.estim_vars_ind);
+    sig_input.block<kEucl3, kSalientPointComps>(0, kRQ) = dr_by_dy;
+    sig_input.block<kSalientPointComps, kEucl3>(kRQ, 0) = dr_by_dy.transpose();
+
+    // 4x6 dq by dy
+    auto dq_by_dy = src_estim_vars_covar.block< kQuat4, kSalientPointComps>(kEucl3, sal_pnt.estim_vars_ind);
+    sig_input.block<kQuat4, kSalientPointComps>(kEucl3, kRQ) = dq_by_dy;
+    sig_input.block<kSalientPointComps, kQuat4>(kRQ, kEucl3) = dq_by_dy.transpose();
+
+    // 2. Populate Jacobian
+
+    CameraStateVars cam_state;
+    LoadCameraStateVarsFromArray(Span(src_estim_vars, kCamStateComps), &cam_state);
+
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_orient_wfc;
+    RotMatFromQuat(gsl::make_span<const Scalar>(cam_state.orientation_wfc.data(), kQuat4), &cam_orient_wfc);
+
+    Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps> hd_by_cam_state;
+    Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps> hd_by_sal_pnt;
+    Eigen::Matrix<Scalar, kPixPosComps, 1> hd;
+    Deriv_hd_by_cam_state_and_sal_pnt(sal_pnt, cam_state, cam_orient_wfc, src_estim_vars, &hd_by_cam_state, &hd_by_sal_pnt, &hd);
+
+    // Jacobian [2x13] of fun(camera frame, salient point) -> pixel_coord, 13->2
+    Eigen::Matrix <Scalar, kPixPosComps, kInSigmaSize> J;
+    J.middleCols<kEucl3>(0) = hd_by_cam_state.middleCols<kEucl3>(0);
+    J.middleCols<kQuat4>(kEucl3) = hd_by_cam_state.middleCols<kQuat4>(kEucl3);
+    J.middleCols<kSalientPointComps>(kEucl3 + kQuat4) = hd_by_sal_pnt;
+
+    // derive covariance of projected coord (in pixels)
+    Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> cov2D = J * sig_input * J.transpose();
+    return MeanAndCov2D{hd, cov2D };
 }
 
 bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
@@ -2297,11 +2242,7 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
 
     // the expression below is derived from A.21 when camera position r=[0 0 0]
     // salient point in world coordinates = position of the first camera + position of the salient point in the first camera
-    auto& pos = *pos_mean;
-    //if (support_inf_sal_pnts_)
-    //  pos = sal_pnt_vars.inverse_dist_rho * sal_pnt_vars.first_cam_pos_w + m;
-    //else
-    pos = sal_pnt_vars.first_cam_pos_w + (1 / sal_pnt_vars.inverse_dist_rho) * m;  // this fails for salient points in infinity, when dist=inf and rho=0
+    *pos_mean = sal_pnt_vars.first_cam_pos_w + (1 / sal_pnt_vars.inverse_dist_rho) * m;  // this fails for salient points in infinity, when dist=inf and rho=0
 
     if (pos_uncert == nullptr)
         return true;
@@ -2316,21 +2257,22 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
     static bool use_simulated_results = true;
     if (simulate_propagation)
     {
-        auto propag_fun = [](const auto& in_mat, auto* out_mat) -> void
+        auto propag_fun = [](const auto& in_mat, auto* out_mat) -> bool
         {
             Eigen::Matrix<Scalar, kEucl3, 1> first_cam_pos{ in_mat[0],in_mat[1],in_mat[2] };
 
             Scalar theta = in_mat[3];
             Scalar phi = in_mat[4];
             Scalar rho = in_mat[5];
+            if (IsClose(0, rho))
+                return false;
+
             Eigen::Matrix<Scalar, kEucl3, 1> m;
             CameraCoordinatesEuclidUnityDirFromPolarAngles(theta, phi, &m[0], &m[1], &m[2]);
 
-            auto& r = *out_mat; // TODO: if rho=0?
-            //if (support_inf_sal_pnts)
-                //r = rho * first_cam_pos + m;
-            //else
+            auto& r = *out_mat;
             r = first_cam_pos + (1 / rho) * m;
+            return true;
         };
 
         Eigen::Map<const Eigen::Matrix<Scalar, kSalientPointComps, 1>> y_mean_mat(&src_estim_vars[sal_pnt.estim_vars_ind]);
@@ -2358,7 +2300,7 @@ void DavisonMonoSlam::CheckSalientPoint(
     bool got_3d_pos = GetSalientPoint3DPosWithUncertainty(src_estim_vars, src_estim_vars_covar, sal_pnt, &sal_pnt_pos, &sal_pnt_pos_uncert);
     if (got_3d_pos)
     {
-        CheckUncertCovMat(sal_pnt_pos_uncert, cov_mat_directly_to_rot_ellipsoid_.value());
+        CheckUncertCovMat(sal_pnt_pos_uncert);
     }
 }
 
@@ -2487,4 +2429,5 @@ bool DavisonMonoSlam::DebugPath(DebugPathEnum debug_path)
 {
     return (s_debug_path_ & debug_path) != DebugPathEnum::DebugNone;
 }
+
 }

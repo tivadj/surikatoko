@@ -176,6 +176,12 @@ enum class FilterStageType
     Predicted   // state at step k+1
 };
 
+struct MeanAndCov2D
+{
+    Eigen::Matrix<Scalar, kPixPosComps, 1> mean;
+    Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> cov;
+};
+
 struct SalPntRectFacet
 {
     std::array<suriko::Point3,4> points;
@@ -305,8 +311,6 @@ public:
     /// 3. Process [x,y] component of each corner individually. Require inverting 2m scalars.
     int kalman_update_impl_ = 0;
 
-    std::optional<bool> cov_mat_directly_to_rot_ellipsoid_;
-
     bool fix_estim_vars_covar_symmetry_ = false;
 private:
     std::unique_ptr<CornersMatcherBase> corners_matcher_;
@@ -376,6 +380,9 @@ public:
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
 
+    auto GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id)
+        ->MeanAndCov2D;
+
     Scalar CurrentFrameReprojError() const;
 
     size_t SalientPointsCount() const;
@@ -389,9 +396,6 @@ public:
 
     /// This returns null if the salient point is in the infinity and finite coordinates of patch template can't be calculated.
     std::optional<SalPntRectFacet> GetEstimatedSalPntFaceRect(SalPntId sal_pnt_id) const;
-
-    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
-    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr);
 
     void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
     CornersMatcherBase& CornersMatcher();
@@ -469,6 +473,13 @@ private:
         const Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>& sal_pnt_covar,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
 
+    /// NOTE: The resultant 2D uncertainty does depend on the uncertainty of the camera frame in which the salient point is projected.
+    auto GetSalientPointProjected2DPosWithUncertainty(
+        const EigenDynVec& src_estim_vars,
+        const EigenDynMat& src_estim_vars_covar,
+        const SalPntPatch& sal_pnt) ->MeanAndCov2D;
+
+    /// NOTE: The resultant uncertainty doesn't respect uncertainty of the current camera frame.
     bool GetSalientPoint3DPosWithUncertainty(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar,
@@ -507,7 +518,8 @@ private:
         const CameraStateVars& cam_state, const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
         const EigenDynVec& derive_at_pnt,
         Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam_state,
-        Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt) const;
+        Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt,
+        Eigen::Matrix<Scalar, kPixPosComps, 1>* hd = nullptr) const;
 
     void Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
         const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,

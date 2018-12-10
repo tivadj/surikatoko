@@ -145,10 +145,6 @@ void SceneVisualizationThread(UIThreadParams ui_params);
 /// Draws ellipse in camera plane by dividing it into points and projecting/distorting them into pixels.
 void DrawDistortedEllipse(const DavisonMonoSlam& mono_slam, const RotatedEllipse2D& ellipse, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr);
 
-/// Draw visible from given camera contour of ellipsoid.
-void DrawEllipsoidContour(DavisonMonoSlam& mono_slam, const CameraStateVars& cam_state, const Ellipsoid3DWithCenter& ellipsoid,
-    size_t dots_per_ellipse, cv::Scalar sal_pnt_color_bgr, cv::Mat* camera_image_bgr);
-
 class DavisonMonoSlam2DDrawer
 {
 public:
@@ -159,7 +155,6 @@ public:
 public:
     Scalar ellipse_cut_thr_;
     int dots_per_uncert_ellipse_;
-    std::optional<bool> cov_mat_directly_to_rot_ellipsoid_;
 };
 #endif
 

@@ -85,6 +85,7 @@ bool operator == (const Recti& lhs, const Recti& rhs);
 std::ostream& operator<<(std::ostream& os, const Recti& r);
 std::optional<Recti> IntersectRects(const Recti& a, const Recti& b);
 Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom);
+Recti TruncateRect(const Rect& a);
 
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
 
@@ -253,6 +254,7 @@ bool IsOrthogonal(const Eigen::Matrix<Scalar,2,2>& R, std::string* msg = nullptr
 
 /// Checks if Rt*R=I and det(R)=1.
 [[nodiscard]]
+bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,2,2>& R, std::string* msg = nullptr);
 bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg = nullptr);
 
 /// Checks if M=Identity.
@@ -330,6 +332,8 @@ struct RotatedEllipse2D
     SE2Transform world_from_ellipse;
 };
 
+Rect GetEllipseBounds2(const RotatedEllipse2D& rotated_ellipse);
+
 /// Represents a 2D ellipse, for which the eigenvectors are found.
 struct RotatedEllipsoid3D
 {
@@ -344,28 +348,24 @@ void PickPointOnEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& ray,
     Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid);
 
-void ExtractEllipsoidFromUncertaintyMat(const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
-    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
-    Eigen::Matrix<Scalar, 3, 3>* A,
-    Eigen::Matrix<Scalar, 3, 1>* b, Scalar* c);
-
-void ExtractEllipsoidFromUncertaintyMat(
-    const Eigen::Matrix<Scalar, 3, 1>& gauss_mean,
-    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
-    Ellipsoid3DWithCenter* ellipsoid);
-
 void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
     Scalar ellipsoid_cut_thr,
     RotatedEllipsoid3D* result);
 
-bool EqRotEllip(const RotatedEllipsoid3D& lhs, const RotatedEllipsoid3D& rhs, Scalar diff);
+void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
+    Scalar ellipsoid_cut_thr,
+    Eigen::Matrix<Scalar, 2, 1>* semi_axes,
+    Eigen::Matrix<Scalar, 2, 2>* world_from_ellipse);
+
+RotatedEllipse2D Get2DRotatedEllipseFromCovMat(
+    const Eigen::Matrix<Scalar, 2, 2>& cov,
+    const Eigen::Matrix<Scalar, 2, 1>& mean,
+    Scalar ellipsoid_cut_thr);
 
 bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw, RotatedEllipsoid3D* result);
 RotatedEllipsoid3D GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid);
 
 RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipsoid);
-
-bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov, bool cov_mat_directly_to_rot_ellipsoid);
 
 /// Camera axes are in XYZ=LUF (left, up, forward) mode. Camera is aligned with positive OZ direction.
 /// Camera plane (u,v) is defined by first two columns of camera orientation R (the third column is OZ direction).

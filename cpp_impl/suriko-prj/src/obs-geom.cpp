@@ -68,6 +68,17 @@ Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom)
     return result;
 }
 
+Recti TruncateRect(const Rect& a)
+{
+    Recti result{
+        static_cast<int>(a.x),
+        static_cast<int>(a.y),
+        static_cast<int>(a.width),
+        static_cast<int>(a.height)
+    };
+    return result;
+}
+
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform {
     SE3Transform result;
     result.R = rt.R.transpose();
@@ -441,6 +452,29 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
     return true;
 }
 
+bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,2,2>& R, std::string* msg) {
+    bool is_ortho = IsOrthogonal(R, msg);
+    if (!is_ortho)
+        return false;
+
+    Scalar rdet = R.determinant();
+
+    Scalar rtol = 1.0e-3;
+    Scalar atol = 1.0e-3;
+    bool det_one = IsClose(1, rdet, rtol, atol);
+    if (!det_one)
+    {
+        if (msg != nullptr)
+        {
+            std::stringstream ss;
+            ss << "failed det(R)=1, actual detR=" << rdet << " R=\n" << R;
+            *msg = ss.str();
+        }
+        return false;
+    }
+    return true;
+}
+
 void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat)
 {
     *skew_mat << 
@@ -692,6 +726,20 @@ Scalar GetUncertaintyEllipsoidProbabilityCutValue(
     return cut_value;
 }
 
+template <size_t Dim>
+Scalar GetUncertaintyEllipsoidProbabilityCutValueNew(
+    const Eigen::Matrix<Scalar, Dim, Dim>& gauss_sigma,
+    Scalar portion_of_max_prob, bool check_det = true)
+{
+    Scalar uncert_det = gauss_sigma.determinant();
+    static bool test_det = true;
+    if (test_det && check_det)
+        SRK_ASSERT(uncert_det >= 0);
+    Scalar max_prob = 1 / std::sqrt(std::pow(2 * M_PI, Dim) * uncert_det);
+    Scalar cut_value = portion_of_max_prob * max_prob;
+    return cut_value;
+}
+
 void PickPointOnEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
     const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert, Scalar ellipsoid_cut_thr,
@@ -725,36 +773,6 @@ void PickPointOnEllipsoid(
 
     Scalar t = std::sqrt(ratio);
     *pos_ellipsoid = ellipsoid.center + t * ray;
-}
-
-/// Calculates A,b,c ellipsoid coefficients as in equation xAx+bx+c=0. eg: prop_thr=0.05 for 2sigma.
-void ExtractEllipsoidFromUncertaintyMat(
-    const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
-    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
-    Eigen::Matrix<Scalar, 3, 3>* A,
-    Eigen::Matrix<Scalar, 3, 1>* b, Scalar* c)
-{
-    Eigen::Matrix<Scalar, 3, 3> uncert_inv = gauss_sigma.inverse();
-    *A = uncert_inv;
-    *b = -2 * uncert_inv * gauss_mean;
-
-    Scalar uncert_det = gauss_sigma.determinant();
-    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(gauss_sigma, ellipsoid_cut_thr);
-
-    Scalar c1 = std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
-    Eigen::Matrix<Scalar, 1, 1> c2 = gauss_mean.transpose() * uncert_inv * gauss_mean;
-    *c = c1 + c2[0];
-
-    if (VLOG_IS_ON(4))
-    {
-        Eigen::Matrix<Scalar, 3, 1> ray{ 0.5, 0.5, 0.5 };
-        Eigen::Matrix<Scalar, 3, 1> pos_ellipsoid;
-        PickPointOnEllipsoid(gauss_mean, gauss_sigma, ellipsoid_cut_thr, ray, &pos_ellipsoid);
-
-        Scalar diff = (pos_ellipsoid.transpose() * (*A) * pos_ellipsoid + b->transpose() * pos_ellipsoid)[0] + (*c);
-        //SRK_ASSERT(IsClose(0, diff, AbsRelTol<Scalar>(1, 0.1)));
-        SRK_ASSERT(true);
-    }
 }
 
 bool ValidateEllipsoid(const Ellipsoid3DWithCenter& maybe_ellipsoid)
@@ -798,63 +816,36 @@ Rect GetEllipseBounds(const Ellipse2DWithCenter& ellipse)
     return result;
 }
 
-/// Calculates A,b,c ellipsoid coefficients as in equation xAx+bx+c=0. eg: prop_thr=0.05 for 2sigma.
-void ExtractEllipsoidFromUncertaintyMat(
-    const Eigen::Matrix<Scalar, 3, 1>& gauss_mean, 
-    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma, Scalar ellipsoid_cut_thr,
-    Ellipsoid3DWithCenter* ellipsoid)
+Rect GetEllipseBounds2(const RotatedEllipse2D& rotated_ellipse)
 {
-    ellipsoid->center = gauss_mean;
+    Scalar r1 = rotated_ellipse.world_from_ellipse.R(0, 0);
+    Scalar r2 = rotated_ellipse.world_from_ellipse.R(0, 1);
+    Scalar r3 = rotated_ellipse.world_from_ellipse.R(1, 0);
+    Scalar r4 = rotated_ellipse.world_from_ellipse.R(1, 1);
+    Scalar a = rotated_ellipse.semi_axes[0];
+    Scalar b = rotated_ellipse.semi_axes[1];
 
-    Eigen::Matrix<Scalar, 3, 3> uncert_inv = gauss_sigma.inverse();
-    ellipsoid->A = uncert_inv;
+    Scalar den_abs = std::abs(r1 * r4 - r2 * r3);
 
-    //
-    Scalar uncert_det = gauss_sigma.determinant();
-    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(gauss_sigma, ellipsoid_cut_thr);
-
-    Scalar c1 = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
-    ellipsoid->right_side = c1;
-    //ellipsoid->right_side = 7.814;
-
-    if (kSurikoDebug) { SRK_ASSERT(ValidateEllipsoid(*ellipsoid)); }
-
-    if (VLOG_IS_ON(4))
+    Scalar x1, x2;
     {
-        Eigen::Matrix<Scalar, 3, 1> ray{ 0.5, 0.5, 0.5 };
-        Eigen::Matrix<Scalar, 3, 1> pos_ellipsoid;
-        PickPointOnEllipsoid(*ellipsoid, ray, &pos_ellipsoid);
-
-        Eigen::Matrix<Scalar, 3, 1> arm = pos_ellipsoid - ellipsoid->center;
-        Eigen::Matrix<Scalar, 1, 1> zero_mat = arm.transpose() *ellipsoid->A * arm;
-        Scalar zero = zero_mat[0] - ellipsoid->right_side;
-        //SRK_ASSERT(IsClose(0, diff, AbsRelTol<Scalar>(1, 0.1)));
-        SRK_ASSERT(true);
+        Scalar discr_sqrt = std::sqrt(b * b * r3 * r3 + a * a * r4 * r4);
+        x1 = rotated_ellipse.world_from_ellipse.T[0] - discr_sqrt / den_abs;
+        x2 = rotated_ellipse.world_from_ellipse.T[0] + discr_sqrt / den_abs;
     }
-}
+    Scalar y1, y2;
+    {
+        Scalar discr_sqrt = std::sqrt(b * b * r1 * r1 + a * a * r2 * r2);
+        y1 = rotated_ellipse.world_from_ellipse.T[1] - discr_sqrt / den_abs;
+        y2 = rotated_ellipse.world_from_ellipse.T[1] + discr_sqrt / den_abs;
+    }
 
-bool EqRotEllip(const RotatedEllipsoid3D& lhs, const RotatedEllipsoid3D& rhs, Scalar diff)
-{
-    Scalar diff1a = (lhs.semi_axes - rhs.semi_axes).norm();
-    Scalar diff1b = (lhs.semi_axes + rhs.semi_axes).norm();
-
-    Scalar diffR1a = (lhs.world_from_ellipse.R.leftCols<1>() - rhs.world_from_ellipse.R.leftCols<1>()).norm();
-    Scalar diffR1b = (lhs.world_from_ellipse.R.leftCols<1>() + rhs.world_from_ellipse.R.leftCols<1>()).norm();
-    Scalar diffR2a = (lhs.world_from_ellipse.R.middleCols<1>(1) - rhs.world_from_ellipse.R.middleCols<1>(1)).norm();
-    Scalar diffR2b = (lhs.world_from_ellipse.R.middleCols<1>(1) + rhs.world_from_ellipse.R.middleCols<1>(1)).norm();
-    Scalar diffR3a = (lhs.world_from_ellipse.R.rightCols<1>() - rhs.world_from_ellipse.R.rightCols<1>()).norm();
-    Scalar diffR3b = (lhs.world_from_ellipse.R.rightCols<1>() + rhs.world_from_ellipse.R.rightCols<1>()).norm();
-
-    Scalar diff3a = (lhs.world_from_ellipse.T - rhs.world_from_ellipse.T).norm();
-    Scalar diff3b = (lhs.world_from_ellipse.T + rhs.world_from_ellipse.T).norm();
-
-    AbsRelTol<Scalar> art{ diff, 0 };
-    bool a = IsClose(0, diff1a, art) || IsClose(0, diff1b, art);
-    bool b1 = IsClose(0, diffR1a, art) || IsClose(0, diffR1b, art);
-    bool b2 = IsClose(0, diffR2a, art) || IsClose(0, diffR2b, art);
-    bool b3 = IsClose(0, diffR3a, art) || IsClose(0, diffR3b, art);
-    bool c = IsClose(0, diff3a, art) || IsClose(0, diff3b, art);
-    return a && b1 && b2 && b3 && c;
+    Rect result;
+    result.x = x1;
+    result.width = x2 - x1;
+    result.y = y1;
+    result.height = y2 - y1;
+    return result;
 }
 
 void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
@@ -925,6 +916,94 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
 
     result->world_from_ellipse.T = mean;
 }
+
+// Note, on why the direct conversion is used: covariance_matrix -> rotated_ellipse=(semi_axes,R).
+// We can calculate rotated ellipse from covariance matrix in multiple steps in such a sequence:
+// covariance_matrix -> ellipse -> rotated_ellipse
+// where ellipse=(x-mu)A(x-mu) and rotated_ellipse=(semi_axes,R)
+// R[2x2]=rotation matrix to get world coordinates from rotated ellipse coordinates
+// But it requires calculation of A=inv(Cov) which may not be stable.
+// Instead we eigen-decompose Cov=V*D*inv(V), and inverse the diagonal matrix, which is more stable.
+// Thus skipping the intermediate step improves the stablility.
+void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
+    Scalar ellipsoid_cut_thr,
+    Eigen::Matrix<Scalar, 2, 1>* semi_axes,
+    Eigen::Matrix<Scalar, 2, 2>* world_from_ellipse)
+{
+    static constexpr size_t kDim = 2;
+
+    // check symmetry
+    Scalar sym_diff = (cov - cov.transpose()).norm();
+    SRK_ASSERT(IsClose(0, sym_diff, AbsTol(0.001)));
+
+    Scalar uncert_det = cov.determinant();
+    bool check_det = false;
+    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValueNew<kDim>(cov, ellipsoid_cut_thr, check_det);
+
+    // right side of the ellipse equation: (x-mu)A(x-mu)=right_side
+    Scalar right_side_old = -std::log(suriko::Sqr(cut_value)*std::pow(2 * M_PI, kDim)*uncert_det);
+    Scalar right_side = 5.991;
+
+    //
+    // A=V*D*inv(V)
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, kDim, kDim>> eigen_solver(cov);
+    bool op = eigen_solver.info() == Eigen::Success;
+    SRK_ASSERT(op);
+
+    Eigen::Matrix<Scalar, kDim, kDim> eig_vecs = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
+    Eigen::Matrix<Scalar, kDim, 1> dd = eigen_solver.eigenvalues();
+
+    // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
+    int major_col_ind = kDim - 1;
+    int minor_col_ind = 0;
+
+    if (dd[minor_col_ind] == dd[major_col_ind])
+    {
+        // all eigenvalues are equal and may be treated as already sorted in decreasing order;
+        // no reordering is required
+        std::swap(major_col_ind, minor_col_ind);
+    }
+
+    // order semi-axes from max to min
+
+    auto& R = *world_from_ellipse;
+    R.middleCols<1>(0) = eig_vecs.middleCols<1>(major_col_ind);
+    R.middleCols<1>(1) = eig_vecs.middleCols<1>(minor_col_ind);
+
+    // eigenvectors is an orthogonal matrix (det=+1 or -1), but it may not be orthonormal (det=+1)
+    Scalar R_det = R.determinant();
+    if (R_det < 0)
+    {
+        // fix eigenvectors to have det=1
+        // changing the sign of the last column will flip the sign of determinant (to be positive)
+        R.rightCols<1>() = -R.rightCols<1>();
+    }
+
+    bool is_spec_ortho = IsSpecialOrthogonal(R);
+    SRK_ASSERT(is_spec_ortho); // further relying on inv(R)=Rt
+
+    // note multiplication (not division) in a=sqrt(rs*lam) as we skip calculating inverse of covariance matrix
+    // and directly calculate inverse of diagonal D matrix in Sig=V*D*inv(V)
+    // order semi-axes from max to min
+    auto& semi = *semi_axes;
+    semi[0] = std::sqrt(right_side * dd[major_col_ind]);
+    semi[1] = std::sqrt(right_side * dd[minor_col_ind]);
+}
+
+RotatedEllipse2D Get2DRotatedEllipseFromCovMat(
+    const Eigen::Matrix<Scalar, 2, 2>& cov,
+    const Eigen::Matrix<Scalar, 2, 1>& mean,
+    Scalar ellipsoid_cut_thr)
+{
+    Eigen::Matrix<Scalar, 2, 1> semi_axes;
+    Eigen::Matrix<Scalar, 2, 2> world_from_ellipse;
+    Get2DRotatedEllipseFromCovMat(cov, ellipsoid_cut_thr, &semi_axes, &world_from_ellipse);
+
+    SE2Transform wfe{ world_from_ellipse , mean };
+    RotatedEllipse2D result{ semi_axes , wfe };
+    return result;
+}
+
 
 bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw, RotatedEllipsoid3D* result)
 {
@@ -1000,30 +1079,6 @@ RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipse)
     result.semi_axes[0] = std::sqrt(ellipse.right_side / dd[0]);
     result.semi_axes[1] = std::sqrt(ellipse.right_side / dd[1]);
     return result;
-}
-
-bool CanExtractEllipsoid(const Eigen::Matrix<Scalar, 3, 3>& pos_cov, bool cov_mat_directly_to_rot_ellipsoid)
-{
-    Eigen::Matrix<Scalar, 3, 1> pos(0, 0, 0);
-
-    if (!cov_mat_directly_to_rot_ellipsoid)
-    {
-        Ellipsoid3DWithCenter ellipsoid;
-        ExtractEllipsoidFromUncertaintyMat(pos, pos_cov, 0.05, &ellipsoid);
-        
-        RotatedEllipsoid3D rot_ellipsoid;
-        bool suc = GetRotatedEllipsoid(ellipsoid, false, &rot_ellipsoid);
-        return suc;
-    }
-    else
-    {
-
-        RotatedEllipsoid3D rot_ellipsoid2;
-        GetRotatedUncertaintyEllipsoidFromCovMat(pos_cov, pos, 0.05, &rot_ellipsoid2);
-        //bool diff_ok = EqRotEllip(rot_ellipsoid, rot_ellipsoid2, 0.1);
-        //SRK_ASSERT(diff_ok);
-        return true;
-    }
 }
 
 bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,

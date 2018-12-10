@@ -101,7 +101,8 @@ void PropagateUncertaintyUsingSimulation(const XMean& x_mean, const XCovar& x_co
     typedef Eigen::Matrix<Scalar, kYSize, 1> YMean;
     std::vector<YMean> samples(gen_samples_count);
 
-    std::generate_n(samples.begin(), gen_samples_count, [&x_rand, &propag_fun, gen,&in_samples]()
+    // generate the set of output samples
+    for (size_t i=0; i< gen_samples_count;)
     {
         XMean samp;
         x_rand.NewSample(gen, &samp);
@@ -109,10 +110,12 @@ void PropagateUncertaintyUsingSimulation(const XMean& x_mean, const XCovar& x_co
             in_samples.push_back(samp);
 
         YMean out_y;
-        propag_fun(samp, &out_y);
+        bool suc = propag_fun(samp, &out_y);
+        if (!suc)
+            continue;
 
-        return out_y;
-    });
+        samples[i++] = out_y;
+    }
 
     XCovar x_covar_tmp;
     if (debug)
