@@ -121,7 +121,7 @@ FragmentMap::FragmentMap(size_t fragment_id_offset)
 {
 }
 
-SalientPointFragment& FragmentMap::AddSalientPoint(const std::optional<suriko::Point3> &coord, size_t* salient_point_id)
+SalientPointFragment& FragmentMap::AddSalientPointPatch(const std::optional<suriko::Point3> &coord, size_t* salient_point_id)
 {
     size_t new_id = next_salient_point_id_++;
 

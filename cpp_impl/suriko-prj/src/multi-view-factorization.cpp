@@ -359,7 +359,7 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
             // create new 3D salient point
             size_t salient_point_id = 0;
             { // actual modification
-                SalientPointFragment& salient_point = map_.AddSalientPoint(x3D_world, &salient_point_id);
+                SalientPointFragment& salient_point = map_.AddSalientPointPatch(x3D_world, &salient_point_id);
                 salient_point.synthetic_virtual_point_id = track.SyntheticVirtualPointId;
             }
 

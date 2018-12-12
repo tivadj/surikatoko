@@ -105,7 +105,7 @@ int CircleGridDemo(int argc, char* argv[])
         {
             Scalar val_z = std::cos((x - xmid) / xlen * M_PI);
             Scalar z = wb.z_min + val_z * zlen;
-            SalientPointFragment& salient_point = map.AddSalientPoint(Point3(x, y, z));
+            SalientPointFragment& salient_point = map.AddSalientPointPatch(Point3(x, y, z));
             salient_point.synthetic_virtual_point_id = next_synthetic_virtual_point_id;
             next_synthetic_virtual_point_id += 1;
         }

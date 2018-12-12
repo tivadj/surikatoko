@@ -73,7 +73,7 @@
 # camera pos initial std
 --kalman_estim_var_init_std=0.005
 --kalman_input_noise_std=0.1
---kalman_measurm_noise_std=1
+--kalman_measurm_noise_std_pix=1
 --kalman_sal_pnt_init_inv_dist=1
 --kalman_sal_pnt_init_inv_dist_std=5
 --kalman_fake_sal_pnt_init_inv_dist=true

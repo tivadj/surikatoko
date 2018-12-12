@@ -135,7 +135,7 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
                 z += (*x3D_noise_dis)(*gen);
             }
 
-            SalientPointFragment& frag = entire_map->AddSalientPoint(Point3(x, y, z));
+            SalientPointFragment& frag = entire_map->AddSalientPointPatch(Point3(x, y, z));
             frag.synthetic_virtual_point_id = next_virtual_point_id++;
         }
     }
@@ -191,7 +191,7 @@ public:
         tracker_origin_from_world_.R.setIdentity();
     }
 
-    void AnalyzeFrame(size_t frame_ind, const ImageFrame& image) override
+    void AnalyzeFrame(size_t frame_ind, const Picture& image) override
     {
         detected_blobs_.clear();
 
@@ -243,7 +243,7 @@ public:
     }
 
     void MatchSalientPoints(size_t frame_ind,
-        const ImageFrame& image,
+        const Picture& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
@@ -278,7 +278,7 @@ public:
     }
 
     void RecruitNewSalientPoints(size_t frame_ind,
-        const ImageFrame& image,
+        const Picture& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         std::vector<CornersMatcherBlobId>* new_blob_ids) override
@@ -322,7 +322,7 @@ public:
         }
     }
 
-    void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const ImageFrame& image) override
+    void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const Picture& image) override
     {
         size_t frag_id = detected_blobs_[blob_id.Ind].FragmentId;
         SalientPointFragment& frag = entire_map_.GetSalientPointNew(frag_id);
@@ -370,7 +370,7 @@ public:
     }
 
     void MatchSalientPointsOpenCVImpl(size_t frame_ind,
-        const ImageFrame& frame_image,
+        const Picture& frame_image,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts)
     {
@@ -415,7 +415,7 @@ public:
                 cv::rectangle(image_gray_with_match, rect, cv::Scalar::all(0));
             }
 
-            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt_id, frame_image, ellisoid_cut_thr_);
+            std::optional<suriko::Point2> match_pnt_center = MatchSalientPatch(*kalman_tracker_, sal_pnt_id, frame_image, ellisoid_cut_thr_);
 
             bool ok = match_pnt_center.has_value();
             if (ok)
@@ -458,7 +458,7 @@ public:
     }
 
     void MatchSalientPointsCustomImpl(size_t frame_ind,
-        const ImageFrame& frame_image,
+        const Picture& frame_image,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts)
     {
@@ -466,7 +466,7 @@ public:
         {
             const SalPntPatch& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
 
-            std::optional<suriko::Point2> match_pnt_center = MatchSalientPointCenter(*kalman_tracker_, sal_pnt_id, frame_image, ellisoid_cut_thr_);
+            std::optional<suriko::Point2> match_pnt_center = MatchSalientPatch(*kalman_tracker_, sal_pnt_id, frame_image, ellisoid_cut_thr_);
             bool is_lost = !match_pnt_center.has_value();
             if (is_lost)
                 continue;
@@ -498,7 +498,7 @@ public:
         }
     }
 
-    Scalar MatchPatchTemplateAvgDiff(const ImageFrame& frame_image,
+    Scalar MatchPatchTemplateAvgDiff(const Picture& frame_image,
         const cv::Mat& template_gray,
         Pointi templ_top_left)
     {
@@ -521,34 +521,33 @@ public:
         return err_per_pixel;
     }
 
-    Scalar GetGrayPatchMean(const cv::Mat& gray_image, Pointi templ_top_left, int templ_width, int templ_height)
+    Scalar GetGrayPatchMean(const cv::Mat& gray_image, Pointi patch_top_left, int patch_width, int patch_height)
     {
         Scalar sum{ 0 };
-        for (int patch_y=0; patch_y < templ_height; ++patch_y)
+        for (int row=0; row < patch_height; ++row)
         {
-            for (int patch_x = 0; patch_x < templ_width; ++patch_x)
+            for (int col = 0; col < patch_width; ++col)
             {
-                auto templ_value = gray_image.at<unsigned char>(templ_top_left.y + patch_y, templ_top_left.x + patch_x);
-
-                auto v = static_cast<Scalar>(templ_value);
-                sum += v;
+                auto v = gray_image.at<unsigned char>(patch_top_left.y + row, patch_top_left.x + col);
+                auto v_float = static_cast<Scalar>(v);
+                sum += v_float;
             }
         }
-        const Scalar err_per_pixel = sum / (templ_width*templ_height);
-        return err_per_pixel;
+        const Scalar mean = sum / (patch_width*patch_height);
+        return mean;
     }
 
-    Scalar GetGrayPatchDiffSqrSum(const cv::Mat& gray_image, Pointi templ_top_left, int templ_width, int templ_height, Scalar templ_mean)
+    Scalar GetGrayPatchDiffSqrSum(const cv::Mat& gray_image, Pointi patch_top_left, int patch_width, int patch_height, Scalar patch_mean)
     {
         Scalar sum{ 0 };
-        for (int patch_y = 0; patch_y < templ_height; ++patch_y)
+        for (int row = 0; row < patch_height; ++row)
         {
-            for (int patch_x = 0; patch_x < templ_width; ++patch_x)
+            for (int col = 0; col < patch_width; ++col)
             {
-                auto templ_value = gray_image.at<unsigned char>(templ_top_left.y + patch_y, templ_top_left.x + patch_x);
+                auto v = gray_image.at<unsigned char>(patch_top_left.y + row, patch_top_left.x + col);
+                auto v_float = static_cast<Scalar>(v);
 
-                auto v = static_cast<Scalar>(templ_value);
-                Scalar v_diff = suriko::Sqr(v - templ_mean);
+                Scalar v_diff = suriko::Sqr(v_float - patch_mean);
                 sum += v_diff;
             }
         }
@@ -561,24 +560,24 @@ public:
         Scalar image_diff_sqr_sum;
     };
 
-    CorrelationCoeffData CalcCorrCoeff(const ImageFrame& frame_image,
-        const cv::Mat& template_gray,
-        Pointi templ_top_left,
-        Scalar image_mean_value, 
+    CorrelationCoeffData CalcCorrCoeff(const Picture& pic,
+        Pointi pic_roi_top_left,
+        Scalar pic_roi_mean,
+        const cv::Mat& templ_gray,
         Scalar templ_mean)
     {
         CorrelationCoeffData corr{};
-        for (int patch_y=0; patch_y < template_gray.rows; ++patch_y)
+        for (int row=0; row < templ_gray.rows; ++row)
         {
-            for (int patch_x = 0; patch_x < template_gray.cols; ++patch_x)
+            for (int col = 0; col < templ_gray.cols; ++col)
             {
-                auto frame_value = frame_image.gray.at<unsigned char>(templ_top_left.y + patch_y, templ_top_left.x + patch_x);
-                auto templ_value = template_gray.at<unsigned char>(patch_y, patch_x);
+                auto frame_value = pic.gray.at<unsigned char>(pic_roi_top_left.y + row, pic_roi_top_left.x + col);
+                auto templ_value = templ_gray.at<unsigned char>(row, col);
 
                 auto f = static_cast<Scalar>(frame_value);
                 auto t = static_cast<Scalar>(templ_value);
 
-                Scalar f_diff = f - image_mean_value;
+                Scalar f_diff = f - pic_roi_mean;
                 Scalar t_diff = t - templ_mean;
 
                 Scalar prod = f_diff * t_diff;
@@ -600,7 +599,7 @@ public:
         int executed_match_templ_calls;
     };
 
-    TemplateMatchResult MatchSalPntTemplateCenterInRect(const SalPntPatch& sal_pnt, const ImageFrame& frame_image, Recti search_rect, int match_impl)
+    TemplateMatchResult MatchSalientPointPatchCenterInRect(const SalPntPatch& sal_pnt, const Picture& pic, Recti search_rect, int match_impl)
     {
         Pointi search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
         const int search_radius_left = search_rect.width / 2;
@@ -614,9 +613,9 @@ public:
         // template mean and variance
         Scalar templ_mean = GetGrayPatchMean(sal_pnt.template_gray_in_first_frame, Pointi{ 0,0 },
             kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height);
-        Scalar templ_var_sum = GetGrayPatchDiffSqrSum(sal_pnt.template_gray_in_first_frame, Pointi{ 0,0 },
+        Scalar templ_sum_sqr_diff = GetGrayPatchDiffSqrSum(sal_pnt.template_gray_in_first_frame, Pointi{ 0,0 },
             kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height, templ_mean);
-        Scalar templ_var = std::sqrt(templ_var_sum);
+        Scalar templ_factor = std::sqrt(templ_sum_sqr_diff);
 
         struct PosAndErr
         {
@@ -630,36 +629,35 @@ public:
         std::vector<PosAndErr> best_match_poses_cc;
         int match_templ_calls_counter = 0;                            // records the number of calls to match patch template
         int match_templ_calls_counter_cc = 0;
-        const auto& template_gray = sal_pnt.template_gray_in_first_frame;
-        auto match_templ_at = [this, match_impl, &template_gray, &frame_image,
+        const auto& templ_gray = sal_pnt.template_gray_in_first_frame;
+        auto match_templ_at = [this, match_impl, &templ_gray, &pic,
             &min_err_value, &best_match_poses, &match_templ_calls_counter,
-            &max_corr_coeff, &best_match_poses_cc, &match_templ_calls_counter_cc, templ_mean, templ_var](Pointi center)
+            &max_corr_coeff, &best_match_poses_cc, &match_templ_calls_counter_cc, templ_mean, templ_factor](Pointi search_center)
         {
             ++match_templ_calls_counter;
             ++match_templ_calls_counter_cc;
 
-            Pointi patch_top_left = kalman_tracker_->TemplateTopLeftInt(suriko::Point2{ center.x, center.y });
+            Pointi pic_roi_top_left = kalman_tracker_->TemplateTopLeftInt(suriko::Point2{ search_center.x, search_center.y });
 
             Scalar err = -1;
             Scalar corr_coeff = -2;
             if (match_impl == 1)
             {
-                err = MatchPatchTemplateAvgDiff(frame_image, template_gray, patch_top_left);
+                err = MatchPatchTemplateAvgDiff(pic, templ_gray, pic_roi_top_left);
             }
             else if (match_impl == 2)
             {
-
-                Scalar img_mean = GetGrayPatchMean(frame_image.gray, patch_top_left,
+                Scalar pic_roi_mean = GetGrayPatchMean(pic.gray, pic_roi_top_left,
                     kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height);
 
-                CorrelationCoeffData corr_data = CalcCorrCoeff(frame_image, template_gray, patch_top_left, img_mean, templ_mean);
-                corr_coeff = corr_data.corr_prod_sum / (std::sqrt(corr_data.image_diff_sqr_sum) * templ_var);
+                CorrelationCoeffData corr_data = CalcCorrCoeff(pic, pic_roi_top_left, pic_roi_mean, templ_gray, templ_mean);
+                corr_coeff = corr_data.corr_prod_sum / (std::sqrt(corr_data.image_diff_sqr_sum) * templ_factor);
             }
 
             if (match_impl == 1 && err <= min_err_value)
             {
                 if (err < min_err_value) best_match_poses.clear();
-                best_match_poses.push_back(PosAndErr{ patch_top_left, err, match_templ_calls_counter });
+                best_match_poses.push_back(PosAndErr{ pic_roi_top_left, err, match_templ_calls_counter });
                 min_err_value = err;
                 static bool debug_calls = false;
                 if (debug_calls)
@@ -668,7 +666,7 @@ public:
             if (match_impl == 2 && corr_coeff > max_corr_coeff)
             {
                 best_match_poses_cc.clear();
-                best_match_poses_cc.push_back(PosAndErr{ patch_top_left, corr_coeff, match_templ_calls_counter_cc });
+                best_match_poses_cc.push_back(PosAndErr{ pic_roi_top_left, corr_coeff, match_templ_calls_counter_cc });
                 max_corr_coeff = corr_coeff;
             }
         };
@@ -791,7 +789,7 @@ public:
         return result;
     }
 
-    std::optional<suriko::Point2> MatchSalientPointCenter(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const ImageFrame& frame_image,
+    std::optional<suriko::Point2> MatchSalientPatch(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic,
         Scalar ellisoid_cut_thr)
     {
         Recti search_rect_unbounded = PredictSalientPointSearchRect(mono_slam, sal_pnt_id, ellisoid_cut_thr);
@@ -799,7 +797,7 @@ public:
         if (min_search_rect_size_.has_value())
             search_rect_unbounded = ClampRectWhenFixedCenter(search_rect_unbounded, min_search_rect_size_.value());
 
-        Recti image_bounds = { 0, 0, frame_image.gray.cols, frame_image.gray.rows };
+        Recti image_bounds = { 0, 0, pic.gray.cols, pic.gray.rows };
         
         int radx = mono_slam.sal_pnt_patch_size_.width / 2;
         int rady = mono_slam.sal_pnt_patch_size_.height / 2;
@@ -819,13 +817,13 @@ public:
         const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
         static int match_impl = 2; // 1=diff.sqr.sum, 2=correlation coefficient
-        TemplateMatchResult match_result = MatchSalPntTemplateCenterInRect(sal_pnt, frame_image, search_rect, match_impl);
+        TemplateMatchResult match_result = MatchSalientPointPatchCenterInRect(sal_pnt, pic, search_rect, match_impl);
 
         static cv::Mat image_with_match_bgr;
         static bool debug_ui = false;
         if (debug_ui)
         {
-            CopyBgr(frame_image, &image_with_match_bgr);
+            CopyBgr(pic, &image_with_match_bgr);
 
             //if (this->draw_sal_pnt_fun_ != nullptr)
             //    draw_sal_pnt_fun_(mono_slam, sal_pnt, &image_with_match_bgr);
@@ -871,7 +869,7 @@ public:
     }
 
     void MatchSalientPoints(size_t frame_ind,
-        const ImageFrame& image,
+        const Picture& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
@@ -883,7 +881,7 @@ public:
     }
 
     void RecruitNewSalientPoints(size_t frame_ind,
-        const ImageFrame& image,
+        const Picture& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         std::vector<CornersMatcherBlobId>* new_blob_ids) override
@@ -966,7 +964,7 @@ public:
         return suriko::Point2{ kp.pt.x, kp.pt.y };
     }
 
-    ImageFrame GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const ImageFrame& image) override
+    Picture GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const Picture& image) override
     {
         const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
 
@@ -982,7 +980,7 @@ public:
         SRK_ASSERT(patch_gray.rows == kalman_tracker_->sal_pnt_patch_size_.height);
         SRK_ASSERT(patch_gray.cols == kalman_tracker_->sal_pnt_patch_size_.width);
 
-        ImageFrame patch_template{};
+        Picture patch_template{};
         patch_template.gray = patch_gray;
 
 #if defined(SRK_DEBUG)
@@ -1089,7 +1087,7 @@ DEFINE_double(kalman_estim_var_init_std, 0.001, "");
 DEFINE_double(kalman_input_noise_std, 0.08, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist_std, 1, "");
-DEFINE_double(kalman_measurm_noise_std, 1, "");
+DEFINE_double(kalman_measurm_noise_std_pix, 1, "");
 DEFINE_int32(kalman_update_impl, 1, "");
 DEFINE_double(kalman_max_new_blobs_in_first_frame, 7, "");
 DEFINE_double(kalman_max_new_blobs_per_frame, 1, "");
@@ -1269,7 +1267,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.sal_pnt_init_inv_dist_ = FLAGS_kalman_sal_pnt_init_inv_dist;
     mono_slam.sal_pnt_init_inv_dist_std_ = FLAGS_kalman_sal_pnt_init_inv_dist_std;
     mono_slam.SetInputNoiseStd(FLAGS_kalman_input_noise_std);
-    mono_slam.measurm_noise_std_ = FLAGS_kalman_measurm_noise_std;
+    mono_slam.measurm_noise_std_pix_ = FLAGS_kalman_measurm_noise_std_pix;
     mono_slam.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
 
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
@@ -1387,7 +1385,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     std::optional<std::chrono::duration<double>> frame_process_time; // time it took to process current frame by tracker
 
-    ImageFrame image;
+    Picture image;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir

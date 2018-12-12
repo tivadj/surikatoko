@@ -34,7 +34,7 @@ TEST_F(BAKanataniTest, NormalizationSimple)
     for (size_t i=0; i<pnts3D.size(); ++i)
     {
         size_t salient_point_id = -1;
-        map.AddSalientPoint(pnts3D[i].second, &salient_point_id);
+        map.AddSalientPointPatch(pnts3D[i].second, &salient_point_id);
         pnts3D[i].first = salient_point_id;
     }
 

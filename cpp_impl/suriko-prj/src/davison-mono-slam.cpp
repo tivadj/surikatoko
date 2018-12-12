@@ -42,7 +42,7 @@ auto SpanAu(EigenMat& m, size_t count) -> gsl::span<typename EigenMat::Scalar>
     return gsl::make_span<S>(m.data(), static_cast<typename gsl::span<S>::index_type>(count));
 }
 
-void CopyBgr(const ImageFrame& image, cv::Mat* out_image_bgr)
+void CopyBgr(const Picture& image, cv::Mat* out_image_bgr)
 {
 #if defined(SRK_DEBUG)
     image.bgr_debug.copyTo(*out_image_bgr);
@@ -357,7 +357,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
 
 void DavisonMonoSlam::FillRk2x2(Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* Rk) const
 {
-    Scalar measurm_noise_variance = suriko::Sqr(static_cast<Scalar>(measurm_noise_std_));
+    Scalar measurm_noise_variance = suriko::Sqr(static_cast<Scalar>(measurm_noise_std_pix_));
     *Rk << measurm_noise_variance, 0, 0, measurm_noise_variance;
 }
 
@@ -493,7 +493,7 @@ void DavisonMonoSlam::PredictEstimVarsHelper()
     PredictEstimVars(&predicted_estim_vars_, &predicted_estim_vars_covar_);
 }
 
-void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
+void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 {
     if (stats_logger_ != nullptr) stats_logger_->StartNewFrameStats();
 
@@ -559,7 +559,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const ImageFrame& image)
                 pnt_inv_dist_gt = corners_matcher_->GetSalientPointGroundTruthInvDepth(blob_id);
             }
 
-            ImageFrame patch_template = corners_matcher_->GetBlobPatchTemplate(blob_id, image);
+            Picture patch_template = corners_matcher_->GetBlobPatchTemplate(blob_id, image);
 
             SalPntId sal_pnt_id = AddSalientPoint(cam_state, coord, patch_template, pnt_inv_dist_gt);
             latest_frame_sal_pnts_.insert(sal_pnt_id);
@@ -884,7 +884,7 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
 
         Scalar diff_vars_total = 0;
         Scalar diff_cov_total = 0;
-        Scalar measurm_noise_variance = suriko::Sqr(static_cast<Scalar>(measurm_noise_std_)); // R[1,1]
+        Scalar measurm_noise_variance = suriko::Sqr(static_cast<Scalar>(measurm_noise_std_pix_)); // R[1,1]
 
         for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
         {
@@ -1038,7 +1038,7 @@ void DavisonMonoSlam::PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPo
 }
 
 DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(const CameraStateVars& cam_state, suriko::Point2 corner_pix,
-    ImageFrame patch_template,
+    Picture patch_template,
     std::optional<Scalar> pnt_inv_dist_gt)
 {
     // undistort 2D image coordinate

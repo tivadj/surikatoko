@@ -197,7 +197,7 @@ int DinoDemo(int argc, char* argv[])
         Point3 x3D = Triangulate3DPointByLeastSquares(one_pnt_corner_per_frame, one_pnt_proj_mat_per_frame, f0);
 
         size_t salient_point_id = 0;
-        SalientPointFragment& sal_pnt = map.AddSalientPoint(x3D, &salient_point_id);
+        SalientPointFragment& sal_pnt = map.AddSalientPointPatch(x3D, &salient_point_id);
         sal_pnt.synthetic_virtual_point_id = corner_track.SyntheticVirtualPointId;
 
         corner_track.SalientPointId = salient_point_id;

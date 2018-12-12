@@ -45,7 +45,7 @@ struct CornersMatcherBlobId
 };
 
 /// Helper class to transfer around a gray and BGR image from camera. The BGR image is used for debugging purposes.
-struct ImageFrame
+struct Picture
 {
     cv::Mat gray;
 #if defined(SRK_DEBUG)
@@ -53,7 +53,7 @@ struct ImageFrame
 #endif
 };
 
-void CopyBgr(const ImageFrame& image, cv::Mat* out_image_bgr);
+void CopyBgr(const Picture& image, cv::Mat* out_image_bgr);
 
 /// Status of a salient point during tracking.
 enum class SalPntTrackStatus
@@ -115,24 +115,24 @@ class CornersMatcherBase
 public:
     virtual ~CornersMatcherBase() = default;
 
-    virtual void AnalyzeFrame(size_t frame_ind, const ImageFrame& image) {}
-    virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const ImageFrame& image) {}
+    virtual void AnalyzeFrame(size_t frame_ind, const Picture& image) {}
+    virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const Picture& image) {}
 
     virtual void MatchSalientPoints(size_t frame_ind,
-        const ImageFrame& image,
+        const Picture& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) {}
 
     virtual void RecruitNewSalientPoints(size_t frame_ind,
-        const ImageFrame& image,
+        const Picture& image,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         std::vector<CornersMatcherBlobId>* new_blob_ids) {}
 
     virtual suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
     
-    virtual ImageFrame GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const ImageFrame& image) {
-        return ImageFrame{};
+    virtual Picture GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const Picture& image) {
+        return Picture{};
     }
 
     virtual std::optional<Scalar> GetSalientPointGroundTruthInvDepth(CornersMatcherBlobId blob_id) { return std::nullopt; };
@@ -286,7 +286,7 @@ public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
     Scalar input_noise_std_ = 1;
-    Scalar measurm_noise_std_ = 1;
+    Scalar measurm_noise_std_pix_ = 1;
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
     
@@ -353,7 +353,7 @@ public:
     
     void SetInputNoiseStd(Scalar input_noise_std);
 
-    void ProcessFrame(size_t frame_ind, const ImageFrame& image);
+    void ProcessFrame(size_t frame_ind, const Picture& image);
 
     void PredictEstimVarsHelper();
 
@@ -454,7 +454,7 @@ private:
     void OnEstimVarsChanged(size_t frame_ind);
 
     SalPntId AddSalientPoint(const CameraStateVars& cam_state, suriko::Point2 corner, 
-        ImageFrame patch_template,
+        Picture patch_template,
         std::optional<Scalar> pnt_inv_dist_gt);
 
     gsl::span<Scalar> EstimVarsCamPosW();
