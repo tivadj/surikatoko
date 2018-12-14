@@ -593,6 +593,8 @@ public:
     struct TemplateMatchResult
     {
         suriko::Point2 center;
+        suriko::Pointi top_left;
+
         Scalar err_per_pixel;
 
         // specify the number of calls to match-template routine to find this specific match-result.
@@ -744,6 +746,7 @@ public:
 
         TemplateMatchResult result;
         result.center = center;
+        result.top_left = templ_top_left;
         if (match_impl == 1)
         {
             result.err_per_pixel = best_match_poses[0].err_per_pixel;
