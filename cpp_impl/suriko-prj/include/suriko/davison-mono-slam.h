@@ -6,11 +6,13 @@
 #include <shared_mutex>
 #include <functional>
 #include <gsl/span>
-#include "suriko/obs-geom.h"
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/core/core.hpp> // cv::Mat
 #endif
+
+#include "suriko/obs-geom.h"
+#include "suriko/image-proc.h"
 
 namespace suriko {
 namespace
@@ -44,17 +46,6 @@ struct CornersMatcherBlobId
     size_t Ind; // possibly, index of blob in the blobs array
 };
 
-/// Helper class to transfer around a gray and BGR image from camera. The BGR image is used for debugging purposes.
-struct Picture
-{
-    cv::Mat gray;
-#if defined(SRK_DEBUG)
-    cv::Mat bgr_debug;
-#endif
-};
-
-void CopyBgr(const Picture& image, cv::Mat* out_image_bgr);
-
 /// Status of a salient point during tracking.
 enum class SalPntTrackStatus
 {
@@ -66,25 +57,38 @@ enum class SalPntTrackStatus
 /// Represents the portion of the image, which is the projection of salient image into a camera.
 struct SalPntPatch
 {
+#if defined(SRK_DEBUG)
+    size_t initial_frame_ind_debug_;
+#endif
     size_t estim_vars_ind; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
     size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
 
-    // The distorted coordinates in the current camera, corresponds to the center of the image template.
-    suriko::Point2 pixel_coord_real;
-
-    suriko::Pointi template_top_left_int;
-
     SalPntTrackStatus track_status;
 
-    // Rectangular portion of the gray image corresponding to salient point, projected in current frame.
-    cv::Mat template_gray_in_first_frame;
+    // The distorted coordinates in the current camera, corresponds to the center of the image template.
+    suriko::Point2 templ_center_pix_;
+    suriko::Pointi templ_top_left_pix_;
 #if defined(SRK_DEBUG)
-    cv::Mat template_bgr_in_first_frame_debug;
+    suriko::Point2 initial_templ_center_pix_debug_;    // in pixels
+    suriko::Pointi initial_templ_top_left_pix_debug_;  // in pixels
+#endif
+    // As the patch of the image, related to this salient point, doesn't change during tracking,
+    // we may cache some related statistics.
+    struct
+    {
+        Scalar templ_mean_;               // the mean of a template
+        Scalar templ_sqrt_sum_sqr_diff_;  // the part of denominator in formula of a correlation coefficient (=sqrt(sum))
+    } templ_stats;
+
+    // Rectangular portion of the gray image corresponding to salient point, projected in current frame.
+    cv::Mat initial_templ_gray_;
+#if defined(SRK_DEBUG)
+    cv::Mat initial_templ_bgr_debug;
 #endif
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> OffsetFromTopLeft() const
     {
-        return pixel_coord_real.Mat() - Eigen::Matrix<Scalar, kPixPosComps, 1>{template_top_left_int.x, template_top_left_int.y};
+        return templ_center_pix_.Mat() - Eigen::Matrix<Scalar, kPixPosComps, 1>{templ_top_left_pix_.x, templ_top_left_pix_.y};
     }
 };
 
@@ -453,7 +457,7 @@ private:
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
     void OnEstimVarsChanged(size_t frame_ind);
 
-    SalPntId AddSalientPoint(const CameraStateVars& cam_state, suriko::Point2 corner, 
+    SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2 corner, 
         Picture patch_template,
         std::optional<Scalar> pnt_inv_dist_gt);
 

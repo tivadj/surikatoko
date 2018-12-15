@@ -385,7 +385,7 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam
 
     const SalPntPatch& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
 
-    bool in_virtual_mode = sal_pnt.template_gray_in_first_frame.empty();
+    bool in_virtual_mode = sal_pnt.initial_templ_gray_.empty();
     if (in_virtual_mode)
     {
         // in virtual mode render just an outline of the patch
@@ -430,15 +430,15 @@ void RenderSalientPointPatchTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam
 #if defined(SRK_DEBUG)
         // visualize colored patches if available as it simplifies recognition of a scene
         // NOTE: need a copy of the patch because later it is flipped
-        if (!sal_pnt.template_bgr_in_first_frame_debug.empty())
+        if (!sal_pnt.initial_templ_bgr_debug.empty())
         {
-            sal_pnt.template_bgr_in_first_frame_debug.copyTo(patch_submat);
+            sal_pnt.initial_templ_bgr_debug.copyTo(patch_submat);
             patch_constructed = true;
         }
 #endif
         if (!patch_constructed)
         {
-            cv::cvtColor(sal_pnt.template_gray_in_first_frame, patch_submat, CV_GRAY2BGR);
+            cv::cvtColor(sal_pnt.initial_templ_gray_, patch_submat, CV_GRAY2BGR);
         }
 
         // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture

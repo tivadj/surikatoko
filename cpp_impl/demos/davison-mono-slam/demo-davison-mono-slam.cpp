@@ -22,6 +22,7 @@
 #include "suriko/bundle-adj-kanatani.h"
 #include "suriko/obs-geom.h"
 #include "suriko/mat-serialization.h"
+#include "suriko/templ-match.h"
 #include "suriko/approx-alg.h"
 #include "suriko/davison-mono-slam.h"
 #include "suriko/virt-world/scene-generator.h"
@@ -395,7 +396,7 @@ public:
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
             const SalPntPatch& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
-            cv::matchTemplate(frame_image.gray, sal_pnt.template_gray_in_first_frame, match_score_image, method);
+            cv::matchTemplate(frame_image.gray, sal_pnt.initial_templ_gray_, match_score_image, method);
             cv::normalize(match_score_image, match_score_image, 0, 1, cv::NORM_MINMAX, -1);
 
             double minVal;
@@ -438,8 +439,8 @@ public:
             if (match_pnt_center.has_value())
                 center = suriko::Pointi{ static_cast<int>(match_pnt_center.value()[0]), static_cast<int>(match_pnt_center.value()[1]) };
 
-            float diffC = (sal_pnt.pixel_coord_real.Mat() - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
-            float diffTL = (sal_pnt.template_top_left_int.Mat() - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
+            float diffC = (sal_pnt.templ_center_pix_.Mat() - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
+            float diffTL = (sal_pnt.templ_top_left_pix_.Mat() - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
             if (diffTL > max_shift_per_frame)
             {
                 if (stop_on_sal_pnt_moved_too_far_)
@@ -478,7 +479,7 @@ public:
                 if (match_pnt_center.has_value())
                 {
                     static float max_shift_per_frame = 30;
-                    auto diffC = (sal_pnt.pixel_coord_real.Mat() - center.Mat()).norm();
+                    auto diffC = (sal_pnt.templ_center_pix_.Mat() - center.Mat()).norm();
                     if (diffC > max_shift_per_frame)
                     {
                         if (stop_on_sal_pnt_moved_too_far_)
@@ -521,80 +522,12 @@ public:
         return err_per_pixel;
     }
 
-    Scalar GetGrayPatchMean(const cv::Mat& gray_image, Pointi patch_top_left, int patch_width, int patch_height)
-    {
-        Scalar sum{ 0 };
-        for (int row=0; row < patch_height; ++row)
-        {
-            for (int col = 0; col < patch_width; ++col)
-            {
-                auto v = gray_image.at<unsigned char>(patch_top_left.y + row, patch_top_left.x + col);
-                auto v_float = static_cast<Scalar>(v);
-                sum += v_float;
-            }
-        }
-        const Scalar mean = sum / (patch_width*patch_height);
-        return mean;
-    }
-
-    Scalar GetGrayPatchDiffSqrSum(const cv::Mat& gray_image, Pointi patch_top_left, int patch_width, int patch_height, Scalar patch_mean)
-    {
-        Scalar sum{ 0 };
-        for (int row = 0; row < patch_height; ++row)
-        {
-            for (int col = 0; col < patch_width; ++col)
-            {
-                auto v = gray_image.at<unsigned char>(patch_top_left.y + row, patch_top_left.x + col);
-                auto v_float = static_cast<Scalar>(v);
-
-                Scalar v_diff = suriko::Sqr(v_float - patch_mean);
-                sum += v_diff;
-            }
-        }
-        return sum;
-    }
-
-    struct CorrelationCoeffData
-    {
-        Scalar corr_prod_sum;
-        Scalar image_diff_sqr_sum;
-    };
-
-    CorrelationCoeffData CalcCorrCoeff(const Picture& pic,
-        Pointi pic_roi_top_left,
-        Scalar pic_roi_mean,
-        const cv::Mat& templ_gray,
-        Scalar templ_mean)
-    {
-        CorrelationCoeffData corr{};
-        for (int row=0; row < templ_gray.rows; ++row)
-        {
-            for (int col = 0; col < templ_gray.cols; ++col)
-            {
-                auto frame_value = pic.gray.at<unsigned char>(pic_roi_top_left.y + row, pic_roi_top_left.x + col);
-                auto templ_value = templ_gray.at<unsigned char>(row, col);
-
-                auto f = static_cast<Scalar>(frame_value);
-                auto t = static_cast<Scalar>(templ_value);
-
-                Scalar f_diff = f - pic_roi_mean;
-                Scalar t_diff = t - templ_mean;
-
-                Scalar prod = f_diff * t_diff;
-                corr.corr_prod_sum += prod;
-
-                Scalar f_diff2 = suriko::Sqr(f_diff);
-                corr.image_diff_sqr_sum += f_diff2;
-            }
-        }
-        return corr;
-    }
-
     struct TemplateMatchResult
     {
         suriko::Point2 center;
+#ifdef SRK_DEBUG
         suriko::Pointi top_left;
-
+#endif
         Scalar err_per_pixel;
 
         // specify the number of calls to match-template routine to find this specific match-result.
@@ -612,13 +545,9 @@ public:
         const int search_radius_down = search_rect.height - search_radius_up - 1;
         const int search_common_rad = std::min({ search_radius_left , search_radius_right , search_radius_up, search_radius_down });
 
-        // template mean and variance
-        Scalar templ_mean = GetGrayPatchMean(sal_pnt.template_gray_in_first_frame, Pointi{ 0,0 },
-            kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height);
-        Scalar templ_sum_sqr_diff = GetGrayPatchDiffSqrSum(sal_pnt.template_gray_in_first_frame, Pointi{ 0,0 },
-            kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height, templ_mean);
-        Scalar templ_factor = std::sqrt(templ_sum_sqr_diff);
-
+        Scalar templ_mean = sal_pnt.templ_stats.templ_mean_;
+        Scalar templ_factor = sal_pnt.templ_stats.templ_sqrt_sum_sqr_diff_;
+        
         struct PosAndErr
         {
             Pointi patch_top_left;
@@ -631,7 +560,7 @@ public:
         std::vector<PosAndErr> best_match_poses_cc;
         int match_templ_calls_counter = 0;                            // records the number of calls to match patch template
         int match_templ_calls_counter_cc = 0;
-        const auto& templ_gray = sal_pnt.template_gray_in_first_frame;
+        const auto& templ_gray = sal_pnt.initial_templ_gray_;
         auto match_templ_at = [this, match_impl, &templ_gray, &pic,
             &min_err_value, &best_match_poses, &match_templ_calls_counter,
             &max_corr_coeff, &best_match_poses_cc, &match_templ_calls_counter_cc, templ_mean, templ_factor](Pointi search_center)
@@ -746,7 +675,9 @@ public:
 
         TemplateMatchResult result;
         result.center = center;
+#ifdef SRK_DEBUG
         result.top_left = templ_top_left;
+#endif
         if (match_impl == 1)
         {
             result.err_per_pixel = best_match_poses[0].err_per_pixel;
@@ -856,7 +787,9 @@ public:
         else if (match_impl == 2)
         {
             if (min_templ_corr_coeff_.has_value() && match_result.err_per_pixel < min_templ_corr_coeff_.value())
+            {
                 return std::nullopt;
+            }
         }
 
         static bool debug_calls = false;

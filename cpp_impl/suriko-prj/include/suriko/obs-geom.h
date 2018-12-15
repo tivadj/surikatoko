@@ -26,6 +26,9 @@ public:
 
     Eigen::Matrix<Scalar, 3, 1> AsHomog() const { return Eigen::Matrix<Scalar, 3, 1> {mat_(0), mat_(1), 1}; }
 
+    Scalar X() const { return mat_[0]; }
+    Scalar Y() const { return mat_[1]; }
+
     Scalar  operator[] (size_t i) const { return mat_(i); };
     Scalar& operator[] (size_t i)       { return mat_(i); };
 };

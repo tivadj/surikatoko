@@ -1,6 +1,6 @@
 #--logtostderr
 --stderrthreshold=0
---v=4
+--v=5
 # vmodule doesn't work on Windows
 #--vmodule=bundle*=4
 
@@ -86,11 +86,11 @@
 --kalman_match_blob_prob=-0.3
 --kalman_fix_estim_vars_covar_symmetry=true
 --kalman_templ_width=17
---kalman_templ_min_corr_coeff=0.75
+--kalman_templ_min_corr_coeff=0.65
 --kalman_stop_on_sal_pnt_moved_too_far=false
 --kalman_debug_estim_vars_cov=true
 --kalman_debug_predicted_vars_cov=true
---kalman_debug_max_sal_pnt_count=-1
+--kalman_debug_max_sal_pnt_count=4
 
 
 # Visualizer

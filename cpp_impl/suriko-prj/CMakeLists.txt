@@ -21,7 +21,9 @@ set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/eigen-helpers.hpp
         ${PROJECT_SOURCE_DIR}/include/suriko/obs-geom.h
         ${PROJECT_SOURCE_DIR}/include/suriko/opengl-helpers.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/image-proc.h
         ${PROJECT_SOURCE_DIR}/include/suriko/mat-serialization.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/templ-match.h
         ${PROJECT_SOURCE_DIR}/include/suriko/rt-config.h
         ${PROJECT_SOURCE_DIR}/include/suriko/lin-alg.h
         ${PROJECT_SOURCE_DIR}/include/suriko/quat.h
@@ -33,9 +35,11 @@ set(lib_srcs
         ${PROJECT_SOURCE_DIR}/src/auto-project-ellipsoid-on-camera.cpp
         ${PROJECT_SOURCE_DIR}/src/bundle-adj-kanatani.cpp
         ${PROJECT_SOURCE_DIR}/src/davison-mono-slam.cpp
+        ${PROJECT_SOURCE_DIR}/src/image-proc.cpp
         ${PROJECT_SOURCE_DIR}/src/mat-serialization.cpp
         ${PROJECT_SOURCE_DIR}/src/obs-geom.cpp
         ${PROJECT_SOURCE_DIR}/src/opengl-helpers.cpp
+        ${PROJECT_SOURCE_DIR}/src/templ-match.cpp
         ${PROJECT_SOURCE_DIR}/src/quat.cpp
         ${PROJECT_SOURCE_DIR}/src/lin-alg.cpp
         ${PROJECT_SOURCE_DIR}/src/multi-view-factorization.cpp
