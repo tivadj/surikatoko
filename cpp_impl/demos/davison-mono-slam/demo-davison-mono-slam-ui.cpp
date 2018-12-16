@@ -376,10 +376,10 @@ std::array<GLfloat, 3> GetSalientPointColor(const SalPntPatch& sal_pnt)
     return *sal_pnt_color;
 }
 
-void RenderSalientPointPatchTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
+void RenderSalientTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
 {
     MarkUsedTrackerStateToVisualize();
-    std::optional<SalPntRectFacet> rect = mono_slam->GetEstimatedSalPntFaceRect(sal_pnt_id);
+    std::optional<SalPntRectFacet> rect = mono_slam->ProtrudeSalientTemplateIntoWorld(sal_pnt_id);
     if (!rect.has_value())
         return;
 
@@ -517,7 +517,15 @@ void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
             glVertex3d(sal_pnt_pos[0], sal_pnt_pos[1], sal_pnt_pos[2]);
             glEnd();
 
-            RenderSalientPointPatchTemplate(mono_slam, sal_pnt_id);
+            // render template 'cards' only if the salient point was found in current frame
+            if (sal_pnt.IsDetected())
+            {
+                RenderSalientTemplate(mono_slam, sal_pnt_id);
+            }
+            else
+            {
+                SRK_ASSERT(true);
+            }
         }
         else
         {

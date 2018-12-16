@@ -51,6 +51,15 @@ SE3Transform CamWfc(const CameraStateVars& cam_state)
     return SE3Transform{ Rwfc, cam_state.pos_w };
 }
 
+suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center, suriko::Sizei templ_size)
+{
+    int rad_x = templ_size.width / 2;
+    int rad_y = templ_size.height / 2;
+    return suriko::Pointi{
+        static_cast<int>(center[0] - rad_x),
+        static_cast<int>(center[1] - rad_y) };
+}
+
 DavisonMonoSlamInternalsLogger::DavisonMonoSlamInternalsLogger(DavisonMonoSlam* mono_slam)
     :mono_slam_(mono_slam)
 {
@@ -489,10 +498,13 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 {
     if (stats_logger_ != nullptr) stats_logger_->StartNewFrameStats();
 
-    // initial status of salient point is 'not observed'
+    // initial status of a salient point is 'not observed'
     // later we will overwrite status for the matched salient points as 'matched'
     for (auto sal_pnt_id : sal_pnts_as_ids_)
-        GetSalientPoint(sal_pnt_id).track_status = SalPntTrackStatus::Unobserved;
+    {
+        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        sal_pnt.SetUndetected();
+    }
 
     corners_matcher_->AnalyzeFrame(frame_ind, image);
 
@@ -502,12 +514,10 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     latest_frame_sal_pnts_.clear();
     for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
     {
-        Point2 coord = corners_matcher_->GetBlobCoord(blob_id);
+        Point2 templ_center = corners_matcher_->GetBlobCoord(blob_id);
         SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
         sal_pnt.track_status = SalPntTrackStatus::Matched;
-        sal_pnt.templ_center_pix_ = coord;
-        sal_pnt.templ_top_left_pix_ = TemplateTopLeftInt(coord);;
-
+        sal_pnt.SetTemplCenterPix(templ_center, sal_pnt_patch_size_);
         latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
 
@@ -580,6 +590,8 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     {
         CheckCameraAndSalientPointsCovs(predicted_estim_vars_, predicted_estim_vars_covar_);
     }
+
+    UpdateSalientPatchesCenters(frame_ind);
 
     if (stats_logger_ != nullptr) stats_logger_->FinishFrameStats();
 }
@@ -656,7 +668,8 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             ++obs_sal_pnt_ind;
 
             const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
-            Point2 corner_pix = sal_pnt.templ_center_pix_;
+            SRK_ASSERT(sal_pnt.IsDetected());
+            Point2 corner_pix = sal_pnt.templ_center_pix_.value();
             zk.middleRows<kPixPosComps>(obs_sal_pnt_ind * kPixPosComps) = corner_pix.Mat();
 
             // project salient point into current camera
@@ -805,7 +818,8 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
             Knew.noalias() = one_obs_per_update_cache_.P_Hxy * innov_var_inv_2x2;
 
             // 3. update X and P using info derived from salient point observation
-            suriko::Point2 corner_pix = sal_pnt.templ_center_pix_;
+            SRK_ASSERT(sal_pnt.IsDetected());
+            suriko::Point2 corner_pix = sal_pnt.templ_center_pix_.value();
             
             // project salient point into current camera
 
@@ -883,7 +897,8 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
             const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
             // get observation corner
-            Point2 corner_pix = sal_pnt.templ_center_pix_;
+            SRK_ASSERT(sal_pnt.IsDetected());
+            Point2 corner_pix = sal_pnt.templ_center_pix_.value();
 
             for (size_t obs_comp_ind = 0; obs_comp_ind < kPixPosComps; ++obs_comp_ind)
             {
@@ -1014,6 +1029,19 @@ void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
         estim_vars_[5] = tracker_from_cami_quat[2];
         estim_vars_[6] = tracker_from_cami_quat[3];
     }
+}
+
+void DavisonMonoSlam::UpdateSalientPatchesCenters(size_t frame_ind)
+{
+#if defined(SRK_DEBUG)
+    for (SalPntId sal_pnt_id : latest_frame_sal_pnts_)
+    {
+        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        if (!sal_pnt.IsDetected()) continue;
+        sal_pnt.prev_detection_frame_ind_debug_ = frame_ind;
+        sal_pnt.prev_detection_templ_center_pix_debug_ = sal_pnt.templ_center_pix_.value();
+    }
+#endif
 }
 
 void DavisonMonoSlam::PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const
@@ -1158,8 +1186,8 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     sal_pnt.estim_vars_ind = sal_pnt_var_ind;
     sal_pnt.sal_pnt_ind = old_sal_pnts_count;
     sal_pnt.track_status = SalPntTrackStatus::New;
-    sal_pnt.templ_center_pix_ = corner_pix;
-    sal_pnt.templ_top_left_pix_ = top_left;
+    sal_pnt.SetTemplCenterPix(corner_pix, sal_pnt_patch_size_);
+    sal_pnt.offset_from_top_left_ = suriko::Point2{ corner_pix.X() - top_left.x, corner_pix.Y() - top_left.y };
     sal_pnt.initial_templ_gray_ = std::move(patch_template.gray);
 #if defined(SRK_DEBUG)
     sal_pnt.initial_frame_ind_debug_ = frame_ind;
@@ -1194,9 +1222,12 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     return sal_pnt_id;
 }
 
-suriko::Point2 DavisonMonoSlam::GetSalPntPixelCoord(SalPntId sal_pnt_id) const
+std::optional<suriko::Point2> DavisonMonoSlam::GetDetectedSalientPatchCenter(SalPntId sal_pnt_id) const
 {
-    return GetSalientPoint(sal_pnt_id).templ_center_pix_;
+    const auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+    if (!sal_pnt.IsDetected())
+        return std::nullopt;
+    return sal_pnt.templ_center_pix_.value();
 }
 
 void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2 corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const
@@ -1593,9 +1624,9 @@ void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(const SalPntPatch& sal_p
 
     // calculate derivatives
 
-    // how distorted pixels coordinates depend on undistorted pixels coordinates
+    // distorted pixels' coordinates depend on undistorted pixels' coordinates
     Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> hd_by_hu;
-    Point2 corner_pix = sal_pnt.templ_center_pix_;
+    Point2 corner_pix = suriko::Point2{ h_distorted[0], h_distorted[1] };
     Deriv_hd_by_hu(corner_pix, &hd_by_hu);
 
     // A.34 how undistorted pixels coordinates hu=[uu,vu] depend on salient point (in camera) 3D meter coordinates [hcx,hcy,hcz] (A.23)
@@ -1944,7 +1975,7 @@ const SalPntPatch& DavisonMonoSlam::GetSalientPoint(SalPntId id) const
     return *id.sal_pnt_internal;
 }
 
-std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalientPointFaceRect(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const
+std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointPatchIntoWorld(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const
 {
     // Let B be a plane through the salient point, orthogonal to direction from camera to this salient point.
     // Emit four rays from the camera center to four corners of the image patch.
@@ -1971,9 +2002,12 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalientPointFaceRect(const Ei
     Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_dir = sal_pnt_cam.normalized();
     const Scalar sal_pnt_dist = sal_pnt_cam.norm();
 
+    SRK_ASSERT(sal_pnt.IsDetected());
+    suriko::Pointi top_left_int = TemplateTopLeftInt(sal_pnt.templ_center_pix_.value());
+
     // select integer 2D boundary of a template patch on the image.
     using RealCorner = Eigen::Matrix<Scalar, 2, 1>;
-    auto top_left = RealCorner{ sal_pnt.templ_top_left_pix_.x, sal_pnt.templ_top_left_pix_.y };
+    auto top_left = RealCorner{ top_left_int.x, top_left_int.y };
     auto bot_right = RealCorner{
         top_left[0] + sal_pnt_patch_size_.width,
         top_left[1] + sal_pnt_patch_size_.height
@@ -2026,11 +2060,15 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::GetSalientPointFaceRect(const Ei
     return rect_3d;
 }
 
-std::optional<SalPntRectFacet> DavisonMonoSlam::GetEstimatedSalPntFaceRect(SalPntId sal_pnt_id) const
+std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientTemplateIntoWorld(SalPntId sal_pnt_id) const
 {
-    const auto& src_estim_vars = estim_vars_;
     const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
-    return GetSalientPointFaceRect(src_estim_vars, sal_pnt);
+    // unobserved salient point has no associated patch of image
+    if (!sal_pnt.IsDetected())
+        return std::nullopt;
+
+    const auto& src_estim_vars = estim_vars_;
+    return ProtrudeSalientPointPatchIntoWorld(src_estim_vars, sal_pnt);
 }
 
 void DavisonMonoSlam::LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const
@@ -2408,7 +2446,8 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError() const
 
         Eigen::Matrix<Scalar, kPixPosComps, 1> pix = ProjectInternalSalientPoint(cam_state, sal_pnt_vars, nullptr);
 
-        suriko::Point2 corner_pix = sal_pnt.templ_center_pix_;
+        SRK_ASSERT(sal_pnt.IsDetected());
+        suriko::Point2 corner_pix = sal_pnt.templ_center_pix_.value();
         Scalar err_one = (corner_pix.Mat() - pix).norm();
         err_sum += err_one;
     }
@@ -2418,11 +2457,7 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError() const
 
 suriko::Pointi DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2& center) const
 {
-    int rad_x = sal_pnt_patch_size_.width / 2;
-    int rad_y = sal_pnt_patch_size_.height / 2;
-    return suriko::Pointi{
-        static_cast<int>(center[0] - rad_x),
-        static_cast<int>(center[1] - rad_y) };
+    return suriko::TemplateTopLeftInt(center, sal_pnt_patch_size_);
 }
 
 void DavisonMonoSlam::FixSymmetricMat(EigenDynMat* sym_mat) const

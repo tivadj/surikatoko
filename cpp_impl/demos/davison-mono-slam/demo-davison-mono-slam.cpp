@@ -439,8 +439,11 @@ public:
             if (match_pnt_center.has_value())
                 center = suriko::Pointi{ static_cast<int>(match_pnt_center.value()[0]), static_cast<int>(match_pnt_center.value()[1]) };
 
-            float diffC = (sal_pnt.templ_center_pix_.Mat() - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
-            float diffTL = (sal_pnt.templ_top_left_pix_.Mat() - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
+            SRK_ASSERT(sal_pnt.IsDetected());
+            suriko::Pointi top_left_int = kalman_tracker_->TemplateTopLeftInt(sal_pnt.templ_center_pix_.value());
+
+            float diffC = (sal_pnt.templ_center_pix_.value().Mat() - Eigen::Matrix<Scalar, 2, 1>{center.x, center.y}).norm();
+            float diffTL = (top_left_int.Mat() - Eigen::Matrix<int, 2, 1>{maxLoc.x, maxLoc.y}).norm();
             if (diffTL > max_shift_per_frame)
             {
                 if (stop_on_sal_pnt_moved_too_far_)
@@ -472,27 +475,27 @@ public:
             if (is_lost)
                 continue;
 
-            const auto& center = match_pnt_center.value();
+            const auto& new_center = match_pnt_center.value();
 
-            if (kSurikoDebug)
+#if defined(SRK_DEBUG)
+            bool is_cosecutive_detection = sal_pnt.prev_detection_frame_ind_debug_ + 1 == frame_ind;
+            if (is_cosecutive_detection)
             {
-                if (match_pnt_center.has_value())
+                // check that template doesn't jump far away in the consecutive frames
+                static float max_shift_per_frame = 30;
+                auto diffC = (sal_pnt.prev_detection_templ_center_pix_debug_.Mat() - new_center.Mat()).norm();
+                if (diffC > max_shift_per_frame)
                 {
-                    static float max_shift_per_frame = 30;
-                    auto diffC = (sal_pnt.templ_center_pix_.Mat() - center.Mat()).norm();
-                    if (diffC > max_shift_per_frame)
-                    {
-                        if (stop_on_sal_pnt_moved_too_far_)
-                            SRK_ASSERT(false) << "sal pnt moved to far away";
-                        else
-                            continue;
-                    }
+                    if (stop_on_sal_pnt_moved_too_far_)
+                        SRK_ASSERT(false) << "sal pnt moved to far away";
+                    else
+                        continue;
                 }
             }
-
+#endif
             size_t blob_ind = new_keypoints_.size();
             cv::KeyPoint kp{};
-            kp.pt = cv::Point2f{ static_cast<float>(center.Mat()[0]), static_cast<float>(center.Mat()[1]) };
+            kp.pt = cv::Point2f{ static_cast<float>(new_center.Mat()[0]), static_cast<float>(new_center.Mat()[1]) };
             new_keypoints_.push_back(kp);
 
             matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_ind }));
@@ -664,19 +667,19 @@ public:
         }
 
         // preserve fractional coordinates of central pixel
-        suriko::Pointi templ_top_left;
+        suriko::Pointi best_match_top_left;
         if (match_impl == 1)
-            templ_top_left = best_match_poses[0].patch_top_left;
+            best_match_top_left = best_match_poses[0].patch_top_left;
         else
-            templ_top_left = best_match_poses_cc[0].patch_top_left;
+            best_match_top_left = best_match_poses_cc[0].patch_top_left;
         
-        const Eigen::Matrix<Scalar, kPixPosComps, 1>& center_offset = sal_pnt.OffsetFromTopLeft();
-        suriko::Point2 center{ templ_top_left.x + center_offset[0], templ_top_left.y + center_offset[1] };
+        const auto& center_offset = sal_pnt.OffsetFromTopLeft();
+        suriko::Point2 center{ best_match_top_left.x + center_offset.X(), best_match_top_left.y + center_offset.Y() };
 
         TemplateMatchResult result;
         result.center = center;
 #ifdef SRK_DEBUG
-        result.top_left = templ_top_left;
+        result.top_left = best_match_top_left;
 #endif
         if (match_impl == 1)
         {
@@ -788,6 +791,11 @@ public:
         {
             if (min_templ_corr_coeff_.has_value() && match_result.err_per_pixel < min_templ_corr_coeff_.value())
             {
+                MeanAndCov2D predicted_center = kalman_tracker_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+                VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
+                    << " as undetected because corr_coef=" << match_result.err_per_pixel
+                    << " is less than thr=" << min_templ_corr_coeff_.value() << ","
+                    << " predicted center_pix=[" << predicted_center.mean[0] << "," << predicted_center.mean[1] << "]";
                 return std::nullopt;
             }
         }
@@ -833,7 +841,9 @@ public:
         FilterOutClosest(keypoints, rad_diag, &sparse_keypoints);
 
         cv::Mat sparse_img;
-        cv::drawKeypoints(image.gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+        static bool debug_keypoints = false;
+        if (debug_keypoints)
+            cv::drawKeypoints(image.gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         // remove keypoints which are close to 'matched' salient points
         auto filter_out_close_to_existing = [this,&matched_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, float exclude_radius,
@@ -846,7 +856,8 @@ public:
                 bool has_close_blob = false;
                 for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
                 {
-                    suriko::Point2 exist_pix = kalman_tracker_->GetSalPntPixelCoord(sal_pnt_id);
+                    std::optional<suriko::Point2> exist_pix_opt = kalman_tracker_->GetDetectedSalientPatchCenter(sal_pnt_id);
+                    suriko::Point2 exist_pix = exist_pix_opt.value();
                     float dist = std::sqrt(suriko::Sqr(cand.pt.x - exist_pix[0]) + suriko::Sqr(cand.pt.y - exist_pix[1]));
                     if (dist < exclude_radius)
                     {
@@ -862,8 +873,9 @@ public:
         new_keypoints_.clear();
         filter_out_close_to_existing(sparse_keypoints, rad_diag, &new_keypoints_);
 
-        cv::Mat new_img;
-        cv::drawKeypoints(image.gray, new_keypoints_, new_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+        cv::Mat img_no_closest;
+        if (debug_keypoints)
+            cv::drawKeypoints(image.gray, new_keypoints_, img_no_closest, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         for (size_t i=0; i< new_keypoints_.size(); ++i)
         {

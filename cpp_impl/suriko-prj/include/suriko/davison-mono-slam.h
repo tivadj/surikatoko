@@ -54,6 +54,9 @@ enum class SalPntTrackStatus
     Unobserved   // undetected in current frame
 };
 
+// Internal
+suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center, suriko::Sizei templ_size);
+
 /// Represents the portion of the image, which is the projection of salient image into a camera.
 struct SalPntPatch
 {
@@ -66,12 +69,19 @@ struct SalPntPatch
     SalPntTrackStatus track_status;
 
     // The distorted coordinates in the current camera, corresponds to the center of the image template.
-    suriko::Point2 templ_center_pix_;
-    suriko::Pointi templ_top_left_pix_;
+    std::optional <suriko::Point2> templ_center_pix_;
+    suriko::Point2 offset_from_top_left_;  // =center-top_left; initialized once for the first frame
+
 #if defined(SRK_DEBUG)
-    suriko::Point2 initial_templ_center_pix_debug_;    // in pixels
-    suriko::Pointi initial_templ_top_left_pix_debug_;  // in pixels
+    std::optional<suriko::Pointi> templ_top_left_pix_debug_; // in pixels
+    suriko::Point2 initial_templ_center_pix_debug_;          // in pixels
+    suriko::Pointi initial_templ_top_left_pix_debug_;        // in pixels
+
+    // tracking of template center; used to debug large jumps
+    size_t prev_detection_frame_ind_debug_ = static_cast<size_t>(-1);  // the latest frame, where the sal pnt was detected
+    suriko::Point2 prev_detection_templ_center_pix_debug_ = suriko::Point2{-1, -1};  // in pixels
 #endif
+
     // As the patch of the image, related to this salient point, doesn't change during tracking,
     // we may cache some related statistics.
     struct
@@ -86,10 +96,30 @@ struct SalPntPatch
     cv::Mat initial_templ_bgr_debug;
 #endif
 
-    Eigen::Matrix<Scalar, kPixPosComps, 1> OffsetFromTopLeft() const
+    /// True, for this salient point to be recognized in the current frame.
+    bool IsDetected() const
     {
-        return templ_center_pix_.Mat() - Eigen::Matrix<Scalar, kPixPosComps, 1>{templ_top_left_pix_.x, templ_top_left_pix_.y};
+        return track_status == SalPntTrackStatus::New || track_status == SalPntTrackStatus::Matched;
     }
+
+    void SetTemplCenterPix(suriko::Point2 center, suriko::Sizei templ_size)
+    {
+        templ_center_pix_ = center;
+#if defined(SRK_DEBUG)
+        templ_top_left_pix_debug_ = TemplateTopLeftInt(center, templ_size);
+#endif
+    }
+
+    void SetUndetected()
+    {
+        track_status = SalPntTrackStatus::Unobserved;
+        templ_center_pix_ = std::nullopt;
+#if defined(SRK_DEBUG)
+        templ_top_left_pix_debug_ = std::nullopt;
+#endif
+    }
+
+    suriko::Point2 OffsetFromTopLeft() const { return offset_from_top_left_; }
 };
 
 /// Represents publicly transferable key to refer to a salient point.
@@ -374,7 +404,7 @@ public:
 
     void GetCameraEstimatedVarsUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
 
-    suriko::Point2 GetSalPntPixelCoord(SalPntId sal_pnt_id) const;
+    std::optional<suriko::Point2> GetDetectedSalientPatchCenter(SalPntId sal_pnt_id) const;
 
     bool GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
@@ -398,8 +428,12 @@ public:
 
     suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center) const;
 
-    /// This returns null if the salient point is in the infinity and finite coordinates of patch template can't be calculated.
-    std::optional<SalPntRectFacet> GetEstimatedSalPntFaceRect(SalPntId sal_pnt_id) const;
+    /// Calculates the 3D rectangle, corresponding to a salient point's template.
+    /// The information, used in the calculation is:
+    /// 1. The XY boundary of a template in the picture; 
+    /// 2. The estimated depth of a salient point.
+    /// This returns null if the salient point is in the infinity and finite coordinates of a template can't be calculated.
+    std::optional<SalPntRectFacet> ProtrudeSalientTemplateIntoWorld(SalPntId sal_pnt_id) const;
 
     void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
     CornersMatcherBase& CornersMatcher();
@@ -457,6 +491,9 @@ private:
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
     void OnEstimVarsChanged(size_t frame_ind);
 
+    // Updates the centers of detected patches.
+    void UpdateSalientPatchesCenters(size_t frame_ind);
+
     SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2 corner, 
         Picture patch_template,
         std::optional<Scalar> pnt_inv_dist_gt);
@@ -497,7 +534,7 @@ private:
         const EigenDynMat& src_estim_vars_covar, 
         const SalPntPatch& sal_pnt) const;
 
-    std::optional<SalPntRectFacet> GetSalientPointFaceRect(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
+    std::optional<SalPntRectFacet> ProtrudeSalientPointPatchIntoWorld(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
 
     void PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const;
 
