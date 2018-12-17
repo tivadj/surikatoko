@@ -461,47 +461,6 @@ public:
         }
     }
 
-    void MatchSalientPointsCustomImpl(size_t frame_ind,
-        const Picture& frame_image,
-        const std::set<SalPntId>& tracking_sal_pnts,
-        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts)
-    {
-        for (auto sal_pnt_id : tracking_sal_pnts)
-        {
-            const SalPntPatch& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
-
-            std::optional<suriko::Point2> match_pnt_center = MatchSalientPatch(*kalman_tracker_, sal_pnt_id, frame_image, ellisoid_cut_thr_);
-            bool is_lost = !match_pnt_center.has_value();
-            if (is_lost)
-                continue;
-
-            const auto& new_center = match_pnt_center.value();
-
-#if defined(SRK_DEBUG)
-            bool is_cosecutive_detection = sal_pnt.prev_detection_frame_ind_debug_ + 1 == frame_ind;
-            if (is_cosecutive_detection)
-            {
-                // check that template doesn't jump far away in the consecutive frames
-                static float max_shift_per_frame = 30;
-                auto diffC = (sal_pnt.prev_detection_templ_center_pix_debug_.Mat() - new_center.Mat()).norm();
-                if (diffC > max_shift_per_frame)
-                {
-                    if (stop_on_sal_pnt_moved_too_far_)
-                        SRK_ASSERT(false) << "sal pnt moved to far away";
-                    else
-                        continue;
-                }
-            }
-#endif
-            size_t blob_ind = new_keypoints_.size();
-            cv::KeyPoint kp{};
-            kp.pt = cv::Point2f{ static_cast<float>(new_center.Mat()[0]), static_cast<float>(new_center.Mat()[1]) };
-            new_keypoints_.push_back(kp);
-
-            matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_ind }));
-        }
-    }
-
     Scalar MatchPatchTemplateAvgDiff(const Picture& frame_image,
         const cv::Mat& template_gray,
         Pointi templ_top_left)
@@ -528,16 +487,15 @@ public:
     struct TemplateMatchResult
     {
         suriko::Point2 center;
-#ifdef SRK_DEBUG
-        suriko::Pointi top_left;
-#endif
-        Scalar err_per_pixel;
+        Scalar corr_coef;
 
-        // specify the number of calls to match-template routine to find this specific match-result.
-        int executed_match_templ_calls;
+#if defined(SRK_DEBUG)
+        suriko::Pointi top_left;
+        int executed_match_templ_calls; // specify the number of calls to match-template routine to find this specific match-result
+#endif
     };
 
-    TemplateMatchResult MatchSalientPointPatchCenterInRect(const SalPntPatch& sal_pnt, const Picture& pic, Recti search_rect, int match_impl)
+    TemplateMatchResult MatchSalientPointTemplCenterInRect(const SalPntPatch& sal_pnt, const Picture& pic, Recti search_rect)
     {
         Pointi search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
         const int search_radius_left = search_rect.width / 2;
@@ -548,68 +506,48 @@ public:
         const int search_radius_down = search_rect.height - search_radius_up - 1;
         const int search_common_rad = std::min({ search_radius_left , search_radius_right , search_radius_up, search_radius_down });
 
-        Scalar templ_mean = sal_pnt.templ_stats.templ_mean_;
-        Scalar templ_factor = sal_pnt.templ_stats.templ_sqrt_sum_sqr_diff_;
-        
         struct PosAndErr
         {
-            Pointi patch_top_left;
-            Scalar err_per_pixel;
+            Pointi templ_top_left;
+            Scalar corr_coef;
             int executed_match_templ_calls = 0;
         };
-        std::vector<PosAndErr> best_match_poses;
-        auto min_err_value = std::numeric_limits<Scalar>::max();
-        auto max_corr_coeff = Scalar{ -1 };
-        std::vector<PosAndErr> best_match_poses_cc;
-        int match_templ_calls_counter = 0;                            // records the number of calls to match patch template
-        int match_templ_calls_counter_cc = 0;
-        const auto& templ_gray = sal_pnt.initial_templ_gray_;
-        auto match_templ_at = [this, match_impl, &templ_gray, &pic,
-            &min_err_value, &best_match_poses, &match_templ_calls_counter,
-            &max_corr_coeff, &best_match_poses_cc, &match_templ_calls_counter_cc, templ_mean, templ_factor](Pointi search_center)
-        {
-            ++match_templ_calls_counter;
-            ++match_templ_calls_counter_cc;
+        
+        // choose template-candidate with the maximum correlation coefficient
+        // TODO: do we need to handle the case of multiple equal corr coefs? (eg when all pixels of a cadidate are equal)
+        auto max_corr_coeff = Scalar{ -1 - 0.001 };
+        PosAndErr best_match_info;
+        int match_templ_call_order = 0;  // specify the order of calls to template match routine
 
+        Scalar templ_mean = sal_pnt.templ_stats.templ_mean_;
+        Scalar templ_factor = sal_pnt.templ_stats.templ_sqrt_sum_sqr_diff_;
+        const auto& templ_gray = sal_pnt.initial_templ_gray_;
+
+        auto match_templ_at = [this, &templ_gray, &pic,
+            &max_corr_coeff, &best_match_info, templ_mean, templ_factor, &match_templ_call_order](Pointi search_center)
+        {
             Pointi pic_roi_top_left = kalman_tracker_->TemplateTopLeftInt(suriko::Point2{ search_center.x, search_center.y });
 
-            Scalar err = -1;
-            Scalar corr_coeff = -2;
-            if (match_impl == 1)
-            {
-                err = MatchPatchTemplateAvgDiff(pic, templ_gray, pic_roi_top_left);
-            }
-            else if (match_impl == 2)
-            {
-                Scalar pic_roi_mean = GetGrayPatchMean(pic.gray, pic_roi_top_left,
-                    kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height);
+            Scalar pic_roi_mean = GetGrayPatchMean(pic.gray, pic_roi_top_left,
+                kalman_tracker_->sal_pnt_patch_size_.width, kalman_tracker_->sal_pnt_patch_size_.height);
 
-                CorrelationCoeffData corr_data = CalcCorrCoeff(pic, pic_roi_top_left, pic_roi_mean, templ_gray, templ_mean);
-                corr_coeff = corr_data.corr_prod_sum / (std::sqrt(corr_data.image_diff_sqr_sum) * templ_factor);
-            }
+            CorrelationCoeffData corr_data = CalcCorrCoeff(pic, pic_roi_top_left, pic_roi_mean, templ_gray, templ_mean);
+            Scalar corr_coeff = corr_data.corr_prod_sum / (std::sqrt(corr_data.image_diff_sqr_sum) * templ_factor);
 
-            if (match_impl == 1 && err <= min_err_value)
+            if (corr_coeff > max_corr_coeff)
             {
-                if (err < min_err_value) best_match_poses.clear();
-                best_match_poses.push_back(PosAndErr{ pic_roi_top_left, err, match_templ_calls_counter });
-                min_err_value = err;
-                static bool debug_calls = false;
-                if (debug_calls)
-                    LOG(INFO) <<"#" << match_templ_calls_counter << " new_min=" << err;
-            }
-            if (match_impl == 2 && corr_coeff > max_corr_coeff)
-            {
-                best_match_poses_cc.clear();
-                best_match_poses_cc.push_back(PosAndErr{ pic_roi_top_left, corr_coeff, match_templ_calls_counter_cc });
+                best_match_info = PosAndErr{ };
+                best_match_info.templ_top_left = pic_roi_top_left;
+                best_match_info.corr_coef = corr_coeff;
+#if defined(SRK_DEBUG)
+                best_match_info.executed_match_templ_calls = ++match_templ_call_order;
+#endif
                 max_corr_coeff = corr_coeff;
             }
         };
 
         match_templ_at(search_center);  // rad=0
-        if (match_impl == 1)
-            SRK_ASSERT(!best_match_poses.empty());
-        else if (match_impl == 2)
-            SRK_ASSERT(!best_match_poses_cc.empty());
+        SRK_ASSERT(max_corr_coeff >= -1);
 
         // The probability of matching is the greatest in the center.
         // Hence iterate around the center pixel in circles.
@@ -667,30 +605,18 @@ public:
         }
 
         // preserve fractional coordinates of central pixel
-        suriko::Pointi best_match_top_left;
-        if (match_impl == 1)
-            best_match_top_left = best_match_poses[0].patch_top_left;
-        else
-            best_match_top_left = best_match_poses_cc[0].patch_top_left;
+        suriko::Pointi best_match_top_left = best_match_info.templ_top_left;
         
         const auto& center_offset = sal_pnt.OffsetFromTopLeft();
         suriko::Point2 center{ best_match_top_left.x + center_offset.X(), best_match_top_left.y + center_offset.Y() };
 
         TemplateMatchResult result;
         result.center = center;
+        result.corr_coef = best_match_info.corr_coef;
 #ifdef SRK_DEBUG
         result.top_left = best_match_top_left;
+        result.executed_match_templ_calls = best_match_info.executed_match_templ_calls;
 #endif
-        if (match_impl == 1)
-        {
-            result.err_per_pixel = best_match_poses[0].err_per_pixel;
-            result.executed_match_templ_calls = best_match_poses[0].executed_match_templ_calls;
-        }
-        else
-        {
-            result.err_per_pixel = best_match_poses_cc[0].err_per_pixel;
-            result.executed_match_templ_calls = best_match_poses_cc[0].executed_match_templ_calls;
-        }
         return result;
     }
 
@@ -753,8 +679,7 @@ public:
 
         const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
-        static int match_impl = 2; // 1=diff.sqr.sum, 2=correlation coefficient
-        TemplateMatchResult match_result = MatchSalientPointPatchCenterInRect(sal_pnt, pic, search_rect, match_impl);
+        TemplateMatchResult match_result = MatchSalientPointTemplCenterInRect(sal_pnt, pic, search_rect);
 
         static cv::Mat image_with_match_bgr;
         static bool debug_ui = false;
@@ -779,35 +704,27 @@ public:
                 show_image_fun_("Match.search_rect", image_with_match_bgr);
         }
 
-        if (match_impl == 1)
+        // skip a match with low correlation coefficient
+        if (min_templ_corr_coeff_.has_value() && match_result.corr_coef < min_templ_corr_coeff_.value())
         {
-            static float fail_pixel_ratio = 0.2; // template with such ratio (or greater) of unmatched template pixels is treated as unmatched
-            static unsigned char avg_unmatched_pixel_intensity = 128;
-            auto err_thresh = static_cast<Scalar>(fail_pixel_ratio * avg_unmatched_pixel_intensity);
-            if (match_result.err_per_pixel > err_thresh)
-                return std::nullopt;
-        }
-        else if (match_impl == 2)
-        {
-            if (min_templ_corr_coeff_.has_value() && match_result.err_per_pixel < min_templ_corr_coeff_.value())
-            {
-                MeanAndCov2D predicted_center = kalman_tracker_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
-                VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
-                    << " as undetected because corr_coef=" << match_result.err_per_pixel
-                    << " is less than thr=" << min_templ_corr_coeff_.value() << ","
-                    << " predicted center_pix=[" << predicted_center.mean[0] << "," << predicted_center.mean[1] << "]";
-                return std::nullopt;
-            }
+            MeanAndCov2D predicted_center = kalman_tracker_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+            VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
+                << " as undetected because corr_coef=" << match_result.corr_coef
+                << " is less than thr=" << min_templ_corr_coeff_.value() << ","
+                << " predicted center_pix=[" << predicted_center.mean[0] << "," << predicted_center.mean[1] << "]";
+            return std::nullopt;
         }
 
+#if defined(SRK_DEBUG)
         static bool debug_calls = false;
         if (debug_calls)
         {
             int max_core_match_calls = search_rect.width * search_rect.height;
-            LOG(INFO) << "match_err_per_pixel=" << match_result.err_per_pixel
+            LOG(INFO) << "match_err_per_pixel=" << match_result.corr_coef
                 << " match_calls=" << match_result.executed_match_templ_calls << "/" << max_core_match_calls
                 << "(" << match_result.executed_match_templ_calls / (float)max_core_match_calls << ")";
         }
+#endif
 
         return match_result.center;
     }
@@ -817,11 +734,40 @@ public:
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
-        static bool impl = true;
-        if (impl)
-            MatchSalientPointsCustomImpl(frame_ind, image, tracking_sal_pnts, matched_sal_pnts);
-        else
-            MatchSalientPointsOpenCVImpl(frame_ind, image, tracking_sal_pnts, matched_sal_pnts);
+        for (auto sal_pnt_id : tracking_sal_pnts)
+        {
+            const SalPntPatch& sal_pnt = kalman_tracker_->GetSalientPoint(sal_pnt_id);
+
+            std::optional<suriko::Point2> match_pnt_center = MatchSalientPatch(*kalman_tracker_, sal_pnt_id, image, ellisoid_cut_thr_);
+            bool is_lost = !match_pnt_center.has_value();
+            if (is_lost)
+                continue;
+
+            const auto& new_center = match_pnt_center.value();
+
+#if defined(SRK_DEBUG)
+            bool is_cosecutive_detection = sal_pnt.prev_detection_frame_ind_debug_ + 1 == frame_ind;
+            if (is_cosecutive_detection)
+            {
+                // check that template doesn't jump far away in the consecutive frames
+                static float max_shift_per_frame = 30;
+                auto diffC = (sal_pnt.prev_detection_templ_center_pix_debug_.Mat() - new_center.Mat()).norm();
+                if (diffC > max_shift_per_frame)
+                {
+                    if (stop_on_sal_pnt_moved_too_far_)
+                        SRK_ASSERT(false) << "sal pnt moved to far away";
+                    else
+                        continue;
+                }
+            }
+#endif
+            size_t blob_ind = new_keypoints_.size();
+            cv::KeyPoint kp{};
+            kp.pt = cv::Point2f{ static_cast<float>(new_center.Mat()[0]), static_cast<float>(new_center.Mat()[1]) };
+            new_keypoints_.push_back(kp);
+
+            matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_ind }));
+        }
     }
 
     void RecruitNewSalientPoints(size_t frame_ind,
