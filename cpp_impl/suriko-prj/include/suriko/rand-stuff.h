@@ -14,10 +14,6 @@ class GaussRandomVar
     std::normal_distribution<> dist_;
     EigenDynVec rand_basis_;
 public:
-    GaussRandomVar(const EigenDynMat& covar)
-        : GaussRandomVar(Eigen::VectorXd::Zero(covar.rows()), covar)
-    {}
-
     GaussRandomVar(const EigenDynMat& covar, Eigen::VectorXd const& mean)
         : mean_(mean)
     {

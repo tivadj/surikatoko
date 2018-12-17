@@ -1110,7 +1110,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     CameraIntrinsicParams cam_intrinsics;
     cam_intrinsics.image_size = { FLAGS_camera_image_width, FLAGS_camera_image_height };
-    cam_intrinsics.principal_point_pix = { FLAGS_camera_princip_point_x, FLAGS_camera_princip_point_y };
+    cam_intrinsics.principal_point_pix = { (Scalar)FLAGS_camera_princip_point_x, (Scalar)FLAGS_camera_princip_point_y };
     cam_intrinsics.focal_length_mm = focal_length_mm;
     cam_intrinsics.pixel_size_mm = { pix_size_x , pix_size_y };
 
@@ -1168,9 +1168,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.SetCamera(SE3Transform::NoTransform(), FLAGS_kalman_estim_var_init_std);
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
     SE3Transform cam_cfw = SE3Inv(LookAtLufWfc(
-        { FLAGS_camera_look_from_x, FLAGS_camera_look_from_y, FLAGS_camera_look_from_z },
-        { FLAGS_camera_look_to_x, FLAGS_camera_look_to_y, FLAGS_camera_look_to_z },
-        { FLAGS_camera_up_x, FLAGS_camera_up_y, FLAGS_camera_up_z }));
+        { (Scalar)FLAGS_camera_look_from_x, (Scalar)FLAGS_camera_look_from_y, (Scalar)FLAGS_camera_look_from_z },
+        { (Scalar)FLAGS_camera_look_to_x, (Scalar)FLAGS_camera_look_to_y, (Scalar)FLAGS_camera_look_to_z },
+        { (Scalar)FLAGS_camera_up_x, (Scalar)FLAGS_camera_up_y, (Scalar)FLAGS_camera_up_z }));
     mono_slam.SetCamera(cam_cfw, FLAGS_kalman_estim_var_init_std);
 #endif
 
@@ -1277,8 +1277,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
 #endif
 
-    std::optional<std::chrono::duration<double>> frame_process_time; // time it took to process current frame by tracker
-
     Picture image;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
     for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
@@ -1319,6 +1317,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         auto& corners_matcher = mono_slam.CornersMatcher();
         corners_matcher.AnalyzeFrame(frame_ind, image);
 
+        std::optional<std::chrono::duration<double>> frame_process_time; // time it took to process current frame by tracker
+
         // process the frame
         if (!FLAGS_ctrl_debug_skim_over)
         {
@@ -1341,9 +1341,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #endif
         }
 
-        VLOG(4) << "f=" << frame_ind
-            << " fps=" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f)
-            << " tracks_count=" << mono_slam.SalientPointsCount();
+        std::optional<std::chrono::duration<double>> frame_OpenCV_gui_time;
 
 #if defined(SRK_HAS_OPENCV)
         if (FLAGS_ctrl_visualize_during_processing)
@@ -1376,12 +1374,18 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             strbuf << "f=" << frame_ind;
             cv::putText(camera_image_bgr, cv::String(strbuf.str()), cv::Point(10, (int)cam_intrinsics.image_size.height - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
+            auto t1 = std::chrono::high_resolution_clock::now();
+
             drawer.DrawScene(mono_slam, image_bgr, &camera_image_bgr);
+
+            auto t2 = std::chrono::high_resolution_clock::now();
+            frame_OpenCV_gui_time = t2 - t1;
 #endif
             cv::imshow("front-camera", camera_image_bgr);
             cv::waitKey(1); // allow to refresh an opencv view
         }
 #endif
+        std::optional<std::chrono::duration<double>> frame_Pangolin_gui_time;
 
 #if defined(SRK_HAS_PANGOLIN)
         if (FLAGS_ctrl_multi_threaded_mode)
@@ -1437,7 +1441,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 {
                     // in single thread mode the controller executes the tracker and gui code sequentially in the same thread
                     auto break_on = [](int key) { return key == pangolin::PANGO_KEY_ESCAPE; };;
+
+                    auto t1 = std::chrono::high_resolution_clock::now();
+
                     std::optional<int> key = pangolin_gui->RenderFrameAndProlongUILoopOnUserInput(break_on);
+
+                    auto t2 = std::chrono::high_resolution_clock::now();
+                    frame_Pangolin_gui_time = t2 - t1;
+
                     if (key == pangolin::PANGO_KEY_ESCAPE)
                         break;
                 }
@@ -1450,6 +1461,15 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
         }
 #endif
+        auto zero_time = std::chrono::microseconds{ 0 };
+        auto total_time = 
+            frame_process_time.value_or(zero_time) +
+            frame_OpenCV_gui_time.value_or(zero_time) +
+            frame_Pangolin_gui_time.value_or(zero_time);
+        VLOG(4) << "done f=" << frame_ind
+            << " fps=" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f)
+            << "(core+gui=" << 1/total_time.count() <<"fps)"
+            << " tracks_count=" << mono_slam.SalientPointsCount();
     } // for each frame
 
     VLOG(4) << "Finished processing all the frames";

@@ -13,7 +13,6 @@
 #include <opencv2/imgproc.hpp> // cv::circle, cv::resize
 #endif
 
-#if defined(SRK_HAS_PANGOLIN)
 namespace suriko_demos_davison_mono_slam
 {
 using namespace std::literals::chrono_literals;
@@ -21,6 +20,48 @@ using namespace suriko;
 using namespace suriko::internals;
 
 constexpr void MarkUsedTrackerStateToVisualize() {}
+
+auto EllipsePntPolarToEuclid(Scalar a, Scalar b, Scalar theta) -> suriko::Point2
+{
+    Scalar cos_theta = std::cos(theta);
+    Scalar sin_theta = std::sin(theta);
+
+    // Polar ellipse https://en.wikipedia.org/wiki/Ellipse
+    // r=a*b/sqrt((b*cos(theta))^2 + (a*sin(theta))^2)
+    Scalar r = a * b / std::sqrt(suriko::Sqr(b * cos_theta) + suriko::Sqr(a * sin_theta));
+
+    suriko::Point2 p;
+    p[0] = r * cos_theta;
+    p[1] = r * sin_theta;
+    return p;
+}
+
+SrkColor GetSalientPointColor(const SalPntPatch& sal_pnt)
+{
+    SrkColor new_sal_pnt_color{ 0, 255, 0 }; // green
+    SrkColor matched_sal_pnt_color{ 255, 0, 0 }; // red
+    SrkColor unobserved_sal_pnt_color{ 255, 255, 0 }; // yellow
+    SrkColor default_sal_pnt_color{ 255, 255, 255 };
+    SrkColor* sal_pnt_color = &default_sal_pnt_color;
+    switch (sal_pnt.track_status)
+    {
+    case SalPntTrackStatus::New:
+        sal_pnt_color = &new_sal_pnt_color;
+        break;
+    case SalPntTrackStatus::Matched:
+        sal_pnt_color = &matched_sal_pnt_color;
+        break;
+    case SalPntTrackStatus::Unobserved:
+        sal_pnt_color = &unobserved_sal_pnt_color;
+        break;
+    default:
+        sal_pnt_color = &default_sal_pnt_color;
+        break;
+    }
+    return *sal_pnt_color;
+}
+
+#if defined(SRK_HAS_PANGOLIN)
 
 std::optional<UIChatMessage> PopMsgUnderLock(std::optional<UIChatMessage>* msg)
 {
@@ -34,6 +75,15 @@ std::optional<WorkerChatMessage> PopMsgUnderLock(std::optional<WorkerChatMessage
     std::optional<WorkerChatMessage> result = *msg;
     *msg = std::nullopt;
     return result;
+}
+
+std::array<GLfloat, 3> GLColorRgb(SrkColor c)
+{
+    return std::array<GLfloat, 3> {
+        static_cast<GLfloat>(c.rgb_[0]),
+        static_cast<GLfloat>(c.rgb_[1]),
+        static_cast<GLfloat>(c.rgb_[2])
+    };
 }
 
 enum class CamDisplayType
@@ -143,21 +193,6 @@ void PickRandomPointOnEllipsoid(
     ray[1] = distr(gen);
     ray[2] = distr(gen);
     PickPointOnEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, ray, pos_ellipsoid);
-}
-
-auto EllipsePntPolarToEuclid(Scalar a, Scalar b, Scalar theta) -> suriko::Point2
-{
-    Scalar cos_theta = std::cos(theta);
-    Scalar sin_theta = std::sin(theta);
-
-    // Polar ellipse https://en.wikipedia.org/wiki/Ellipse
-    // r=a*b/sqrt((b*cos(theta))^2 + (a*sin(theta))^2)
-    Scalar r = a * b / std::sqrt(suriko::Sqr(b * cos_theta) + suriko::Sqr(a * sin_theta));
-
-    suriko::Point2 p;
-    p[0] = r * cos_theta;
-    p[1] = r * sin_theta;
-    return p;
 }
 
 void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_ellipse)
@@ -351,31 +386,6 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
     }
 }
 
-std::array<GLfloat, 3> GetSalientPointColor(const SalPntPatch& sal_pnt)
-{
-    std::array<GLfloat, 3> new_sal_pnt_color{ 0, 255, 0 }; // green
-    std::array<GLfloat, 3> matched_sal_pnt_color{ 255, 0, 0 }; // red
-    std::array<GLfloat, 3> unobserved_sal_pnt_color{ 255, 255, 0 }; // yellow
-    std::array<GLfloat, 3> default_sal_pnt_color{ 255, 255, 255 };
-    std::array<GLfloat, 3>* sal_pnt_color = &default_sal_pnt_color;
-    switch (sal_pnt.track_status)
-    {
-    case SalPntTrackStatus::New:
-        sal_pnt_color = &new_sal_pnt_color;
-        break;
-    case SalPntTrackStatus::Matched:
-        sal_pnt_color = &matched_sal_pnt_color;
-        break;
-    case SalPntTrackStatus::Unobserved:
-        sal_pnt_color = &unobserved_sal_pnt_color;
-        break;
-    default:
-        sal_pnt_color = &default_sal_pnt_color;
-        break;
-    }
-    return *sal_pnt_color;
-}
-
 void RenderSalientTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
 {
     MarkUsedTrackerStateToVisualize();
@@ -499,8 +509,8 @@ void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
     {
         const SalPntPatch& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
 
-        std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
-        glColor3fv(sal_pnt_color.data());
+        SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
+        glColor3fv(GLColorRgb(sal_pnt_color).data());
 
         MarkUsedTrackerStateToVisualize();
         Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
@@ -951,6 +961,15 @@ void SceneVisualizationThread(UIThreadParams ui_params) // parameters by value a
 
 #if defined(SRK_HAS_OPENCV)
 
+cv::Scalar OcvColorBgr(SrkColor c)
+{
+    return cv::Scalar {
+        static_cast<double>(c.rgb_[2]),  // reverse order of color components
+        static_cast<double>(c.rgb_[1]),
+        static_cast<double>(c.rgb_[0])
+    };
+}
+
 void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam, const RotatedEllipse2D& ellipse_pix, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr)
 {
     std::optional<cv::Point> pnt_int_prev;
@@ -982,8 +1001,8 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_sl
 
     //
     const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
-    std::array<GLfloat, 3> sal_pnt_color = GetSalientPointColor(sal_pnt);
-    cv::Scalar sal_pnt_color_bgr{ sal_pnt_color[2], sal_pnt_color[1], sal_pnt_color[0] };
+    SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
+    cv::Scalar sal_pnt_color_bgr = OcvColorBgr(sal_pnt_color);
 
     DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, out_image_bgr);
 }

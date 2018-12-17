@@ -17,9 +17,15 @@ namespace suriko_demos_davison_mono_slam
 {
 using namespace suriko;
 
-std::array<GLfloat, 3> GetSalientPointColor(const SalPntPatch& sal_pnt);
+struct SrkColor
+{
+    std::array<unsigned char, 3> rgb_;
+};
+
+SrkColor GetSalientPointColor(const SalPntPatch& sal_pnt);
 
 #if defined(SRK_HAS_PANGOLIN)
+
 enum class UIChatMessage
 {
     UIWaitKey,            // Worker asks UI to wait for any key pressed

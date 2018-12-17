@@ -19,7 +19,10 @@ message(STATUS "CMAKE_CXX_COMPILER_ID=${CMAKE_CXX_COMPILER_ID}")
 message(STATUS "CMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "CMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}")
 
-option(WITH_OPENCV "Enables visualization of images" OFF)
+#
+#option(WITH_OPENCV "Enables visualization of images" ON)
+# At the momoent, the picture object is implemented as OpenCV Mat structure. It allows easy visual debugging. For now, OpenCV is mandatory.
+set (WITH_OPENCV ON)
 option(WITH_PANGOLIN "Enables visualization of 3D scene" OFF)
 
 # C++14 is required (because of std::make_unique)
