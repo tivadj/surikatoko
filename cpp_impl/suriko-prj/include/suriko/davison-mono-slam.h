@@ -54,6 +54,12 @@ enum class SalPntTrackStatus
     Unobserved   // undetected in current frame
 };
 
+struct TemplMatchStats
+{
+    Scalar templ_mean_;               // the mean of a template
+    Scalar templ_sqrt_sum_sqr_diff_;  // the part of denominator in formula of a correlation coefficient (=sqrt(sum))
+};
+
 // Internal
 suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center, suriko::Sizei templ_size);
 
@@ -84,11 +90,7 @@ struct SalPntPatch
 
     // As the patch of the image, related to this salient point, doesn't change during tracking,
     // we may cache some related statistics.
-    struct
-    {
-        Scalar templ_mean_;               // the mean of a template
-        Scalar templ_sqrt_sum_sqr_diff_;  // the part of denominator in formula of a correlation coefficient (=sqrt(sum))
-    } templ_stats;
+    TemplMatchStats templ_stats;
 
     // Rectangular portion of the gray image corresponding to salient point, projected in current frame.
     cv::Mat initial_templ_gray_;
@@ -492,10 +494,13 @@ private:
     void OnEstimVarsChanged(size_t frame_ind);
 
     // Updates the centers of detected patches.
-    void UpdateSalientPatchesCenters(size_t frame_ind);
+    void ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind);
+
+    void InitStateForNewSalientPoint(size_t old_sal_pnts_count, size_t new_sal_pnt_var_ind,
+        const CameraStateVars& cam_state, suriko::Point2 corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
 
     SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2 corner, 
-        Picture patch_template,
+        Picture patch_template, TemplMatchStats templ_stats,
         std::optional<Scalar> pnt_inv_dist_gt);
 
     gsl::span<Scalar> EstimVarsCamPosW();

@@ -1,43 +1,56 @@
 #include "suriko/templ-match.h"
 #include "suriko/approx-alg.h"
+#include <opencv2/imgproc.hpp>
 
 namespace suriko
 {
-Scalar GetGrayPatchMean(const cv::Mat& gray_image, Pointi patch_top_left, int patch_width, int patch_height)
+Scalar GetGrayImageMean(const cv::Mat& gray_image, suriko::Recti roi)
 {
-    Scalar sum{ 0 };
-    for (int row = 0; row < patch_height; ++row)
+    Scalar s{ 0 };
+    for (int row = 0; row < roi.height; ++row)
     {
-        for (int col = 0; col < patch_width; ++col)
+        auto src_image_row_ptr = gray_image.ptr<unsigned char>(roi.y + row);
+        auto src_image_cell_ptr = &src_image_row_ptr[roi.x];
+
+        for (int col = 0; col < roi.width; ++col)
         {
-            auto v = gray_image.at<unsigned char>(patch_top_left.y + row, patch_top_left.x + col);
+            // NOTE: Mat.at(x,y) is a hot-spot (called multitude of times, bounds checking)
+            auto v = *src_image_cell_ptr;
+            src_image_cell_ptr++;
+
             auto v_float = static_cast<Scalar>(v);
-            sum += v_float;
+            s += v_float;
         }
     }
-    const Scalar mean = sum / (patch_width*patch_height);
+    const Scalar mean = s / (roi.width*roi.height);
     return mean;
 }
 
-Scalar GetGrayPatchDiffSqrSum(const cv::Mat& gray_image, Pointi patch_top_left, int patch_width, int patch_height, Scalar patch_mean)
+Scalar GetGrayImageSumSqrDiff(const cv::Mat& gray_image, suriko::Recti roi, Scalar roi_mean)
 {
     Scalar sum{ 0 };
-    for (int row = 0; row < patch_height; ++row)
+    for (int row = 0; row < roi.height; ++row)
     {
-        for (int col = 0; col < patch_width; ++col)
+        auto src_image_row_ptr = gray_image.ptr<unsigned char>(roi.y + row);
+        auto src_image_cell_ptr = &src_image_row_ptr[roi.x];
+
+        for (int col = 0; col < roi.width; ++col)
         {
-            auto v = gray_image.at<unsigned char>(patch_top_left.y + row, patch_top_left.x + col);
+            // NOTE: Mat.at(x,y) is a hot-spot (called multitude of times, bounds checking)
+            auto v = *src_image_cell_ptr;
+            src_image_cell_ptr++;
+
             auto v_float = static_cast<Scalar>(v);
 
-            Scalar v_diff = suriko::Sqr(v_float - patch_mean);
+            Scalar v_diff = suriko::Sqr(v_float - roi_mean);
             sum += v_diff;
         }
     }
     return sum;
 }
 
-CorrelationCoeffData CalcCorrCoeff(const Picture& pic,
-    Pointi pic_roi_top_left,
+CorrelationCoeffData CalcCorrCoeffComponents(const Picture& pic,
+    Recti pic_roi,
     Scalar pic_roi_mean,
     const cv::Mat& templ_gray,
     Scalar templ_mean)
@@ -45,10 +58,19 @@ CorrelationCoeffData CalcCorrCoeff(const Picture& pic,
     CorrelationCoeffData corr{};
     for (int row = 0; row < templ_gray.rows; ++row)
     {
+        auto src_image_row_ptr = pic.gray.ptr<unsigned char>(pic_roi.y + row);
+        auto src_image_cell_ptr = &src_image_row_ptr[pic_roi.x];
+
+        auto templ_image_cell_ptr = templ_gray.ptr<unsigned char>(row);
+
         for (int col = 0; col < templ_gray.cols; ++col)
         {
-            auto frame_value = pic.gray.at<unsigned char>(pic_roi_top_left.y + row, pic_roi_top_left.x + col);
-            auto templ_value = templ_gray.at<unsigned char>(row, col);
+            // NOTE: Mat.at(x,y) is a hot-spot (called multitude of times, bounds checking)
+            auto frame_value = *src_image_cell_ptr;
+            auto templ_value = *templ_image_cell_ptr;
+
+            src_image_cell_ptr++;
+            templ_image_cell_ptr++;
 
             auto f = static_cast<Scalar>(frame_value);
             auto t = static_cast<Scalar>(templ_value);
@@ -65,4 +87,26 @@ CorrelationCoeffData CalcCorrCoeff(const Picture& pic,
     }
     return corr;
 }
+
+std::optional<Scalar> CalcCorrCoeff(const Picture& pic,
+    Recti pic_roi,
+    const cv::Mat& templ_gray,
+    Scalar templ_mean,
+    Scalar templ_sqrt_sum_sqr_diff)
+{
+    SRK_ASSERT(templ_sqrt_sum_sqr_diff != 0);
+    Scalar pic_roi_mean = GetGrayImageMean(pic.gray, pic_roi);
+
+    CorrelationCoeffData corr_data = CalcCorrCoeffComponents(pic, pic_roi, pic_roi_mean, templ_gray, templ_mean);
+
+    // corr coef is undefined when variance=0 (image is filled with a single color)
+    if (IsClose(0, corr_data.image_diff_sqr_sum))
+        return std::nullopt;
+    
+    Scalar corr_coeff = corr_data.corr_prod_sum / (std::sqrt(corr_data.image_diff_sqr_sum) * templ_sqrt_sum_sqr_diff);
+    SRK_ASSERT(std::isfinite(corr_coeff));
+
+    return corr_coeff;
+}
+
 }

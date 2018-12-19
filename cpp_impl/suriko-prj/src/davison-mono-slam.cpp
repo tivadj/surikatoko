@@ -561,9 +561,25 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
                 pnt_inv_dist_gt = corners_matcher_->GetSalientPointGroundTruthInvDepth(blob_id);
             }
 
-            Picture patch_template = corners_matcher_->GetBlobPatchTemplate(blob_id, image);
+            TemplMatchStats templ_stats{};
+            Picture templ_img = corners_matcher_->GetBlobPatchTemplate(blob_id, image);
+            if (!templ_img.gray.empty())
+            {
+                // calculate the statistics of this template (mean and variance), used for matching templates
+                auto templ_roi = Recti{ 0, 0, sal_pnt_patch_size_.width, sal_pnt_patch_size_.height };
+                Scalar templ_mean = GetGrayImageMean(templ_img.gray, templ_roi);
+                Scalar templ_sum_sqr_diff = GetGrayImageSumSqrDiff(templ_img.gray, templ_roi, templ_mean);
 
-            SalPntId sal_pnt_id = AddSalientPoint(frame_ind, cam_state, coord, patch_template, pnt_inv_dist_gt);
+                // correlation coefficient is undefined for templates with zero variance (because variance goes into the denominator of corr coef)
+                if (IsClose(0, templ_sum_sqr_diff))
+                    continue;
+
+                templ_stats.templ_mean_ = templ_mean;
+                templ_stats.templ_sqrt_sum_sqr_diff_ = std::sqrt(templ_sum_sqr_diff);
+            }
+
+            //
+            SalPntId sal_pnt_id = AddSalientPoint(frame_ind, cam_state, coord, templ_img, templ_stats, pnt_inv_dist_gt);
             latest_frame_sal_pnts_.insert(sal_pnt_id);
             corners_matcher_->OnSalientPointIsAssignedToBlobId(sal_pnt_id, blob_id, image);
         }
@@ -591,7 +607,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
         CheckCameraAndSalientPointsCovs(predicted_estim_vars_, predicted_estim_vars_covar_);
     }
 
-    UpdateSalientPatchesCenters(frame_ind);
+    ProcessFrameOnExit_UpdateSalientPoint(frame_ind);
 
     if (stats_logger_ != nullptr) stats_logger_->FinishFrameStats();
 }
@@ -1031,7 +1047,7 @@ void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
     }
 }
 
-void DavisonMonoSlam::UpdateSalientPatchesCenters(size_t frame_ind)
+void DavisonMonoSlam::ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind)
 {
 #if defined(SRK_DEBUG)
     for (SalPntId sal_pnt_id : latest_frame_sal_pnts_)
@@ -1057,8 +1073,8 @@ void DavisonMonoSlam::PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPo
     hc[2] = 1;
 }
 
-DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2 corner_pix,
-    Picture patch_template,
+void DavisonMonoSlam::InitStateForNewSalientPoint(size_t old_sal_pnts_count, size_t new_sal_pnt_var_ind, 
+    const CameraStateVars& cam_state, suriko::Point2 corner_pix,
     std::optional<Scalar> pnt_inv_dist_gt)
 {
     // undistort 2D image coordinate
@@ -1081,9 +1097,7 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     size_t old_vars_count = EstimatedVarsCount();
     estim_vars_.conservativeResize(old_vars_count + kSalientPointComps);
 
-    size_t old_sal_pnts_count = SalientPointsCount();
-    size_t sal_pnt_var_ind = SalientPointOffset(old_sal_pnts_count);
-    auto dst_vars = gsl::make_span<Scalar>(&estim_vars_[sal_pnt_var_ind], kSalientPointComps);
+    auto dst_vars = gsl::make_span<Scalar>(&estim_vars_[new_sal_pnt_var_ind], kSalientPointComps);
     DependsOnSalientPointPackOrder();
     dst_vars[0] = cam_state.pos_w[0];
     dst_vars[1] = cam_state.pos_w[1];
@@ -1177,6 +1191,16 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
         auto s_perc = { Pyy_norms[0] / norm_sum, Pyy_norms[1] / norm_sum, Pyy_norms[2] / norm_sum };
         SRK_ASSERT(true);
     }
+}
+
+DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2 corner_pix,
+    Picture templ_img, TemplMatchStats templ_stats,
+    std::optional<Scalar> pnt_inv_dist_gt)
+{
+    size_t old_sal_pnts_count = SalientPointsCount();
+    size_t sal_pnt_var_ind = SalientPointOffset(old_sal_pnts_count);
+
+    InitStateForNewSalientPoint(old_sal_pnts_count, sal_pnt_var_ind, cam_state, corner_pix, pnt_inv_dist_gt);
 
     suriko::Pointi top_left = TemplateTopLeftInt(corner_pix);
 
@@ -1188,29 +1212,17 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     sal_pnt.track_status = SalPntTrackStatus::New;
     sal_pnt.SetTemplCenterPix(corner_pix, sal_pnt_patch_size_);
     sal_pnt.offset_from_top_left_ = suriko::Point2{ corner_pix.X() - top_left.x, corner_pix.Y() - top_left.y };
-    sal_pnt.initial_templ_gray_ = std::move(patch_template.gray);
+    sal_pnt.initial_templ_gray_ = std::move(templ_img.gray);
 #if defined(SRK_DEBUG)
     sal_pnt.initial_frame_ind_debug_ = frame_ind;
     sal_pnt.initial_templ_center_pix_debug_ = corner_pix;
     sal_pnt.initial_templ_top_left_pix_debug_ = top_left;
-    sal_pnt.initial_templ_bgr_debug = std::move(patch_template.bgr_debug);
+    sal_pnt.initial_templ_bgr_debug = std::move(templ_img.bgr_debug);
 #endif
-
-    // pre-calculate the statistics of this template, used for matching
-        // template mean and variance
-    Scalar templ_mean = GetGrayPatchMean(sal_pnt.initial_templ_gray_, Pointi{ 0,0 },
-        sal_pnt_patch_size_.width, sal_pnt_patch_size_.height);
-    Scalar templ_sum_sqr_diff = GetGrayPatchDiffSqrSum(sal_pnt.initial_templ_gray_, Pointi{ 0,0 },
-        sal_pnt_patch_size_.width, sal_pnt_patch_size_.height, templ_mean);
-    Scalar templ_factor = std::sqrt(templ_sum_sqr_diff);
-    
-    sal_pnt.templ_stats.templ_mean_ = templ_mean;
-    sal_pnt.templ_stats.templ_sqrt_sum_sqr_diff_ = templ_factor;
-
+    sal_pnt.templ_stats = templ_stats;
     //
     SalPntId sal_pnt_id = SalPntId(sal_pnts_.back().get());
     sal_pnts_as_ids_.insert(sal_pnt_id);
-
     //
     static bool debug_estimated_vars = false;
     if (debug_estimated_vars || DebugPath(DebugPathEnum::DebugEstimVarsCov))
@@ -1218,7 +1230,6 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
         // check uncertainty ellipsoid can be extracted from covariance matrix
         CheckSalientPoint(estim_vars_, estim_vars_covar_, sal_pnt);
     }
-
     return sal_pnt_id;
 }
 

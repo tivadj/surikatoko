@@ -72,6 +72,8 @@ struct RectProto
     F x, y, width, height;
     int Right() const { return x + width; }
     int Bottom() const { return y + height; }
+    auto TopLeft() const { return suriko::Pointi{ x, y }; }
+    auto BotRight() const { return suriko::Pointi{ x + width, y + height }; }
 };
 
 template <typename F>

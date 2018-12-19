@@ -14,12 +14,22 @@ struct CorrelationCoeffData
     Scalar image_diff_sqr_sum;
 };
 
-Scalar GetGrayPatchMean(const cv::Mat& gray_image, suriko::Pointi patch_top_left, int patch_width, int patch_height);
-Scalar GetGrayPatchDiffSqrSum(const cv::Mat& gray_image, suriko::Pointi patch_top_left, int patch_width, int patch_height, Scalar patch_mean);
+/// Computes mean(img).
+Scalar GetGrayImageMean(const cv::Mat& gray_image, suriko::Recti roi);
 
-CorrelationCoeffData CalcCorrCoeff(const suriko::Picture& pic,
-    suriko::Pointi pic_roi_top_left,
+/// Computes sqr(X-mean(X)).
+Scalar GetGrayImageSumSqrDiff(const cv::Mat& gray_image, suriko::Recti roi, Scalar patch_mean);
+
+CorrelationCoeffData CalcCorrCoeffComponents(const suriko::Picture& pic,
+    suriko::Recti pic_roi,
     Scalar pic_roi_mean,
     const cv::Mat& templ_gray,
     Scalar templ_mean);
-}
+
+/// Returns null if corr coef is undefined (when variance=0, eg. entire image is filled with a single color)
+std::optional<Scalar> CalcCorrCoeff(const Picture& pic,
+    Recti pic_roi,
+    const cv::Mat& templ_gray,
+    Scalar templ_mean,
+    Scalar templ_sqrt_sum_sqr_diff);
+} // ns
