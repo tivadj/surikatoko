@@ -352,8 +352,7 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
     const CameraIntrinsicParams& cam_instrinsics,
     const std::array<GLfloat, 3>& track_color,
     bool display_trajectory,
-    CamDisplayType mid_cam_disp_type,
-    CamDisplayType last_cam_disp_type)
+    CamDisplayType mid_cam_disp_type)
 {
     Eigen::Matrix<Scalar, 3, 1> cam_pos_world_prev;
     bool cam_pos_world_prev_inited = false;
@@ -375,11 +374,7 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
             glEnd();
         }
 
-        bool last = i == gt_cam_orient_cfw.size() - 1;
-        if (last)
-            RenderSchematicCamera(cam_wfc, cam_instrinsics, track_color, last_cam_disp_type);
-        else
-            RenderSchematicCamera(cam_wfc, cam_instrinsics, track_color, mid_cam_disp_type);
+        RenderSchematicCamera(cam_wfc, cam_instrinsics, track_color, mid_cam_disp_type);
 
         cam_pos_world_prev = cam_pos_world;
         cam_pos_world_prev_inited = true;
@@ -548,7 +543,6 @@ void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
 void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar ellipsoid_cut_thr,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
-    CamDisplayType last_cam_disp_type,
     bool display_3D_uncertainties,
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
@@ -565,10 +559,8 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, co
     if (has_gt_cameras)
     {
         std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
-        CamDisplayType gt_last_camera = CamDisplayType::None;
         RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, cam_instrinsics, track_color, display_trajectory,
-            mid_cam_disp_type,
-            gt_last_camera);
+            mid_cam_disp_type);
     }
 
     bool has_gt_sal_pnts = ui_params.entire_map != nullptr;
@@ -600,13 +592,20 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, co
 
         RenderMap(mono_slam, ellipsoid_cut_thr, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
 
-        // orientation of schematic camera is taken from history
+        // render history of camera's positions (schematic)
+        std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
         if (ui_params.cam_orient_cfw_history != nullptr)
         {
-            std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
             RenderCameraTrajectory(*ui_params.cam_orient_cfw_history, cam_instrinsics, actual_track_color, display_trajectory,
-                mid_cam_disp_type,
-                last_cam_disp_type);
+                mid_cam_disp_type);
+        }
+
+        // render current (the latest) camera position
+        {
+            MarkUsedTrackerStateToVisualize();
+            CameraStateVars cam_vars = mono_slam->GetCameraEstimatedVars();
+            SE3Transform cam_wfc = CamWfc(cam_vars);
+            RenderSchematicCamera(cam_wfc, cam_instrinsics, actual_track_color, CamDisplayType::Schematic);
         }
 
         if (display_3D_uncertainties)
@@ -668,16 +667,16 @@ void SceneVisualizationPangolinGui::InitUI()
     slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
     cb_displ_mid_cam_type_ = std::make_unique<pangolin::Var<bool>>("ui.displ_3D_uncert", true, true);
 
-    pangolin::RegisterKeyPressCallback('s', []()
-    { 
-        if (auto form = s_this_ui_.lock())
-            form->OnKeyPressed('s'); 
-    });
-    pangolin::RegisterKeyPressCallback('f', []()
+    // Pangolin doesn't allow generic key handler, so have to set a specific handler for all possible input keys
+    for (int key : allowed_key_pressed_codes_)
     {
-        if (auto form = s_this_ui_.lock())
-            form->OnKeyPressed('f');
-    });
+        pangolin::RegisterKeyPressCallback(key, [key]()
+        {
+            if (auto form = s_this_ui_.lock())
+                form->OnKeyPressed(key);
+        });
+    }
+
     pangolin::RegisterKeyPressCallback(pangolin::PANGO_KEY_ESCAPE, []()
     {
         if (auto form = s_this_ui_.lock())
@@ -716,12 +715,9 @@ void SceneVisualizationPangolinGui::RenderFrame()
         mid_cam_disp_type = CamDisplayType::Schematic;
     }
 
-    CamDisplayType last_cam_disp_type = CamDisplayType::Schematic;
-
     RenderScene(ui_params, ui_params.mono_slam, cam_instrinsics_, ui_params.ellipsoid_cut_thr,
                 display_trajectory,
                 mid_cam_disp_type,
-                last_cam_disp_type,
                 display_3D_uncertainties,
                 dots_per_uncert_ellipse_,
                 ui_params.ui_swallow_exc);
@@ -740,8 +736,17 @@ int SceneVisualizationPangolinGui::WaitKey(std::function<bool(int key)> key_pred
     {
         TreatAppCloseAsEscape();
         
-        if (key_.has_value() && key_predicate(key_.value()))
-            break;
+        if (key_.has_value())
+        {
+            if (key_predicate(key_.value()))
+                break;
+            if (key_pressed_handler_ != nullptr)
+            {
+                bool processed = key_pressed_handler_(key_.value());
+                if (processed)
+                    key_ = std::nullopt;
+            }
+        }
         RenderFrame();
         pangolin::FinishFrame(); // also processes user input
     }
@@ -847,7 +852,7 @@ void SceneVisualizationPangolinGui::RunInSeparateThread()
 
 void SceneVisualizationPangolinGui::OnKeyPressed(int key)
 {
-    LOG(INFO) << "pressed key " <<key;
+    LOG(INFO) << "pressed key '" <<(char)key << "'(" << key << ")";
     got_user_input_ = true;
     key_ = key;
 

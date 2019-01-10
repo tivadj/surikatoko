@@ -40,7 +40,7 @@
 #include "demo-davison-mono-slam-ui.h"
 
 // PROVIDE DATA SOURCE FOR DEMO
-#define DEMO_DATA_SOURCE_TYPE kImageSeqDir
+#define DEMO_DATA_SOURCE_TYPE kVirtualScene
 
 namespace suriko_demos_davison_mono_slam
 {
@@ -57,6 +57,35 @@ using namespace suriko::virt_world;
 //static constexpr int kImageSeqDir = 1;
 //enum class DemoDataSource { kVirtualScene, kImageSeqDir };
 
+auto DemoGetSalPntId(const SalientPointFragment& fragment) -> DavisonMonoSlam::SalPntId
+{
+    DavisonMonoSlam::SalPntId sal_pnt_id{};
+    if (fragment.user_obj != nullptr)
+    {
+        // got salient point which hits the current frame and had been seen before
+        // auto sal_pnt_id = reinterpret_cast<DavisonMonoSlam::SalPntId>(fragment.UserObj);
+        std::memcpy(&sal_pnt_id, &fragment.user_obj, sizeof(decltype(fragment.user_obj)));
+        static_assert(sizeof fragment.user_obj >= sizeof sal_pnt_id);
+    }
+    return sal_pnt_id;
+}
+
+auto DemoGetSalPntFramgmentId(const FragmentMap& entire_map, DavisonMonoSlam::SalPntId sal_pnt_id) -> std::optional<size_t>
+{
+    std::vector<size_t> salient_points_ids;
+    entire_map.GetSalientPointsIds(&salient_points_ids);
+
+    for (size_t frag_id : salient_points_ids)
+    {
+        const SalientPointFragment& fragment = entire_map.GetSalientPointNew(frag_id);
+        DavisonMonoSlam::SalPntId sal_pnt_id_in_fragment = DemoGetSalPntId(fragment);
+
+        if (sal_pnt_id_in_fragment == sal_pnt_id)
+            return frag_id;
+    }
+    return std::nullopt;
+}
+
 void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps_per_side_x, size_t steps_per_side_y,
     suriko::Point3 eye_offset, 
     suriko::Point3 center_offset,
@@ -64,11 +93,11 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     std::vector<SE3Transform>* inverse_orient_cams)
 {
     std::array<suriko::Point3,5> look_at_base_points = {
-        suriko::Point3(wb.x_max, wb.y_min, wb.z_min),
         suriko::Point3(wb.x_min, wb.y_min, wb.z_min),
-        suriko::Point3(wb.x_min, wb.y_max, wb.z_min),
-        suriko::Point3(wb.x_max, wb.y_max, wb.z_min),
         suriko::Point3(wb.x_max, wb.y_min, wb.z_min),
+        suriko::Point3(wb.x_max, wb.y_max, wb.z_min),
+        suriko::Point3(wb.x_min, wb.y_max, wb.z_min),
+        suriko::Point3(wb.x_min, wb.y_min, wb.z_min),
     };
 
     // number of viewer steps per each side is variable
@@ -222,14 +251,7 @@ public:
             if (!hit_wnd)
                 continue;
 
-            DavisonMonoSlam::SalPntId sal_pnt_id {};
-            if (fragment.user_obj != nullptr)
-            {
-                // got salient point which hits the current frame and had been seen before
-                // auto sal_pnt_id = reinterpret_cast<DavisonMonoSlam::SalPntId>(fragment.UserObj);
-                std::memcpy(&sal_pnt_id, &fragment.user_obj, sizeof(decltype(fragment.user_obj)));
-                static_assert(sizeof fragment.user_obj >= sizeof sal_pnt_id);
-            }
+            DavisonMonoSlam::SalPntId sal_pnt_id = DemoGetSalPntId(fragment);
 
             const Scalar depth = pnt_camera.Mat().norm();
             SRK_ASSERT(!IsClose(0, depth)) << "salient points with zero depth are prohibited";
@@ -857,6 +879,7 @@ static bool ValidateDirectoryExists(const char *flagname, const std::string &val
 //DEFINE_string(scene_source, kVirtualCStr, "{virtual,imageseqdir}");
 DEFINE_string(scene_imageseq_dir, "", "Path to directory with image files");
 DEFINE_validator(scene_imageseq_dir, &ValidateDirectoryExists);
+DEFINE_int32(virtual_scenario, 1, "");
 DEFINE_double(world_xmin, -1.5, "world xmin");
 DEFINE_double(world_xmax, 1.5, "world xmax");
 DEFINE_double(world_ymin, -1.5, "world ymin");
@@ -877,6 +900,34 @@ DEFINE_double(viewer_center_offset_z, 0, "");
 DEFINE_double(viewer_up_x, 0, "");
 DEFINE_double(viewer_up_y, 0, "");
 DEFINE_double(viewer_up_z, 1, "");
+// virtual scenario2
+DEFINE_double(s2_max_deviation, 0.1, "");
+DEFINE_int32(s2_num_steps, 100, "");
+// virtual scenario3
+DEFINE_double(s3_max_deviation, 0.1, "");
+DEFINE_double(s3_periods_count, 1.0, "");
+DEFINE_int32(s3_shots_per_period, 4, "");
+// virtual scenario4
+DEFINE_int32(s4_periods_count, 0, "");
+DEFINE_double(s4_0_eye_x, 0.0, "");
+DEFINE_double(s4_0_eye_y, 0.0, "");
+DEFINE_double(s4_0_eye_z, 0.0, "");
+DEFINE_double(s4_0_center_x, 0.0, "");
+DEFINE_double(s4_0_center_y, 0.0, "");
+DEFINE_double(s4_0_center_z, 0.0, "");
+DEFINE_double(s4_0_up_x, 0.0, "");
+DEFINE_double(s4_0_up_y, 0.0, "");
+DEFINE_double(s4_0_up_z, 0.0, "");
+DEFINE_double(s4_1_eye_x, 0.0, "");
+DEFINE_double(s4_1_eye_y, 0.0, "");
+DEFINE_double(s4_1_eye_z, 0.0, "");
+DEFINE_double(s4_1_center_x, 0.0, "");
+DEFINE_double(s4_1_center_y, 0.0, "");
+DEFINE_double(s4_1_center_z, 0.0, "");
+DEFINE_double(s4_1_up_x, 0.0, "");
+DEFINE_double(s4_1_up_y, 0.0, "");
+DEFINE_double(s4_1_up_z, 0.0, "");
+
 DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
 DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
 DEFINE_double(kalman_estim_var_init_std, 0.001, "");
@@ -897,7 +948,6 @@ DEFINE_bool(kalman_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(kalman_debug_estim_vars_cov, false, "");
 DEFINE_bool(kalman_debug_predicted_vars_cov, false, "");
 DEFINE_int32(kalman_debug_max_sal_pnt_count, -1, "[default=-1(none)] number of salient points won't be greater than this value");
-DEFINE_bool(kalman_fake_localization, false, "");
 DEFINE_bool(kalman_fake_sal_pnt_init_inv_dist, false, "");
 DEFINE_double(kalman_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
 DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
@@ -969,8 +1019,40 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
     suriko::Point3 viewer_center_offset(FLAGS_viewer_center_offset_x, FLAGS_viewer_center_offset_y, FLAGS_viewer_center_offset_z);
     Eigen::Matrix<Scalar, 3, 1> up(FLAGS_viewer_up_x, FLAGS_viewer_up_y, FLAGS_viewer_up_z);
-    GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y,
-        viewer_eye_offset, viewer_center_offset, up, &gt_cam_orient_cfw);
+
+    if (FLAGS_virtual_scenario == 1)
+        GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y,
+            viewer_eye_offset, viewer_center_offset, up, &gt_cam_orient_cfw);
+    else if (FLAGS_virtual_scenario == 2)
+        GenerateCameraShotsRightAndLeft(wb, viewer_eye_offset, viewer_center_offset, up,
+            FLAGS_s2_max_deviation,
+            FLAGS_s2_num_steps,
+            &gt_cam_orient_cfw);
+    else if (FLAGS_virtual_scenario == 3)
+    {
+        auto viewer_eye = viewer_eye_offset;
+        auto center = viewer_center_offset;
+        GenerateCameraShotsOscilateRightAndLeft(wb, viewer_eye, center, up,
+            FLAGS_s3_max_deviation,
+            FLAGS_s3_periods_count,
+            FLAGS_s3_shots_per_period,
+            &gt_cam_orient_cfw);
+    }
+    else if (FLAGS_virtual_scenario == 4)
+    {
+        std::vector<LookAtComponents> cam_poses;
+        cam_poses.push_back(LookAtComponents{
+            suriko::Point3{FLAGS_s4_0_eye_x,FLAGS_s4_0_eye_y,FLAGS_s4_0_eye_z},
+            suriko::Point3{FLAGS_s4_0_center_x,FLAGS_s4_0_center_y,FLAGS_s4_0_center_z},
+            suriko::Point3{FLAGS_s4_0_up_x,FLAGS_s4_0_up_y,FLAGS_s4_0_up_z}
+        });
+        cam_poses.push_back(LookAtComponents{
+            suriko::Point3{FLAGS_s4_1_eye_x,FLAGS_s4_1_eye_y,FLAGS_s4_1_eye_z},
+            suriko::Point3{FLAGS_s4_1_center_x,FLAGS_s4_1_center_y,FLAGS_s4_1_center_z},
+            suriko::Point3{FLAGS_s4_1_up_x,FLAGS_s4_1_up_y,FLAGS_s4_1_up_z}
+        });
+        GenerateCameraShots3DPath(wb, cam_poses, FLAGS_s4_periods_count, &gt_cam_orient_cfw);
+    }
 
     std::vector<SE3Transform> gt_cam_orient_wfc;
     std::transform(gt_cam_orient_cfw.begin(), gt_cam_orient_cfw.end(), std::back_inserter(gt_cam_orient_wfc), [](auto& t) { return SE3Inv(t); });
@@ -1067,6 +1149,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
 
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
+    mono_slam.sal_pnt_small_std_ = FLAGS_kalman_estim_var_init_std;
     mono_slam.SetCamera(SE3Transform::NoTransform(), FLAGS_kalman_estim_var_init_std);
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
     SE3Transform cam_cfw = SE3Inv(LookAtLufWfc(
@@ -1082,13 +1165,39 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     if (FLAGS_kalman_debug_max_sal_pnt_count != -1)
         mono_slam.debug_max_sal_pnt_coun_ = FLAGS_kalman_debug_max_sal_pnt_count;
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    mono_slam.fake_localization_ = FLAGS_kalman_fake_localization;
     mono_slam.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
+    mono_slam.gt_cami_from_world_fun_ = [&gt_cam_orient_cfw](size_t frame_ind) -> SE3Transform
+    {
+        SE3Transform c = gt_cam_orient_cfw[frame_ind];
+        return c;
+    };    
+    mono_slam.gt_cami_from_tracker_new_ = [&gt_cam_orient_cfw](SE3Transform tracker_from_world, size_t frame_ind) -> SE3Transform
+    {
+        SE3Transform cami_from_world = gt_cam_orient_cfw[frame_ind];
+        SE3Transform cami_from_tracker = SE3AFromB(cami_from_world, tracker_from_world);
+        return cami_from_tracker;
+    };    
     mono_slam.gt_cami_from_tracker_fun_ = [&gt_cam_orient_cfw, tracker_origin_from_world](size_t frame_ind) -> SE3Transform
     {
         SE3Transform c = CurCamFromTrackerOrigin(gt_cam_orient_cfw, frame_ind, tracker_origin_from_world);
         return c;
     };    
+    mono_slam.gt_sal_pnt_in_camera_fun_ = [&entire_map]
+        (SE3Transform tracker_from_world, SE3Transform camera_from_tracker, DavisonMonoSlam::SalPntId sal_pnt_id) -> Dir3DAndDistance
+    {
+        std::optional<size_t> frag_id = DemoGetSalPntFramgmentId(entire_map, sal_pnt_id);
+        const SalientPointFragment& fragment = entire_map.GetSalientPointNew(frag_id.value());
+        suriko::Point3 pnt_world = fragment.coord.value();
+
+        SE3Transform camera_from_world = SE3Compose(camera_from_tracker, tracker_from_world);
+        suriko::Point3 pnt_camera = SE3Apply(camera_from_world, pnt_world);
+        
+        Eigen::Matrix<Scalar, 3, 1> pnt_mat = pnt_camera.Mat(); 
+        Dir3DAndDistance p;
+        p.unity_dir = pnt_mat.normalized();
+        p.dist = pnt_mat.norm();
+        return p;
+    };
 #endif
     mono_slam.PredictEstimVarsHelper();
     LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
@@ -1158,6 +1267,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     ui_params.gt_cam_orient_cfw = &gt_cam_orient_cfw;
 #endif
 
+    static constexpr int kKeyForward = static_cast<int>('f'); // 'Forward'
+    static constexpr int kKeyIgnoreDetection = static_cast<int>('s'); // 'Skip'
+    static constexpr int kKeySetToGroundTruth = static_cast<int>('u');
+    static constexpr int kKeyDumpInfo = static_cast<int>('i');
+
     std::thread ui_thread;
     const bool defer_ui_construction = true;
     auto pangolin_gui = SceneVisualizationPangolinGui::New(defer_ui_construction);  // used in single threaded mode
@@ -1172,6 +1286,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             pangolin_gui->ui_tight_loop_relaxing_delay_ = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
             pangolin_gui->dots_per_uncert_ellipse_ = FLAGS_ui_dots_per_uncert_ellipse;
             pangolin_gui->cam_instrinsics_ = cam_intrinsics;
+            pangolin_gui->allowed_key_pressed_codes_ = { kKeyForward, kKeyIgnoreDetection, 
+                kKeySetToGroundTruth, kKeyDumpInfo };
+            pangolin_gui->key_pressed_handler_ = nullptr; // initialized lazily later
             pangolin_gui->InitUI();
             int back_dist = 5;
             pangolin_gui->SetCameraBehindTrackerOnce(tracker_origin_from_world, back_dist);
@@ -1232,7 +1349,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             frame_process_time = t2 - t1;
 
             CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();
-            SE3Transform actual_cam_wfc(RotMat(cam_state.orientation_wfc), cam_state.pos_w);
+            SE3Transform actual_cam_wfc = CamWfc(cam_state);
             SE3Transform actual_cam_cfw = SE3Inv(actual_cam_wfc);
 #if defined(SRK_HAS_PANGOLIN)
             cam_orient_cfw_history.push_back(actual_cam_cfw);
@@ -1304,7 +1421,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         {
             auto key_of_interest = [](int key)
             {
-                return key == 's' || key == 'f' || key == pangolin::PANGO_KEY_ESCAPE;
+                return key == kKeyIgnoreDetection || key == kKeyForward || key == pangolin::PANGO_KEY_ESCAPE;
             };
 
             if (FLAGS_ctrl_wait_after_each_frame)
@@ -1324,13 +1441,33 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 }
                 else
                 {
+                    // initialize GUI lazily here, because the handler depends on frame_ind which is not known during initialization
+                    if (pangolin_gui->key_pressed_handler_ == nullptr)
+                    {
+                        pangolin_gui->key_pressed_handler_ = [&mono_slam, &frame_ind](int key) -> bool
+                        {
+                            switch (key)
+                            {
+                            case kKeySetToGroundTruth:
+                                mono_slam.SetStateToGroundTruth(frame_ind);
+                                return true;
+                            case kKeyDumpInfo:
+                                std::ostringstream os;
+                                mono_slam.DumpTrackerState(os);
+                                LOG(INFO) << os.str();
+                                return true;
+                            }
+                            return false;
+                        };
+                    }
+
                     key = pangolin_gui->WaitKey(key_of_interest);
                 }
 
                 if (key == pangolin::PANGO_KEY_ESCAPE)
                     break;
                 
-                const bool suppress_observations = (key == 's');
+                const bool suppress_observations = (key == kKeyIgnoreDetection);
 
                 auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&mono_slam.CornersMatcher());
                 if (a_corners_matcher != nullptr)

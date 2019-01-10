@@ -34,6 +34,9 @@ namespace
     constexpr size_t kRhoComps = 1; // inverse distance
     constexpr size_t kSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;
 
+    // the index of a camera frame to choose for the origin of tracker
+    constexpr size_t kTrackerOriginCamInd = 0;
+
     void DependsOnOverallPackOrder() {}
     void DependsOnCameraPosPackOrder() {}
     void DependsOnSalientPointPackOrder() {}
@@ -218,6 +221,13 @@ struct MeanAndCov2D
     Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> cov;
 };
 
+/// Represents 3D point with optional known distance to it (when point is in infinity).
+struct Dir3DAndDistance
+{
+    Eigen::Matrix<Scalar, kEucl3, 1> unity_dir;  // unity direction to the point
+    std::optional<Scalar> dist;             // distance to the point or null for a point in infinity
+};
+
 struct SalPntRectFacet
 {
     std::array<suriko::Point3,4> points;
@@ -325,6 +335,7 @@ public:
     Scalar measurm_noise_std_pix_ = 1;
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
+    Scalar sal_pnt_small_std_ = 0.001;
     
     // width and height of a patch template of a salient point
     // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
@@ -336,9 +347,12 @@ public:
     CameraIntrinsicParams cam_intrinsics_{};
     RadialDistortionParams cam_distort_params_{};
 public:
+    std::function<SE3Transform(size_t frame_ind)> gt_cami_from_world_fun_;  // used to get the first camera cam0 in the world coordinates
     std::function<SE3Transform(size_t frame_ind)> gt_cami_from_tracker_fun_;  // gets ground truth camera position in coordinates of tracker
+    std::function<SE3Transform(SE3Transform tracker_from_world, size_t frame_ind)> gt_cami_from_tracker_new_;  // gets ground truth camera frame in coordinates of a given tracker
+    std::function<Dir3DAndDistance(SE3Transform tracker_from_world, SE3Transform camera_from_tracker, SalPntId sal_pnt_id)> gt_sal_pnt_in_camera_fun_;  // gets ground truth 3D position of salient point in coordinates of tracker
+
     Scalar debug_ellipsoid_cut_thr_ = 0.04; // value 0.05 corresponds to 2sig
-    bool fake_localization_ = false; // true to get camera orientation from ground truth
     bool fake_sal_pnt_initial_inv_dist_ = false; // true to correctly initialize points depth in virtual environments
 
     /// There are 3 implementations of incorporating m observed corners (corner=pixel, 2x1 mat).
@@ -444,6 +458,10 @@ public:
     DavisonMonoSlamInternalsLogger* StatsLogger() const;
 
     static void SetDebugPath(DebugPathEnum debug_path);
+
+    // Resets estimated and update predicted state of the tracker. In virtual mode only.
+    void SetStateToGroundTruth(size_t frame_ind);
+    void DumpTrackerState(std::ostringstream& os);
 private:
     struct SalPntProjectionIntermidVars
     {
@@ -491,7 +509,7 @@ private:
     void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind);
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind);
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
-    void OnEstimVarsChanged(size_t frame_ind);
+    void MakePredictions();
 
     // Updates the centers of detected patches.
     void ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind);
@@ -514,6 +532,8 @@ private:
 
     void LoadSalientPointDataFromArray(gsl::span<const Scalar> src, SalientPointStateVars* result) const;
     SalientPointStateVars LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
+
+    void SaveSalientPointDataToArray(const SalientPointStateVars& sal_pnt_vars, gsl::span<Scalar> dst) const;
 
     void PropagateSalPntPosUncertainty(const SalientPointStateVars& sal_pnt,
         const Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>& sal_pnt_covar,

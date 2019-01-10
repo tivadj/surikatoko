@@ -53,4 +53,92 @@ void GenerateCircleCameraShots(const suriko::Point3& circle_center, Scalar circl
     }
 }
 
+void GenerateCameraShotsRightAndLeft(const WorldBounds& wb,
+    suriko::Point3 eye_offset,
+    suriko::Point3 center_offset,
+    const Eigen::Matrix<Scalar, 3, 1>& up,
+    Scalar max_deviation,
+    int num_steps,
+    std::vector<SE3Transform>* inverse_orient_cams)
+{
+    suriko::Point3 look_at_me{ wb.x_min, wb.y_min, 0 };
+
+    for (int i = 0; i < num_steps; ++i)
+    {
+        suriko::Point3 eye_offset_extra{};
+        switch (i % 4)
+        {
+        case 0:
+            break;
+        case 1:
+            eye_offset_extra[0] += max_deviation;
+            break;
+        case 2:
+            break;
+        case 3:
+            eye_offset_extra[0] -= max_deviation;
+            break;
+        default:
+            SRK_ASSERT(false);
+        }
+
+        Eigen::Matrix<Scalar, 3, 1> eye = look_at_me.Mat() + eye_offset.Mat() + eye_offset_extra.Mat();
+
+        Eigen::Matrix<Scalar, 3, 1> center = look_at_me.Mat() + center_offset.Mat();
+
+        auto wfc = LookAtLufWfc(eye, center, up);
+
+        SE3Transform RT = SE3Inv(wfc);
+
+        inverse_orient_cams->push_back(RT);
+    }
+}
+
+void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
+    suriko::Point3 eye,
+    suriko::Point3 center,
+    const Eigen::Matrix<Scalar, 3, 1>& up,
+    Scalar max_deviation,
+    int periods_count,
+    int shots_per_period,
+    std::vector<SE3Transform>* inverse_orient_cams)
+{
+    Eigen::Matrix<Scalar, 3, 1> view_dir = center.Mat() - eye.Mat();
+    view_dir.normalize();
+
+    Eigen::Matrix<Scalar, 3, 1> right_dir = view_dir.cross(up);
+    right_dir.normalize();
+
+    int max_shots = periods_count * shots_per_period;
+    for (int shot_ind = 0; shot_ind < max_shots; ++shot_ind)
+    {
+        auto w = 2.0 * M_PI / shots_per_period * shot_ind;
+
+        float right_deviation = std::sin(w) * max_deviation;
+
+        Eigen::Matrix<Scalar, 3, 1> shifted_eye = eye.Mat() + right_dir * right_deviation;
+
+        auto wfc = LookAtLufWfc(shifted_eye, center.Mat(), up);
+
+        SE3Transform RT = SE3Inv(wfc);
+
+        inverse_orient_cams->push_back(RT);
+    }
+}
+
+void GenerateCameraShots3DPath(const WorldBounds& wb,
+    const std::vector<LookAtComponents>& cam_poses, int periods_count,
+    std::vector<SE3Transform>* inverse_orient_cams)
+{
+    for (int i = 0; i < periods_count; ++i)
+    {
+        for (const auto& p : cam_poses)
+        {
+            SE3Transform wfc = LookAtLufWfc(p.eye.Mat(), p.center.Mat(), p.up.Mat());
+            SE3Transform cfw = SE3Inv(wfc);;
+            inverse_orient_cams->push_back(cfw);
+        }
+    }
+}
+
 }}

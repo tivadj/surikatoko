@@ -20,3 +20,7 @@ Almost spherical ellipsoids are drawn with two extra strokes on the flanks.
 Camera view shows only salient points which fit the current view, the 3D view renders all salient points.
 World view renders salient points' patches by back-projecting 2D blobs in the picture, back into the 3D world. Hence the patch is linked to the frame of a camera. The salient point itself is rendered as a dot (small solid rectangle) in the coordinates, estimated by Kalman Filter. Thus some salient point may have the 3D center and patch coordinates diverge and visually do not overlap. This indicates some inconsistencies in the filtering process.
 
+Hot keys:
+f=next frame
+i=dumps camera information to the console
+u=(virtual mode only) sets the position of the camera  and salient points to the ground truth

@@ -59,6 +59,12 @@ public:
 
     Scalar  operator[] (size_t i) const { return mat_(i); };
     Scalar& operator[] (size_t i)       { return mat_(i); };
+    Scalar  X() const { return mat_[0]; }
+    Scalar& X()       { return mat_[0]; }
+    Scalar  Y() const { return mat_[1]; }
+    Scalar& Y()       { return mat_[1]; }
+    Scalar  Z() const { return mat_[2]; }
+    Scalar& Z()       { return mat_[2]; }
 };
 
 struct Sizei

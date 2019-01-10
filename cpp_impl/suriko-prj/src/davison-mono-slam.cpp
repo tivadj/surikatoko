@@ -314,6 +314,12 @@ void DavisonMonoSlam::SetInputNoiseStd(Scalar input_noise_std)
     input_noise_covar_(5, 5) = input_noise_std_variance;
 }
 
+void AzimElevFromEuclidCoords(suriko::Point3 hw, Scalar* azim_theta, Scalar* elev_phi)
+{
+    *azim_theta = std::atan2(hw[0], hw[2]);
+    *elev_phi = std::atan2(-hw[1], std::sqrt(suriko::Sqr(hw[0]) + suriko::Sqr(hw[2])));
+}
+
 void DavisonMonoSlam::CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azimuth_theta, Scalar elevation_phi, Scalar* hx, Scalar* hy, Scalar* hz)
 {
     // polar -> euclidean position of salient point in world frame with center in camera position
@@ -595,8 +601,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
         stats_logger_->NotifyEstimatedSalPnts(SalientPointsCount());
     }
 
-    // make predictions
-    PredictEstimVars(&predicted_estim_vars_, &predicted_estim_vars_covar_);
+    MakePredictions();
 
     if (in_multi_threaded_mode_)
         lk.unlock();
@@ -704,10 +709,12 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 
         // Xnew=Xold+K(z-obs)
         // update estimated variables
-        //EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
-        //estim_vars_.noalias() = derive_at_pnt + estim_vars_delta;
-        //estim_vars_ = derive_at_pnt;
+#if defined(SRK_DEBUG)
+        EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
+        estim_vars_.noalias() += estim_vars_delta;
+#else
         estim_vars_.noalias() += Knew * (zk - projected_sal_pnts);
+#endif
 
         // update covariance matrix
         //size_t n = EstimatedVarsCount();
@@ -759,8 +766,6 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         std::swap(estim_vars_, predicted_estim_vars_);
         std::swap(estim_vars_covar_, predicted_estim_vars_covar_);
     }
-
-    OnEstimVarsChanged(frame_ind);
 }
 
 void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
@@ -883,8 +888,6 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
     {
         CheckCameraAndSalientPointsCovs(estim_vars_, estim_vars_covar_);
     }
-
-    OnEstimVarsChanged(frame_ind);
 }
 
 void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind)
@@ -1017,33 +1020,167 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
     {
         CheckCameraAndSalientPointsCovs(estim_vars_, estim_vars_covar_);
     }
-
-    OnEstimVarsChanged(frame_ind);
 }
 
-void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
+void DavisonMonoSlam::MakePredictions()
 {
-    if (fake_localization_ && gt_cami_from_tracker_fun_ != nullptr)
+    // make predictions
+    PredictEstimVars(&predicted_estim_vars_, &predicted_estim_vars_covar_);
+}
+
+void DavisonMonoSlam::SetStateToGroundTruth(size_t frame_ind)
+{
+    estim_vars_.setZero();
+    estim_vars_covar_.setZero();
+
+    SE3Transform tracker_from_world = gt_cami_from_world_fun_(kTrackerOriginCamInd); // =cam0 from world
+
+    SE3Transform cam_cft = gt_cami_from_tracker_new_(tracker_from_world, frame_ind);  // cft=camera from tracker
+    SE3Transform cam_tfc = SE3Inv(cam_cft);  // tfc=tracker from camera
+
+    std::array<Scalar, kQuat4> cam_tfc_quat;
+    QuatFromRotationMatNoRChecks(cam_tfc.R, cam_tfc_quat);
+
+    // camera position
+    DependsOnCameraPosPackOrder();
+    estim_vars_[0] = cam_tfc.T[0];
+    estim_vars_[1] = cam_tfc.T[1];
+    estim_vars_[2] = cam_tfc.T[2];
+    
+    // camera orientation
+    estim_vars_[3] = cam_tfc_quat[0];
+    estim_vars_[4] = cam_tfc_quat[1];
+    estim_vars_[5] = cam_tfc_quat[2];
+    estim_vars_[6] = cam_tfc_quat[3];
+
+    const Scalar small_variance = suriko::Sqr(sal_pnt_small_std_);
+
+    for (size_t i = 0; i < kCamStateComps; ++i)
+        estim_vars_covar_(i, i) = small_variance;
+
+    for (SalPntId sal_pnt_id : GetSalientPoints())
     {
-        SE3Transform cami_from_tracker = gt_cami_from_tracker_fun_(frame_ind); // origin of tracker = cam0
-        SE3Transform tracker_from_cami = SE3Inv(cami_from_tracker);
+        const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
 
-        std::array<Scalar, kQuat4> tracker_from_cami_quat;
-        QuatFromRotationMatNoRChecks(tracker_from_cami.R, tracker_from_cami_quat);
+        // the frame where the salient point was first seen
+        size_t first_cam_frame_ind = 0;
+#if defined(SRK_DEBUG)
+        // NOTE: this field available only in Debug configuration
+        first_cam_frame_ind = sal_pnt.initial_frame_ind_debug_;
+#endif
+        SE3Transform sal_pnt_first_cam_cft = gt_cami_from_tracker_new_(tracker_from_world, first_cam_frame_ind);  // cft=camera from tracker
+        SE3Transform sal_pnt_first_cam_tfc = SE3Inv(sal_pnt_first_cam_cft);
+        suriko::Point3 sal_pnt_first_cam_pos_in_tracker = suriko::Point3{ sal_pnt_first_cam_tfc.T };
 
-        ResetCamera(estim_var_init_std, false);
+        Dir3DAndDistance sal_pnt_in_camera = gt_sal_pnt_in_camera_fun_(tracker_from_world, sal_pnt_first_cam_cft, sal_pnt_id);
 
-        // camera position
-        DependsOnCameraPosPackOrder();
-        estim_vars_[0] = tracker_from_cami.T[0];
-        estim_vars_[1] = tracker_from_cami.T[1];
-        estim_vars_[2] = tracker_from_cami.T[2];
+        // we are interested in a point, centered in the first camera, where the salient point was first seen,
+        // but oriented parallel to the world frame
+        suriko::Point3 dir_in_camera_by_tracker{ sal_pnt_first_cam_tfc.R * sal_pnt_in_camera.unity_dir };
+
+        Scalar azim_theta = kNan;
+        Scalar elev_phi = kNan;
+        AzimElevFromEuclidCoords(dir_in_camera_by_tracker, &azim_theta, &elev_phi);
+
+        // when dist=inf (or unavailable) the rho(or inv_dist)=0
+        Scalar inv_dist_rho = sal_pnt_in_camera.dist.has_value() ? 1 / sal_pnt_in_camera.dist.value() : 0;
+
+        SalientPointStateVars sal_pnt_vars;
+        sal_pnt_vars.first_cam_pos_w = sal_pnt_first_cam_pos_in_tracker.Mat();
+        sal_pnt_vars.azimuth_theta_w = azim_theta;
+        sal_pnt_vars.elevation_phi_w = elev_phi;
+        sal_pnt_vars.inverse_dist_rho = inv_dist_rho;
+
+        gsl::span<Scalar> dst = Span(estim_vars_).subspan(sal_pnt.estim_vars_ind, kSalientPointComps);
+        SaveSalientPointDataToArray(sal_pnt_vars, dst);
+
+        auto sal_pnt_var = estim_vars_covar_.block< kSalientPointComps, kSalientPointComps>(sal_pnt.estim_vars_ind, sal_pnt.estim_vars_ind);
+
+        sal_pnt_var(0, 0) = small_variance;
+        sal_pnt_var(1, 1) = small_variance;
+        sal_pnt_var(2, 2) = small_variance;
+        sal_pnt_var(3, 3) = small_variance;
+        sal_pnt_var(4, 4) = small_variance;
+        sal_pnt_var(5, 5) = small_variance;
+    }
+
+    MakePredictions();  // recalculate the predictions
+}
+
+template <typename EigenVec>
+std::ostringstream& FormatVec(std::ostringstream& os, const EigenVec& v)
+{
+    os << "[";
+    if (v.rows() > 0)
+        os << v[0];
+
+    for (int i=1; i<v.rows(); ++i)
+    {
+        // truncate close to zero value to exact zero
+        auto d = v[i];
+        if (IsClose(0, d))
+            d = 0;
+
+        os << " " << d;
+    }
+    os << "]";
+    return os;
+}
+
+void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os)
+{
+    os << "Estimated state:" << std::endl;
+    CameraStateVars cam_vars = GetCameraEstimatedVars();
+    os << "cam.pos: ";
+    FormatVec(os, cam_vars.pos_w) << std::endl;
+    os << "cam.orient_wfc: ";
+    FormatVec(os, cam_vars.orientation_wfc) << std::endl;
+
+    Eigen::Matrix<Scalar, 3, 3> Rwfc;
+    RotMatFromQuat(Span(cam_vars.orientation_wfc), &Rwfc);
+    Eigen::Map<Eigen::Matrix<Scalar, 9, 1>, Eigen::ColMajor> Rwfc_s(Rwfc.data());
+    os << "cam.Rwfc_s: ";
+    FormatVec(os, Rwfc_s) <<std::endl;
+
+    os << "cam.vel: ";
+    FormatVec(os, cam_vars.velocity_w) << std::endl;
+    os << "cam.angvel: ";
+    FormatVec(os, cam_vars.angular_velocity_c) << std::endl;
+
+    for (SalPntId sal_pnt_id : latest_frame_sal_pnts_)
+    {
+        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        os << "SP[ind=" << sal_pnt.sal_pnt_ind << "] center=";
+        if (sal_pnt.templ_center_pix_.has_value())
+            FormatVec(os, sal_pnt.templ_center_pix_.value().Mat());
+        else
+            os << "none";
         
-        // camera orientation
-        estim_vars_[3] = tracker_from_cami_quat[0];
-        estim_vars_[4] = tracker_from_cami_quat[1];
-        estim_vars_[5] = tracker_from_cami_quat[2];
-        estim_vars_[6] = tracker_from_cami_quat[3];
+        // get 3D position in tracker (usually =cam0) coordinates
+        os << " 3D=";
+        Eigen::Matrix<Scalar, kEucl3, 1> pos_mean;
+        bool op = GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType::Estimated, sal_pnt_id, &pos_mean, nullptr);
+        if (op)
+            FormatVec(os, pos_mean);
+        else
+            os << "NA";
+        os << std::endl;
+
+        auto sal_pnt_vars_span = Span(estim_vars_).subspan(sal_pnt.estim_vars_ind, kSalientPointComps);
+        SalientPointStateVars sal_pnt_vars;
+        LoadSalientPointDataFromArray(sal_pnt_vars_span, &sal_pnt_vars);
+        os << "SP.firstcam: ";
+        FormatVec(os, sal_pnt_vars.first_cam_pos_w) << std::endl;
+        os << "SP.azim_theta: " << sal_pnt_vars.azimuth_theta_w <<std::endl;
+        os << "SP.elev_phi: " << sal_pnt_vars.elevation_phi_w << std::endl;
+        os << "SP.inv_d_rho: " << sal_pnt_vars.inverse_dist_rho;
+
+        os << " d: ";
+        if (!IsClose(0, sal_pnt_vars.inverse_dist_rho))
+            os << 1/sal_pnt_vars.inverse_dist_rho;
+        else
+            os << "NA";
+        os << std::endl;
     }
 }
 
@@ -1090,8 +1227,9 @@ void DavisonMonoSlam::InitStateForNewSalientPoint(size_t old_sal_pnts_count, siz
 
     // A.59
     Eigen::Matrix<Scalar, kEucl3, 1> hw = Rwfc * hc;
-    Scalar azim_theta = std::atan2(hw[0], hw[2]);
-    Scalar elev_phi = std::atan2(-hw[1], std::sqrt(suriko::Sqr(hw[0]) + suriko::Sqr(hw[2])));
+    Scalar azim_theta = kNan;
+    Scalar elev_phi = kNan;
+    AzimElevFromEuclidCoords(suriko::Point3{ hw }, &azim_theta, &elev_phi);
 
     // allocate space for estimated variables
     size_t old_vars_count = EstimatedVarsCount();
@@ -1968,6 +2106,17 @@ DavisonMonoSlam::SalientPointStateVars DavisonMonoSlam::LoadSalientPointDataFrom
     DavisonMonoSlam::SalientPointStateVars result;
     LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &result);
     return result;
+}
+
+void DavisonMonoSlam::SaveSalientPointDataToArray(const SalientPointStateVars& sal_pnt_vars, gsl::span<Scalar> dst) const
+{
+    DependsOnSalientPointPackOrder();
+    dst[0] = sal_pnt_vars.first_cam_pos_w[0];
+    dst[1] = sal_pnt_vars.first_cam_pos_w[1];
+    dst[2] = sal_pnt_vars.first_cam_pos_w[2];
+    dst[3] = sal_pnt_vars.azimuth_theta_w;
+    dst[4] = sal_pnt_vars.elevation_phi_w;
+    dst[5] = sal_pnt_vars.inverse_dist_rho;
 }
 
 size_t DavisonMonoSlam::SalientPointOffset(size_t sal_pnt_ind) const
