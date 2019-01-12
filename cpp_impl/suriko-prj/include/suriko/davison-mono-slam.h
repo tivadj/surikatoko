@@ -137,11 +137,14 @@ struct SalPntId
         ptrdiff_t sal_pnt_as_bits_internal;
     };
 
-    SalPntId() = default;
-    SalPntId(SalPntPatch* sal_pnt) : sal_pnt_internal(sal_pnt) {}
-    operator bool() const { return sal_pnt_internal != nullptr; }
+    constexpr SalPntId() = default;
+    constexpr SalPntId(SalPntPatch* sal_pnt) : sal_pnt_internal(sal_pnt) {}
+    constexpr bool HasId() const { return sal_pnt_internal != nullptr; }
+    auto static constexpr Null() { return SalPntId{ nullptr }; }
 };
 inline bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal < y.sal_pnt_as_bits_internal; }
+inline bool operator==(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal == y.sal_pnt_as_bits_internal; }
+inline bool operator!=(SalPntId x, SalPntId y) { return !operator==(x,y); }
 
 /// We separate the tracking of existing salient points, for which the position in the latest
 /// frame is known, from occasional search for extra salient points.

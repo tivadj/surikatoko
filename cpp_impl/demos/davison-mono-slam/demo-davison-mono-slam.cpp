@@ -59,7 +59,7 @@ using namespace suriko::virt_world;
 
 auto DemoGetSalPntId(const SalientPointFragment& fragment) -> DavisonMonoSlam::SalPntId
 {
-    DavisonMonoSlam::SalPntId sal_pnt_id{};
+    auto sal_pnt_id = DavisonMonoSlam::SalPntId::Null();
     if (fragment.user_obj != nullptr)
     {
         // got salient point which hits the current frame and had been seen before
@@ -336,7 +336,7 @@ public:
             }
 
             // if salient point is associated with a blob then prevent associating new salient point with such a blob
-            if (blob_info.SalPntIdInTracker)
+            if (blob_info.SalPntIdInTracker.HasId())
                 continue;
 
             // the tracker is interested in this blob
