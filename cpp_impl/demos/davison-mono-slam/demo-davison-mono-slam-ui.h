@@ -141,6 +141,7 @@ private:
     // the part of rendering of a UI frame to be called in isolation.
     std::unique_ptr<pangolin::Var<ptrdiff_t>> a_frame_ind_;
     std::unique_ptr<pangolin::Var<bool>> cb_displ_traj_;
+    std::unique_ptr<pangolin::Var<bool>> cb_displ_ground_truth_;
     std::unique_ptr<pangolin::Var<int>> slider_mid_cam_type_;
     std::unique_ptr<pangolin::Var<bool>> cb_displ_mid_cam_type_;
 };

@@ -523,6 +523,8 @@ void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
             glEnd();
 
             // render template 'cards' only if the salient point was found in current frame
+            // NOTE: the estimated pos of a salient point and a corresponding template rectangle (which is a 3D unprojection
+            // of salient point pixels template) may be visually off, which indicates some errors in estimation
             if (sal_pnt.IsDetected())
             {
                 RenderSalientTemplate(mono_slam, sal_pnt_id);
@@ -544,6 +546,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, co
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
     bool display_3D_uncertainties,
+    bool display_ground_truth,
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
@@ -556,7 +559,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, co
     RenderAxes(1, 4);
 
     bool has_gt_cameras = ui_params.gt_cam_orient_cfw != nullptr;  // gt=ground truth
-    if (has_gt_cameras)
+    if (display_ground_truth && has_gt_cameras)
     {
         std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
         RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, cam_instrinsics, track_color, display_trajectory,
@@ -564,7 +567,7 @@ void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, co
     }
 
     bool has_gt_sal_pnts = ui_params.entire_map != nullptr;
-    if (has_gt_sal_pnts)
+    if (display_ground_truth && has_gt_sal_pnts)
     {
         std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
         glColor3fv(track_color.data());
@@ -664,6 +667,7 @@ void SceneVisualizationPangolinGui::InitUI()
 
     a_frame_ind_ = std::make_unique<pangolin::Var<ptrdiff_t>>("ui.frame_ind", -1);
     cb_displ_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_trajectory", true, true);
+    cb_displ_ground_truth_ = std::make_unique<pangolin::Var<bool>>("ui.displ_gt", true, true);
     slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
     cb_displ_mid_cam_type_ = std::make_unique<pangolin::Var<bool>>("ui.displ_3D_uncert", true, true);
 
@@ -701,6 +705,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
 
     bool display_trajectory = cb_displ_traj_->Get();
     bool display_3D_uncertainties = cb_displ_mid_cam_type_->Get();
+    bool display_ground_truth = cb_displ_ground_truth_->Get();
 
     CamDisplayType mid_cam_disp_type = CamDisplayType::None;
     int displ_mid_cam_type = slider_mid_cam_type_->Get();
@@ -719,6 +724,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
                 display_trajectory,
                 mid_cam_disp_type,
                 display_3D_uncertainties,
+                display_ground_truth,
                 dots_per_uncert_ellipse_,
                 ui_params.ui_swallow_exc);
 }
