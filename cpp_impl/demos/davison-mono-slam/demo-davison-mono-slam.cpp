@@ -631,11 +631,15 @@ public:
         // skip a match with low correlation coefficient
         if (min_templ_corr_coeff_.has_value() && match_result.corr_coef < min_templ_corr_coeff_.value())
         {
-            MeanAndCov2D predicted_center = kalman_tracker_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
-            VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
-                << " as undetected because corr_coef=" << match_result.corr_coef
-                << " is less than thr=" << min_templ_corr_coeff_.value() << ","
-                << " predicted center_pix=[" << predicted_center.mean[0] << "," << predicted_center.mean[1] << "]";
+            static bool debug_matching = false;
+            if (debug_matching)
+            {
+                MeanAndCov2D predicted_center = kalman_tracker_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+                VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
+                    << " as undetected because corr_coef=" << match_result.corr_coef
+                    << " is less than thr=" << min_templ_corr_coeff_.value() << ","
+                    << " predicted center_pix=[" << predicted_center.mean[0] << "," << predicted_center.mean[1] << "]";
+            }
             return std::nullopt;
         }
 
@@ -1416,6 +1420,22 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 break;
         }
 
+        auto pangolin_key_handler = [&mono_slam, &frame_ind](int key) -> bool
+        {
+            switch (key)
+            {
+            case kKeySetToGroundTruth:
+                mono_slam.SetStateToGroundTruth(frame_ind);
+                return true;
+            case kKeyDumpInfo:
+                std::ostringstream os;
+                mono_slam.DumpTrackerState(os);
+                LOG(INFO) << os.str();
+                return true;
+            }
+            return false;
+        };
+
         // update UI
         if (FLAGS_ctrl_visualize_during_processing)
         {
@@ -1443,23 +1463,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 {
                     // initialize GUI lazily here, because the handler depends on frame_ind which is not known during initialization
                     if (pangolin_gui->key_pressed_handler_ == nullptr)
-                    {
-                        pangolin_gui->key_pressed_handler_ = [&mono_slam, &frame_ind](int key) -> bool
-                        {
-                            switch (key)
-                            {
-                            case kKeySetToGroundTruth:
-                                mono_slam.SetStateToGroundTruth(frame_ind);
-                                return true;
-                            case kKeyDumpInfo:
-                                std::ostringstream os;
-                                mono_slam.DumpTrackerState(os);
-                                LOG(INFO) << os.str();
-                                return true;
-                            }
-                            return false;
-                        };
-                    }
+                        pangolin_gui->key_pressed_handler_ = pangolin_key_handler;
 
                     key = pangolin_gui->WaitKey(key_of_interest);
                 }
@@ -1480,6 +1484,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 {
                     // in single thread mode the controller executes the tracker and gui code sequentially in the same thread
                     auto break_on = [](int key) { return key == pangolin::PANGO_KEY_ESCAPE; };;
+
+                    // initialize GUI lazily here, because the handler depends on frame_ind which is not known during initialization
+                    if (pangolin_gui->key_pressed_handler_ == nullptr)
+                        pangolin_gui->key_pressed_handler_ = pangolin_key_handler;
 
                     auto t1 = std::chrono::high_resolution_clock::now();
 

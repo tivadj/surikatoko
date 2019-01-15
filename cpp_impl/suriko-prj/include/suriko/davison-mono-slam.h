@@ -334,7 +334,9 @@ private:
 public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
-    Scalar input_noise_std_ = 1;
+
+    // drastically affects performance: it increases uncertainty regions of salient points, hence the search regions, used for salient points correspondence, are increased
+    Scalar input_noise_std_ = 1;  // used to init Qk[6,6], uncertainty in camera dynamic model motion
     Scalar measurm_noise_std_pix_ = 1;
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)

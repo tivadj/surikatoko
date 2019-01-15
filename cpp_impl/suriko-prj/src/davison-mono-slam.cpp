@@ -618,6 +618,11 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     if (stats_logger_ != nullptr) stats_logger_->FinishFrameStats();
 }
 
+/// Only portion of the salient points is observed in each frame. Thus index of a salient point in the estimated variables vector is different from 
+/// ordering of observed salient points (sal_pnt_ind != obs_sal_pnt_ind)
+/// Ordering of observed salient points may be arbitrary.
+void MarkOrderingOfObservedSalientPoints() {}
+
 void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind)
 {
     if (!latest_frame_sal_pnts_.empty())
@@ -687,6 +692,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         size_t obs_sal_pnt_ind = -1;
         for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
         {
+            MarkOrderingOfObservedSalientPoints();
             ++obs_sal_pnt_ind;
 
             const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
@@ -1921,13 +1927,14 @@ void DavisonMonoSlam::Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
     size_t obs_sal_pnt_ind = -1;
     for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
     {
+        MarkOrderingOfObservedSalientPoints();
         ++obs_sal_pnt_ind;
-        const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
         Eigen::Matrix<Scalar, kPixPosComps, Eigen::Dynamic> Hrowblock;
         Hrowblock.resize(Eigen::NoChange, n);
         Hrowblock.setZero();
 
+        const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
         Deriv_Hrowblock_by_estim_vars(sal_pnt, cam_state, cam_orient_wfc, derive_at_pnt, &Hrowblock);
 
         H.middleRows<kPixPosComps>(obs_sal_pnt_ind*kPixPosComps) = Hrowblock;
