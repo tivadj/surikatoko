@@ -354,6 +354,12 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_pos_cov = src_estim_vars_covar.block<kEucl3, kEucl3>(0, 0);
     CheckUncertCovMat(cam_pos_cov);
 
+    // check camera orientation quaternion is normalized
+    CameraStateVars cam_state_vars;
+    LoadCameraStateVarsFromArray(Span(src_estim_vars, kCamStateComps), &cam_state_vars);
+    Scalar q_norm = cam_state_vars.orientation_wfc.norm();
+    SRK_ASSERT(IsClose(1, q_norm, AbsTol(0.001))) << "Camera orientation quaternion must be normalized";
+
     for (SalPntId sal_pnt_id : GetSalientPoints())
     {
         const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
@@ -382,9 +388,9 @@ void DavisonMonoSlam::FillRk(size_t obs_sal_pnt_count, EigenDynMat* Rk) const
     }
 }
 
-void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar> cam_state, gsl::span<Scalar> new_cam_state,
-    const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state,
-    bool normalize_quat) const
+void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar> cam_state,
+    gsl::span<Scalar> new_cam_state,
+    const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state) const
 {
     Eigen::Map<const Eigen::Matrix<Scalar, kCamStateComps, 1>> cam_state_mat(cam_state.data());
 
@@ -421,13 +427,8 @@ void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar
     Eigen::Matrix<Scalar, kQuat4, 1> new_cam_orient_quat_tmp;
     QuatMult(cam_orient_quat, cam_orient_delta_quat, &new_cam_orient_quat_tmp);
 
-    Scalar qorig_len = cam_orient_quat.norm();
-
-    // normalize quaternion (formula A.141)
-    Scalar q_len = new_cam_orient_quat_tmp.norm();
-    if (normalize_quat)
-        new_cam_orient_quat_tmp *= 1/q_len;
-    Scalar q_len2 = new_cam_orient_quat_tmp.norm();
+    Scalar q_len_normed = new_cam_orient_quat_tmp.norm();
+    SRK_ASSERT(IsClose(1, q_len_normed, AbsTol(0.001))) << "quaternion must have unity length";
 
     new_cam_orient_quat = new_cam_orient_quat_tmp;
 
@@ -446,7 +447,7 @@ void DavisonMonoSlam::PredictEstimVars(EigenDynVec* predicted_estim_vars, EigenD
 {
     // estimated vars
     std::array<Scalar, kCamStateComps> new_cam{};
-    PredictCameraMotionByKinematicModel(gsl::make_span<const Scalar>(estim_vars_.data(), kCamStateComps), new_cam);
+    PredictCameraMotionByKinematicModel(Span(estim_vars_, kCamStateComps), new_cam);
 
     //
     Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> F;
@@ -459,7 +460,7 @@ void DavisonMonoSlam::PredictEstimVars(EigenDynVec* predicted_estim_vars, EigenD
     if (debug_F_G_derivatives)
     {
         Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> finite_diff_F;
-        FiniteDiff_cam_state_by_cam_state(gsl::make_span<const Scalar>(estim_vars_.data(), kCamStateComps), kFiniteDiffEpsDebug, &finite_diff_F);
+        FiniteDiff_cam_state_by_cam_state(Span(estim_vars_, kCamStateComps), kFiniteDiffEpsDebug, &finite_diff_F);
 
         Scalar diff1 = (finite_diff_F - F).norm();
 
@@ -690,6 +691,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 
             const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
             SRK_ASSERT(sal_pnt.IsDetected());
+
             Point2 corner_pix = sal_pnt.templ_center_pix_.value();
             zk.middleRows<kPixPosComps>(obs_sal_pnt_ind * kPixPosComps) = corner_pix.Mat();
 
@@ -711,6 +713,11 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         // update estimated variables
 #if defined(SRK_DEBUG)
         EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
+        Eigen::Map<Eigen::Matrix<Scalar, kQuat4, 1>> cam_quat(estim_vars_delta.data() + kEucl3);
+        Scalar cam_quat_len = cam_quat.norm();
+        bool change = cam_quat_len > 0.1;
+        if (change)
+            VLOG(5) << "estim_vars cam_q_len=" << cam_quat_len;
         estim_vars_.noalias() += estim_vars_delta;
 #else
         estim_vars_.noalias() += Knew * (zk - projected_sal_pnts);
@@ -731,6 +738,8 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         //stacked_update_cache_.tmp1_.noalias() = Knew * Hk;
         //stacked_update_cache_.tmp1_ -= ident;
         //estim_vars_covar_.noalias() = -stacked_update_cache_.tmp1_ * Pprev;
+
+        NormalizeCameraOrientationQuaternionAndCovariances(&estim_vars_, &estim_vars_covar_);
 
         if (fix_estim_vars_covar_symmetry_)
             FixSymmetricMat(&estim_vars_covar_);
@@ -766,6 +775,8 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         std::swap(estim_vars_, predicted_estim_vars_);
         std::swap(estim_vars_covar_, predicted_estim_vars_covar_);
     }
+
+    OnEstimVarsChanged(frame_ind);
 }
 
 void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
@@ -868,6 +879,9 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
             estim_vars_.noalias() += estim_vars_delta;
             estim_vars_covar_.noalias() -= estim_vars_covar_delta;
         }
+
+        NormalizeCameraOrientationQuaternionAndCovariances(&estim_vars_, &estim_vars_covar_);
+
         if (fix_estim_vars_covar_symmetry_)
             FixSymmetricMat(&estim_vars_covar_);
 
@@ -888,6 +902,8 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
     {
         CheckCameraAndSalientPointsCovs(estim_vars_, estim_vars_covar_);
     }
+
+    OnEstimVarsChanged(frame_ind);
 }
 
 void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind)
@@ -1000,6 +1016,8 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
             }
         }
 
+        NormalizeCameraOrientationQuaternionAndCovariances(&estim_vars_, &estim_vars_covar_);
+
         if (fix_estim_vars_covar_symmetry_)
             FixSymmetricMat(&estim_vars_covar_);
 
@@ -1020,6 +1038,72 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
     {
         CheckCameraAndSalientPointsCovs(estim_vars_, estim_vars_covar_);
     }
+    
+    OnEstimVarsChanged(frame_ind);
+}
+
+void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar)
+{
+    CameraStateVars cam_state_vars;
+    LoadCameraStateVarsFromArray(Span(*src_estim_vars, kCamStateComps), &cam_state_vars);
+
+    auto q = cam_state_vars.orientation_wfc; // cam_orient_quat
+    Scalar q_len = q.norm();
+
+    static bool always_normalize = false;
+    bool do_normalize = always_normalize || !IsClose(1, q_len);
+    if (!do_normalize)
+        return;
+
+    // normalize quaternion (formula A.141)
+    Eigen::Matrix<Scalar, kQuat4, 1> new_cam_orient_quat = q / q_len;
+    auto& est_vars = *src_estim_vars;
+    DependsOnCameraPosPackOrder();
+    est_vars[kEucl3 + 0] = new_cam_orient_quat[0];
+    est_vars[kEucl3 + 1] = new_cam_orient_quat[1];
+    est_vars[kEucl3 + 2] = new_cam_orient_quat[2];
+    est_vars[kEucl3 + 3] = new_cam_orient_quat[3];
+
+    // normalize quaternion
+    Eigen::Matrix<Scalar, kQuat4, kQuat4> dq4x4;
+    using suriko::Sqr;
+    dq4x4(0, 0) = Sqr(q[1]) + Sqr(q[2]) + Sqr(q[3]);
+    dq4x4(1, 1) = Sqr(q[0]) + Sqr(q[2]) + Sqr(q[3]);
+    dq4x4(2, 2) = Sqr(q[0]) + Sqr(q[1]) + Sqr(q[3]);
+    dq4x4(3, 3) = Sqr(q[0]) + Sqr(q[1]) + Sqr(q[2]);
+    dq4x4(0, 1) = dq4x4(1, 0) = -q[0] * q[1];
+    dq4x4(0, 2) = dq4x4(2, 0) = -q[0] * q[2];
+    dq4x4(0, 3) = dq4x4(3, 0) = -q[0] * q[3];
+    dq4x4(1, 2) = dq4x4(2, 1) = -q[1] * q[2];
+    dq4x4(1, 3) = dq4x4(3, 1) = -q[1] * q[3];
+    dq4x4(2, 3) = dq4x4(3, 2) = -q[2] * q[3];
+
+    Scalar q_mult = std::pow(Sqr(q[0]) + Sqr(q[1]) + Sqr(q[2]) + Sqr(q[3]), (Scalar)-1.5);
+    dq4x4 *= q_mult;
+
+    auto& est_vars_covar = *src_estim_vars_covar;
+
+    auto q_up = (est_vars_covar.block<kEucl3, kQuat4>(0, kEucl3) * dq4x4.transpose()).eval();
+
+    auto q_down_size = est_vars_covar.rows() - kEucl3 - kQuat4;
+    auto q_down = est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4) * dq4x4.transpose();
+
+    est_vars_covar.block<kEucl3, kQuat4>(0, kEucl3) = q_up;  // to the up
+    est_vars_covar.block<kQuat4, kEucl3>(kEucl3, 0) = q_up.transpose();  // to the left
+
+    // the central block is not mutated yet
+    est_vars_covar.block<kQuat4, kQuat4>(kEucl3, kEucl3) =
+        dq4x4 *
+        est_vars_covar.block<kQuat4, kQuat4>(kEucl3, kEucl3) *
+        dq4x4.transpose();
+
+    est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4) = q_down;  // to the down
+    est_vars_covar.block<kQuat4, Eigen::Dynamic>(kEucl3, kEucl3 + kQuat4, kQuat4, q_down_size) = q_down.transpose();  // to the right
+}
+
+void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
+{
+    
 }
 
 void DavisonMonoSlam::MakePredictions()
@@ -1838,12 +1922,12 @@ void DavisonMonoSlam::Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
     for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
     {
         ++obs_sal_pnt_ind;
+        const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
         Eigen::Matrix<Scalar, kPixPosComps, Eigen::Dynamic> Hrowblock;
         Hrowblock.resize(Eigen::NoChange, n);
         Hrowblock.setZero();
 
-        const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
         Deriv_Hrowblock_by_estim_vars(sal_pnt, cam_state, cam_orient_wfc, derive_at_pnt, &Hrowblock);
 
         H.middleRows<kPixPosComps>(obs_sal_pnt_ind*kPixPosComps) = Hrowblock;
@@ -1968,10 +2052,8 @@ void DavisonMonoSlam::FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> 
         // note, we do  not normalize quaternion after applying motion model because the finite difference increment which
         // has been applied to the state vector, breaks unity of quaternions. Then normalization of a quaternion propagates
         // modifications to other it's components. This diverges the finite difference result from close form of a derivative.
-        bool norm_quat = false;
-
         Eigen::Matrix<Scalar, kCamStateComps, 1> value_right;
-        PredictCameraMotionByKinematicModel(cam_right_array, Span(value_right), nullptr, norm_quat);
+        PredictCameraMotionByKinematicModel(cam_right_array, Span(value_right), nullptr);
 
         //
         mut_state[var_ind] -= 2 * finite_diff_eps;
@@ -1981,7 +2063,7 @@ void DavisonMonoSlam::FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> 
         LoadCameraStateVarsFromArray(cam_left_array, &cam_left);
 
         Eigen::Matrix<Scalar, kCamStateComps, 1> value_left;
-        PredictCameraMotionByKinematicModel(cam_left_array, Span(value_left), nullptr, norm_quat);
+        PredictCameraMotionByKinematicModel(cam_left_array,  Span(value_left), nullptr);
 
         Eigen::Matrix<Scalar, kCamStateComps, 1> col_diff = value_right -value_left;
         Eigen::Matrix<Scalar, kCamStateComps, 1> col = col_diff / (2 * finite_diff_eps);
@@ -2023,15 +2105,14 @@ void DavisonMonoSlam::FiniteDiff_cam_state_by_input_noise(Scalar finite_diff_eps
         NoiseVec mut_state = Eigen::Map<const NoiseVec>(noise.data());
         mut_state[var_ind] += finite_diff_eps;
 
-        bool norm_quat = false;
         Eigen::Matrix<Scalar, kCamStateComps, 1> value_right;
-        PredictCameraMotionByKinematicModel(cam_state_array, Span(value_right), &mut_state, norm_quat);
+        PredictCameraMotionByKinematicModel(cam_state_array, Span(value_right), &mut_state);
 
         //
         mut_state[var_ind] -= 2 * finite_diff_eps;
 
         Eigen::Matrix<Scalar, kCamStateComps, 1> value_left;
-        PredictCameraMotionByKinematicModel(cam_state_array, Span(value_left), &mut_state, norm_quat);
+        PredictCameraMotionByKinematicModel(cam_state_array, Span(value_left), &mut_state);
 
         Eigen::Matrix<Scalar, kCamStateComps, 1> col_diff = value_right - value_left;
         Eigen::Matrix<Scalar, kCamStateComps, 1> col = col_diff / (2 * finite_diff_eps);
@@ -2261,7 +2342,23 @@ CameraStateVars DavisonMonoSlam::GetCameraStateVars(FilterStageType filter_step)
     return result;
 }
 
+CameraStateVars DavisonMonoSlam::GetCameraStateVars(FilterStageType filter_step) const
+{
+    const EigenDynVec* src_estim_vars;
+    const EigenDynMat* src_estim_vars_covar;
+    std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterState(filter_step);
+
+    CameraStateVars result;
+    LoadCameraStateVarsFromArray(gsl::make_span<const Scalar>(src_estim_vars->data(), kCamStateComps), &result);
+    return result;
+}
+
 CameraStateVars DavisonMonoSlam::GetCameraEstimatedVars()
+{
+    return GetCameraStateVars(FilterStageType::Estimated);
+}
+
+CameraStateVars DavisonMonoSlam::GetCameraEstimatedVars() const
 {
     return GetCameraStateVars(FilterStageType::Estimated);
 }
@@ -2513,6 +2610,19 @@ void DavisonMonoSlam::CheckSalientPoint(
 
 auto DavisonMonoSlam::GetFilterState(FilterStageType filter_stage)
 -> std::tuple<EigenDynVec*, EigenDynMat*>
+{
+    switch (filter_stage)
+    {
+    case FilterStageType::Estimated:
+        return std::make_tuple(&estim_vars_, &estim_vars_covar_);
+    case FilterStageType::Predicted:
+        return std::make_tuple(&predicted_estim_vars_, &predicted_estim_vars_covar_);
+    }
+    AssertFalse();
+}
+
+auto DavisonMonoSlam::GetFilterState(FilterStageType filter_stage) const
+-> std::tuple<const EigenDynVec*, const EigenDynMat*>
 {
     switch (filter_stage)
     {

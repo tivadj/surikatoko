@@ -415,6 +415,7 @@ public:
     size_t EstimatedVarsCount() const;
 
     CameraStateVars GetCameraEstimatedVars();
+    CameraStateVars GetCameraEstimatedVars() const;
     CameraStateVars GetCameraPredictedVars();
 
     void GetCameraEstimatedPosAndOrientationWithUncertainty(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
@@ -489,8 +490,10 @@ private:
         const EigenDynMat& src_estim_vars_covar) const;
 
     auto GetFilterState(FilterStageType filter_stage) -> std::tuple<EigenDynVec*, EigenDynMat*>;
+    auto GetFilterState(FilterStageType filter_stage) const -> std::tuple<const EigenDynVec*, const EigenDynMat*>;
 
     CameraStateVars GetCameraStateVars(FilterStageType filter_stage);
+    CameraStateVars GetCameraStateVars(FilterStageType filter_stage) const;
 
     void GetCameraPosAndOrientationWithUncertainty(FilterStageType filter_stage,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
@@ -505,13 +508,14 @@ private:
     void FillRk2x2(Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* Rk) const;
 
     void PredictCameraMotionByKinematicModel(gsl::span<const Scalar> cam_state, gsl::span<Scalar> new_cam_state,
-        const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state = nullptr,
-        bool normalize_quat = true) const;
+        const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state = nullptr) const;
     void PredictEstimVars(EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const;
 
     void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind);
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind);
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
+    void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
+    void OnEstimVarsChanged(size_t frame_ind);
     void MakePredictions();
 
     // Updates the centers of detected patches.
