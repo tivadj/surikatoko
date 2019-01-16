@@ -790,23 +790,33 @@ std::optional<int> SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnU
         // do prolonged ui loop
         //LOG(INFO) << "UI loops";
 
-        got_user_input_ = false;
+        //got_user_input_ = false;
 
         RenderFrame();
         pangolin::FinishFrame(); // also processes user input
 
         TreatAppCloseAsEscape();
 
+        if (key_.has_value())
+        {
+            if (break_on(key_.value()))
+                break;
+            if (key_pressed_handler_ != nullptr)
+            {
+                bool processed = key_pressed_handler_(key_.value());
+                if (processed)
+                    key_ = std::nullopt;
+            }
+        }
+        
         if (got_user_input_)
         {
-            if (key_.has_value() && break_on(key_.value()))
-                break;
-
             //LOG(INFO) << "UI is prolonged";
 
             // continue execution of UI loop for couple of seconds
             auto now = std::chrono::steady_clock::now();
             prolonged_ui_loop_end_time = now + ui_loop_prolong_period_;
+            got_user_input_ = false;
         }
 
         std::this_thread::sleep_for(ui_tight_loop_relaxing_delay_);
