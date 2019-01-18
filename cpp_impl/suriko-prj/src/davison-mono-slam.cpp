@@ -2131,14 +2131,6 @@ void DavisonMonoSlam::Deriv_q3_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4,
 {
     auto& m = *result;
 
-    Eigen::Matrix<Scalar, kAngVelocComps, 1> w = EstimVarsCamAngularVelocity();
-    Scalar w_norm = w.norm();
-    if (IsClose(0, w_norm))
-    {
-        m.setZero();
-        return;
-    }
-
     Eigen::Matrix<Scalar, kQuat4, 1> q2 = EstimVarsCamQuat();
 
     // formula A.14
@@ -2149,31 +2141,44 @@ void DavisonMonoSlam::Deriv_q3_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4,
         q2[2], q2[3], q2[0], -q2[1],
         q2[3], -q2[2], q2[1], q2[0];
 
-    Eigen::Matrix<Scalar, kQuat4, kAngVelocComps> q1_by_wk;
+    //
+    Eigen::Matrix<Scalar, kQuat4, kAngVelocComps> q1_by_wk{};
 
-    // top row
-    for (size_t i = 0; i<kAngVelocComps; ++i)
+    Eigen::Matrix<Scalar, kAngVelocComps, 1> w = EstimVarsCamAngularVelocity();
+    Scalar w_norm = w.norm();
+    if (IsClose(0, w_norm))
     {
-        q1_by_wk(0, i) = -0.5*deltaT*w[i] / w_norm * std::sin(0.5*w_norm*deltaT);
+        q1_by_wk.setZero();
+        q1_by_wk(1, 0) = deltaT / 2;
+        q1_by_wk(2, 1) = deltaT / 2;
+        q1_by_wk(3, 2) = deltaT / 2;
     }
-
-    Scalar c = std::cos(0.5*w_norm*deltaT);
-    Scalar s = std::sin(0.5*w_norm*deltaT);
-
-    // next 3 rows
-    for (size_t i = 0; i<kAngVelocComps; ++i)
-        for (size_t j = 0; j < kAngVelocComps; ++j)
+    else
+    {
+        // top row
+        for (size_t i = 0; i < kAngVelocComps; ++i)
         {
-            if (i == j) // on 'diagonal'
-            {
-                Scalar rat = w[i] / w_norm;
-                q1_by_wk(1 + i, i) = 0.5*deltaT*rat*rat*c + (1 / w_norm)*s*(1 - rat * rat);
-            }
-            else // off 'diagonal'
-            {
-                q1_by_wk(1 + i, j) = w[i] * w[j] / (w_norm*w_norm)*(0.5*deltaT*c - (1 / w_norm)*s);
-            }
+            q1_by_wk(0, i) = -0.5*deltaT*w[i] / w_norm * std::sin(0.5*w_norm*deltaT);
         }
+
+        Scalar c = std::cos(0.5*w_norm*deltaT);
+        Scalar s = std::sin(0.5*w_norm*deltaT);
+
+        // next 3 rows
+        for (size_t i = 0; i < kAngVelocComps; ++i)
+            for (size_t j = 0; j < kAngVelocComps; ++j)
+            {
+                if (i == j) // on 'diagonal'
+                {
+                    Scalar rat = w[i] / w_norm;
+                    q1_by_wk(1 + i, i) = 0.5*deltaT*rat*rat*c + (1 / w_norm)*s*(1 - rat * rat);
+                }
+                else // off 'diagonal'
+                {
+                    q1_by_wk(1 + i, j) = w[i] * w[j] / (w_norm*w_norm)*(0.5*deltaT*c - (1 / w_norm)*s);
+                }
+            }
+    }
     // A.13
     m = q3_by_q1 * q1_by_wk;
 }
