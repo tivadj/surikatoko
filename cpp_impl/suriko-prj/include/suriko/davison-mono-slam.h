@@ -341,6 +341,8 @@ public:
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
     Scalar sal_pnt_small_std_ = 0.001;
+    Scalar cam_pos_std_m_ = 0; // in meters
+    Scalar cam_orient_q_comp_std_ = 0;
     
     // width and height of a patch template of a salient point
     // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
@@ -386,6 +388,7 @@ private:
         EigenDynMat Knew; // H*P, [13+N*6, 13+N*6]
         EigenDynMat estim_vars_covar_new; // P[13+N*6, 13+N*6]
         EigenDynMat K_S; // K*S, [13+N*6, 2m]
+        EigenDynMat K_H_minus_I; // K*H, [13+N*6, 13+N*6]
     } stacked_update_cache_;
     struct
     {
@@ -656,6 +659,7 @@ private:
 
     // derivative of qk+1 (next step camera orientation) by wk (camera orientation)
     void Deriv_q3_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4, kEucl3>* result) const;
+    void Deriv_q1_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4, kEucl3>* result) const;
     
     static void CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azimuth_theta, Scalar elevation_phi, Scalar* hx, Scalar* hy, Scalar* hz);
     

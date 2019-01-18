@@ -695,9 +695,8 @@ void SceneVisualizationPangolinGui::RenderFrame()
     // update ui
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // support frame_ind=-1, when no frames available, the scene may be rendered too
     ptrdiff_t frame_ind = ui_params.get_observable_frame_ind_fun();
-    if (frame_ind < 0)
-        return;
 
     *a_frame_ind_ = frame_ind;
 

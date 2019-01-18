@@ -935,6 +935,8 @@ DEFINE_double(s4_1_up_z, 0.0, "");
 DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
 DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
 DEFINE_double(kalman_estim_var_init_std, 0.001, "");
+DEFINE_double(kalman_cam_pos_std_m, 0, "");
+DEFINE_double(kalman_cam_orient_q_comp_std, 0, "");
 DEFINE_double(kalman_input_noise_std, 0.08, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist_std, 1, "");
@@ -1153,6 +1155,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
 
 #if DEMO_DATA_SOURCE_TYPE == kVirtualScene
+    mono_slam.cam_pos_std_m_ = FLAGS_kalman_cam_pos_std_m;
+    mono_slam.cam_orient_q_comp_std_ = FLAGS_kalman_cam_orient_q_comp_std;
     mono_slam.sal_pnt_small_std_ = FLAGS_kalman_estim_var_init_std;
     mono_slam.SetCamera(SE3Transform::NoTransform(), FLAGS_kalman_estim_var_init_std);
 #elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
@@ -1514,9 +1518,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             frame_OpenCV_gui_time.value_or(zero_time) +
             frame_Pangolin_gui_time.value_or(zero_time);
         VLOG(4) << "done f=" << frame_ind
-            << " fps=" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f)
+            << " core=" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f) << "fps"
             << "(core+gui=" << 1 / total_time.count() << "fps)"
-            << " t=" << std::chrono::duration_cast<std::chrono::milliseconds>(frame_process_time.value_or(zero_time)).count() <<"ms"
+            << " core=" << std::chrono::duration_cast<std::chrono::milliseconds>(frame_process_time.value_or(zero_time)).count() <<"ms"
             << "(core+gui=" << std::chrono::duration_cast<std::chrono::milliseconds>(total_time).count() <<"ms)"
             << " #SP=" << mono_slam.SalientPointsCount();
     } // for each frame

@@ -7,6 +7,7 @@
 # input=sequence of images
 #--scene_imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM/
 --scene_imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM_Decimated/
+--virtual_scenario=3
 
 # Controller
 --ctrl_multi_threaded_mode=false
@@ -45,12 +46,12 @@
 --viewer_steps_per_side_y=10
 
 # virtual scene
-#--camera_image_width=800
-#--camera_image_height=600
-#--camera_princip_point_x=400
-#--camera_princip_point_y=300
-#--camera_focal_length_pix_x=880.282
-#--camera_focal_length_pix_y=661.376
+#--camera_image_width=320
+#--camera_image_height=240
+#--camera_princip_point_x=160
+#--camera_princip_point_y=120
+#--camera_focal_length_pix_x=195
+#--camera_focal_length_pix_y=195
 
 # Davison's FireWire Camera used to record TestSeqMonoSLAM images
 --camera_image_width=320
@@ -60,6 +61,7 @@
 --camera_focal_length_pix_x=195
 --camera_focal_length_pix_y=195
 
+# only in image_seq_dir
 --camera_look_from_x=2
 --camera_look_from_y=-2
 --camera_look_from_z=2
@@ -71,13 +73,15 @@
 --camera_up_z=0
 
 # camera pos initial std
---kalman_estim_var_init_std=0.005
+--kalman_estim_var_init_std=0
+--kalman_cam_pos_std_m=0
+--kalman_cam_orient_q_comp_std=0
+# for TestSeqMonoSLAM: 0.1
 --kalman_input_noise_std=0.1
 --kalman_measurm_noise_std_pix=1
 --kalman_sal_pnt_init_inv_dist=1
 --kalman_sal_pnt_init_inv_dist_std=5
 --kalman_fake_sal_pnt_init_inv_dist=true
---kalman_fake_localization=false
 --kalman_ellipsoid_cut_thr=0.05
 # 1=all,2=one observation, 3=one component of one observation
 --kalman_update_impl=1
@@ -90,7 +94,7 @@
 --kalman_stop_on_sal_pnt_moved_too_far=false
 --kalman_debug_estim_vars_cov=true
 --kalman_debug_predicted_vars_cov=true
---kalman_debug_max_sal_pnt_count=4
+--kalman_debug_max_sal_pnt_count=-1
 
 
 # Visualizer
