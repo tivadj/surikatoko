@@ -39,9 +39,6 @@
 
 #include "demo-davison-mono-slam-ui.h"
 
-// PROVIDE DATA SOURCE FOR DEMO
-#define DEMO_DATA_SOURCE_TYPE kVirtualScene
-
 namespace suriko_demos_davison_mono_slam
 {
 using namespace std;
@@ -51,11 +48,7 @@ using namespace suriko::internals;
 using namespace suriko::virt_world;
 
 // Specify data source for demo: virtual scene data or sequence of images in a directory.
-#define kVirtualScene 0
-#define kImageSeqDir 1
-//static constexpr int kVirtualScene = 0;
-//static constexpr int kImageSeqDir = 1;
-//enum class DemoDataSource { kVirtualScene, kImageSeqDir };
+enum class DemoDataSource { kVirtualScene, kImageSeqDir };
 
 auto DemoGetSalPntId(const SalientPointFragment& fragment) -> DavisonMonoSlam::SalPntId
 {
@@ -878,9 +871,9 @@ static bool ValidateDirectoryExists(const char *flagname, const std::string &val
     return false;
 }
 
-//static constexpr char* kVirtualCStr = "virtual";
-//static constexpr char* kImageSeqDirCStr = "imageseqdir";
-//DEFINE_string(scene_source, kVirtualCStr, "{virtual,imageseqdir}");
+static constexpr char* kVirtualSceneCStr = "virtscene";
+static constexpr char* kImageSeqDirCStr = "imageseqdir";
+DEFINE_string(scene_source, kVirtualSceneCStr, "{virtual,imageseqdir}");
 DEFINE_string(scene_imageseq_dir, "", "Path to directory with image files");
 DEFINE_validator(scene_imageseq_dir, &ValidateDirectoryExists);
 DEFINE_int32(virtual_scenario, 1, "");
@@ -991,103 +984,111 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cv::theRNG().state = 123; // specify seed for OpenCV randomness, so that debugging always goes the same execution path
 #endif
 
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
-    LOG(INFO) << "world_noise_R_std=" << FLAGS_world_noise_R_std;
+    DemoDataSource demo_data_source = DemoDataSource::kVirtualScene;
+    if (FLAGS_scene_source == std::string(kImageSeqDirCStr))
+        demo_data_source = DemoDataSource::kImageSeqDir;
 
     //
-    bool corrupt_salient_points_with_noise = FLAGS_world_noise_x3D_std > 0;
-    bool corrupt_cam_orient_with_noise = FLAGS_world_noise_R_std > 0;
+    FragmentMap entire_map;
     std::vector<SE3Transform> gt_cam_orient_cfw; // ground truth camera orientation transforming into camera from world
 
-    WorldBounds wb{};
-    wb.x_min = FLAGS_world_xmin;
-    wb.x_max = FLAGS_world_xmax;
-    wb.y_min = FLAGS_world_ymin;
-    wb.y_max = FLAGS_world_ymax;
-    wb.z_min = FLAGS_world_zmin;
-    wb.z_max = FLAGS_world_zmax;
-    std::array<Scalar, 3> cell_size = { FLAGS_world_cell_size_x, FLAGS_world_cell_size_y, FLAGS_world_cell_size_z };
-
-    std::random_device rd;  //Will be used to obtain a seed for the random number engine
-    std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
-    gen.seed(1234);
-
-    std::unique_ptr<std::normal_distribution<Scalar>> x3D_noise_dis;
-    if (corrupt_salient_points_with_noise)
-        x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0, FLAGS_world_noise_x3D_std);
-
-    FragmentMap entire_map;
-    entire_map.SetFragmentIdOffsetInternal(1000'000);
-    GenerateWorldPoints(wb, cell_size, corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
-    LOG(INFO) << "points_count=" << entire_map.SalientPointsCount();
-
-    suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
-    suriko::Point3 viewer_center_offset(FLAGS_viewer_center_offset_x, FLAGS_viewer_center_offset_y, FLAGS_viewer_center_offset_z);
-    Eigen::Matrix<Scalar, 3, 1> up(FLAGS_viewer_up_x, FLAGS_viewer_up_y, FLAGS_viewer_up_z);
-
-    if (FLAGS_virtual_scenario == 1)
-        GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y,
-            viewer_eye_offset, viewer_center_offset, up, &gt_cam_orient_cfw);
-    else if (FLAGS_virtual_scenario == 2)
-        GenerateCameraShotsRightAndLeft(wb, viewer_eye_offset, viewer_center_offset, up,
-            FLAGS_s2_max_deviation,
-            FLAGS_s2_num_steps,
-            &gt_cam_orient_cfw);
-    else if (FLAGS_virtual_scenario == 3)
+    if (demo_data_source == DemoDataSource::kVirtualScene)
     {
-        auto viewer_eye = viewer_eye_offset;
-        auto center = viewer_center_offset;
-        GenerateCameraShotsOscilateRightAndLeft(wb, viewer_eye, center, up,
-            FLAGS_s3_max_deviation,
-            FLAGS_s3_periods_count,
-            FLAGS_s3_shots_per_period,
-            &gt_cam_orient_cfw);
-    }
-    else if (FLAGS_virtual_scenario == 4)
-    {
-        std::vector<LookAtComponents> cam_poses;
-        cam_poses.push_back(LookAtComponents{
-            suriko::Point3{FLAGS_s4_0_eye_x,FLAGS_s4_0_eye_y,FLAGS_s4_0_eye_z},
-            suriko::Point3{FLAGS_s4_0_center_x,FLAGS_s4_0_center_y,FLAGS_s4_0_center_z},
-            suriko::Point3{FLAGS_s4_0_up_x,FLAGS_s4_0_up_y,FLAGS_s4_0_up_z}
-        });
-        cam_poses.push_back(LookAtComponents{
-            suriko::Point3{FLAGS_s4_1_eye_x,FLAGS_s4_1_eye_y,FLAGS_s4_1_eye_z},
-            suriko::Point3{FLAGS_s4_1_center_x,FLAGS_s4_1_center_y,FLAGS_s4_1_center_z},
-            suriko::Point3{FLAGS_s4_1_up_x,FLAGS_s4_1_up_y,FLAGS_s4_1_up_z}
-        });
-        GenerateCameraShots3DPath(wb, cam_poses, FLAGS_s4_periods_count, &gt_cam_orient_cfw);
-    }
+        LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
+        LOG(INFO) << "world_noise_R_std=" << FLAGS_world_noise_R_std;
 
-    std::vector<SE3Transform> gt_cam_orient_wfc;
-    std::transform(gt_cam_orient_cfw.begin(), gt_cam_orient_cfw.end(), std::back_inserter(gt_cam_orient_wfc), [](auto& t) { return SE3Inv(t); });
+        //
+        bool corrupt_salient_points_with_noise = FLAGS_world_noise_x3D_std > 0;
+        bool corrupt_cam_orient_with_noise = FLAGS_world_noise_R_std > 0;
 
-    if (corrupt_cam_orient_with_noise)
-    {
-        std::normal_distribution<Scalar> cam_orient_noise_dis(0, FLAGS_world_noise_R_std);
-        for (SE3Transform& cam_orient : gt_cam_orient_cfw)
+        WorldBounds wb{};
+        wb.x_min = FLAGS_world_xmin;
+        wb.x_max = FLAGS_world_xmax;
+        wb.y_min = FLAGS_world_ymin;
+        wb.y_max = FLAGS_world_ymax;
+        wb.z_min = FLAGS_world_zmin;
+        wb.z_max = FLAGS_world_zmax;
+        std::array<Scalar, 3> cell_size = { FLAGS_world_cell_size_x, FLAGS_world_cell_size_y, FLAGS_world_cell_size_z };
+
+        std::random_device rd;  //Will be used to obtain a seed for the random number engine
+        std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
+        gen.seed(1234);
+
+        std::unique_ptr<std::normal_distribution<Scalar>> x3D_noise_dis;
+        if (corrupt_salient_points_with_noise)
+            x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0, FLAGS_world_noise_x3D_std);
+
+        //
+        entire_map.SetFragmentIdOffsetInternal(1000'000);
+        GenerateWorldPoints(wb, cell_size, corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
+        LOG(INFO) << "points_count=" << entire_map.SalientPointsCount();
+
+        suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
+        suriko::Point3 viewer_center_offset(FLAGS_viewer_center_offset_x, FLAGS_viewer_center_offset_y, FLAGS_viewer_center_offset_z);
+        Eigen::Matrix<Scalar, 3, 1> up(FLAGS_viewer_up_x, FLAGS_viewer_up_y, FLAGS_viewer_up_z);
+
+        if (FLAGS_virtual_scenario == 1)
+            GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y,
+                viewer_eye_offset, viewer_center_offset, up, &gt_cam_orient_cfw);
+        else if (FLAGS_virtual_scenario == 2)
+            GenerateCameraShotsRightAndLeft(wb, viewer_eye_offset, viewer_center_offset, up,
+                FLAGS_s2_max_deviation,
+                FLAGS_s2_num_steps,
+                &gt_cam_orient_cfw);
+        else if (FLAGS_virtual_scenario == 3)
         {
-            Eigen::Matrix<Scalar, 3, 1> dir;
-            if (AxisAngleFromRotMat(cam_orient.R, &dir))
-            {
-                Scalar d1 = cam_orient_noise_dis(gen);
-                Scalar d2 = cam_orient_noise_dis(gen);
-                Scalar d3 = cam_orient_noise_dis(gen);
-                dir[0] += d1;
-                dir[1] += d2;
-                dir[2] += d3;
+            auto viewer_eye = viewer_eye_offset;
+            auto center = viewer_center_offset;
+            GenerateCameraShotsOscilateRightAndLeft(wb, viewer_eye, center, up,
+                FLAGS_s3_max_deviation,
+                FLAGS_s3_periods_count,
+                FLAGS_s3_shots_per_period,
+                &gt_cam_orient_cfw);
+        }
+        else if (FLAGS_virtual_scenario == 4)
+        {
+            std::vector<LookAtComponents> cam_poses;
+            cam_poses.push_back(LookAtComponents{
+                suriko::Point3{FLAGS_s4_0_eye_x,FLAGS_s4_0_eye_y,FLAGS_s4_0_eye_z},
+                suriko::Point3{FLAGS_s4_0_center_x,FLAGS_s4_0_center_y,FLAGS_s4_0_center_z},
+                suriko::Point3{FLAGS_s4_0_up_x,FLAGS_s4_0_up_y,FLAGS_s4_0_up_z}
+                });
+            cam_poses.push_back(LookAtComponents{
+                suriko::Point3{FLAGS_s4_1_eye_x,FLAGS_s4_1_eye_y,FLAGS_s4_1_eye_z},
+                suriko::Point3{FLAGS_s4_1_center_x,FLAGS_s4_1_center_y,FLAGS_s4_1_center_z},
+                suriko::Point3{FLAGS_s4_1_up_x,FLAGS_s4_1_up_y,FLAGS_s4_1_up_z}
+                });
+            GenerateCameraShots3DPath(wb, cam_poses, FLAGS_s4_periods_count, &gt_cam_orient_cfw);
+        }
 
-                Eigen::Matrix<Scalar, 3, 3> newR;
-                if (RotMatFromAxisAngle(dir, &newR))
-                    cam_orient.R = newR;
+        std::vector<SE3Transform> gt_cam_orient_wfc;
+        std::transform(gt_cam_orient_cfw.begin(), gt_cam_orient_cfw.end(), std::back_inserter(gt_cam_orient_wfc), [](auto& t) { return SE3Inv(t); });
+
+        if (corrupt_cam_orient_with_noise)
+        {
+            std::normal_distribution<Scalar> cam_orient_noise_dis(0, FLAGS_world_noise_R_std);
+            for (SE3Transform& cam_orient : gt_cam_orient_cfw)
+            {
+                Eigen::Matrix<Scalar, 3, 1> dir;
+                if (AxisAngleFromRotMat(cam_orient.R, &dir))
+                {
+                    Scalar d1 = cam_orient_noise_dis(gen);
+                    Scalar d2 = cam_orient_noise_dis(gen);
+                    Scalar d3 = cam_orient_noise_dis(gen);
+                    dir[0] += d1;
+                    dir[1] += d2;
+                    dir[2] += d3;
+
+                    Eigen::Matrix<Scalar, 3, 3> newR;
+                    if (RotMatFromAxisAngle(dir, &newR))
+                        cam_orient.R = newR;
+                }
             }
         }
     }
 
     size_t frames_count = gt_cam_orient_cfw.size();
     LOG(INFO) << "frames_count=" << frames_count;
-#endif
 
     // focal_len_pix = focal_len_mm / pixel_size_mm
     std::array<Scalar, 2> foc_len_pix = { FLAGS_camera_focal_length_pix_x, FLAGS_camera_focal_length_pix_y };
@@ -1127,14 +1128,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     // the origin of a tracker (sometimes cam0)
     SE3Transform tracker_origin_from_world;
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    // tracker coordinate system = cam0
-    tracker_origin_from_world = gt_cam_orient_cfw[0];
-#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
-    // tracker coordinates system = world coordinate system
-    tracker_origin_from_world.R.setIdentity();
-    tracker_origin_from_world.T.setZero();
-#endif
+    if (demo_data_source == DemoDataSource::kVirtualScene)
+    {
+        // tracker coordinate system = cam0
+        tracker_origin_from_world = gt_cam_orient_cfw[0];
+    }
+    else if (demo_data_source == DemoDataSource::kImageSeqDir)
+    {
+        // tracker coordinates system = world coordinate system
+        tracker_origin_from_world.R.setIdentity();
+        tracker_origin_from_world.T.setZero();
+    }
 
     DavisonMonoSlam::DebugPathEnum debug_path = DavisonMonoSlam::DebugPathEnum::DebugNone;
     if (FLAGS_kalman_debug_estim_vars_cov)
@@ -1154,63 +1158,67 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.measurm_noise_std_pix_ = FLAGS_kalman_measurm_noise_std_pix;
     mono_slam.sal_pnt_patch_size_ = { FLAGS_kalman_templ_width, FLAGS_kalman_templ_width };
 
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    mono_slam.cam_pos_std_m_ = FLAGS_kalman_cam_pos_std_m;
-    mono_slam.cam_orient_q_comp_std_ = FLAGS_kalman_cam_orient_q_comp_std;
-    mono_slam.sal_pnt_small_std_ = FLAGS_kalman_estim_var_init_std;
-    mono_slam.SetCamera(SE3Transform::NoTransform(), FLAGS_kalman_estim_var_init_std);
-#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
-    SE3Transform cam_cfw = SE3Inv(LookAtLufWfc(
-        { (Scalar)FLAGS_camera_look_from_x, (Scalar)FLAGS_camera_look_from_y, (Scalar)FLAGS_camera_look_from_z },
-        { (Scalar)FLAGS_camera_look_to_x, (Scalar)FLAGS_camera_look_to_y, (Scalar)FLAGS_camera_look_to_z },
-        { (Scalar)FLAGS_camera_up_x, (Scalar)FLAGS_camera_up_y, (Scalar)FLAGS_camera_up_z }));
-    mono_slam.SetCamera(cam_cfw, FLAGS_kalman_estim_var_init_std);
-#endif
+    if (demo_data_source == DemoDataSource::kVirtualScene)
+    {
+        mono_slam.cam_pos_std_m_ = FLAGS_kalman_cam_pos_std_m;
+        mono_slam.cam_orient_q_comp_std_ = FLAGS_kalman_cam_orient_q_comp_std;
+        mono_slam.sal_pnt_small_std_ = FLAGS_kalman_estim_var_init_std;
+        mono_slam.SetCamera(SE3Transform::NoTransform(), FLAGS_kalman_estim_var_init_std);
+    }
+    else if (demo_data_source == DemoDataSource::kImageSeqDir)
+    {
+        SE3Transform cam_cfw = SE3Inv(LookAtLufWfc(
+            { (Scalar)FLAGS_camera_look_from_x, (Scalar)FLAGS_camera_look_from_y, (Scalar)FLAGS_camera_look_from_z },
+            { (Scalar)FLAGS_camera_look_to_x, (Scalar)FLAGS_camera_look_to_y, (Scalar)FLAGS_camera_look_to_z },
+            { (Scalar)FLAGS_camera_up_x, (Scalar)FLAGS_camera_up_y, (Scalar)FLAGS_camera_up_z }));
+        mono_slam.SetCamera(cam_cfw, FLAGS_kalman_estim_var_init_std);
+    }
 
     mono_slam.kalman_update_impl_ = FLAGS_kalman_update_impl;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_kalman_fix_estim_vars_covar_symmetry;
     mono_slam.debug_ellipsoid_cut_thr_ = FLAGS_kalman_ellipsoid_cut_thr;
     if (FLAGS_kalman_debug_max_sal_pnt_count != -1)
         mono_slam.debug_max_sal_pnt_coun_ = FLAGS_kalman_debug_max_sal_pnt_count;
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    mono_slam.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
-    mono_slam.gt_cami_from_world_fun_ = [&gt_cam_orient_cfw](size_t frame_ind) -> SE3Transform
+    if (demo_data_source == DemoDataSource::kVirtualScene)
     {
-        SE3Transform c = gt_cam_orient_cfw[frame_ind];
-        return c;
-    };    
-    mono_slam.gt_cami_from_tracker_new_ = [&gt_cam_orient_cfw](SE3Transform tracker_from_world, size_t frame_ind) -> SE3Transform
-    {
-        SE3Transform cami_from_world = gt_cam_orient_cfw[frame_ind];
-        SE3Transform cami_from_tracker = SE3AFromB(cami_from_world, tracker_from_world);
-        return cami_from_tracker;
-    };    
-    mono_slam.gt_cami_from_tracker_fun_ = [&gt_cam_orient_cfw, tracker_origin_from_world](size_t frame_ind) -> SE3Transform
-    {
-        SE3Transform c = CurCamFromTrackerOrigin(gt_cam_orient_cfw, frame_ind, tracker_origin_from_world);
-        return c;
-    };    
-    mono_slam.gt_sal_pnt_in_camera_fun_ = [&entire_map]
+        mono_slam.fake_sal_pnt_initial_inv_dist_ = FLAGS_kalman_fake_sal_pnt_init_inv_dist;
+        mono_slam.gt_cami_from_world_fun_ = [&gt_cam_orient_cfw](size_t frame_ind) -> SE3Transform
+        {
+            SE3Transform c = gt_cam_orient_cfw[frame_ind];
+            return c;
+        };
+        mono_slam.gt_cami_from_tracker_new_ = [&gt_cam_orient_cfw](SE3Transform tracker_from_world, size_t frame_ind) -> SE3Transform
+        {
+            SE3Transform cami_from_world = gt_cam_orient_cfw[frame_ind];
+            SE3Transform cami_from_tracker = SE3AFromB(cami_from_world, tracker_from_world);
+            return cami_from_tracker;
+        };
+        mono_slam.gt_cami_from_tracker_fun_ = [&gt_cam_orient_cfw, tracker_origin_from_world](size_t frame_ind) -> SE3Transform
+        {
+            SE3Transform c = CurCamFromTrackerOrigin(gt_cam_orient_cfw, frame_ind, tracker_origin_from_world);
+            return c;
+        };
+        mono_slam.gt_sal_pnt_in_camera_fun_ = [&entire_map]
         (SE3Transform tracker_from_world, SE3Transform camera_from_tracker, DavisonMonoSlam::SalPntId sal_pnt_id) -> Dir3DAndDistance
-    {
-        std::optional<size_t> frag_id = DemoGetSalPntFramgmentId(entire_map, sal_pnt_id);
-        const SalientPointFragment& fragment = entire_map.GetSalientPointNew(frag_id.value());
-        suriko::Point3 pnt_world = fragment.coord.value();
+        {
+            std::optional<size_t> frag_id = DemoGetSalPntFramgmentId(entire_map, sal_pnt_id);
+            const SalientPointFragment& fragment = entire_map.GetSalientPointNew(frag_id.value());
+            suriko::Point3 pnt_world = fragment.coord.value();
 
-        SE3Transform camera_from_world = SE3Compose(camera_from_tracker, tracker_from_world);
-        suriko::Point3 pnt_camera = SE3Apply(camera_from_world, pnt_world);
-        
-        Eigen::Matrix<Scalar, 3, 1> pnt_mat = pnt_camera.Mat(); 
-        Dir3DAndDistance p;
-        p.unity_dir = pnt_mat.normalized();
-        p.dist = pnt_mat.norm();
-        return p;
-    };
-#endif
+            SE3Transform camera_from_world = SE3Compose(camera_from_tracker, tracker_from_world);
+            suriko::Point3 pnt_camera = SE3Apply(camera_from_world, pnt_world);
+
+            Eigen::Matrix<Scalar, 3, 1> pnt_mat = pnt_camera.Mat();
+            Dir3DAndDistance p;
+            p.unity_dir = pnt_mat.normalized();
+            p.dist = pnt_mat.norm();
+            return p;
+        };
+    }
     mono_slam.PredictEstimVarsHelper();
     LOG(INFO) << "kalman_update_impl=" << FLAGS_kalman_update_impl;
 
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
+    if (demo_data_source == DemoDataSource::kVirtualScene)
     {
         auto corners_matcher = std::make_unique<DemoCornersMatcher>(&mono_slam, gt_cam_orient_cfw, entire_map, cam_intrinsics.image_size);
         corners_matcher->tracker_origin_from_world_ = tracker_origin_from_world;
@@ -1224,7 +1232,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         mono_slam.SetCornersMatcher(std::move(corners_matcher));
     }
-#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
+    else if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
         auto corners_matcher = std::make_unique<ImagePatchCornersMatcher>(&mono_slam);
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_kalman_stop_on_sal_pnt_moved_too_far;
@@ -1244,7 +1252,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         };
         mono_slam.SetCornersMatcher(std::move(corners_matcher));
     }
-#endif
 
     if (FLAGS_ctrl_collect_tracker_internals)
     {
@@ -1270,10 +1277,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     ui_params.worker_chat = worker_chat;
     ui_params.ui_swallow_exc = FLAGS_ui_swallow_exc;
     ui_params.ui_tight_loop_relaxing_delay = std::chrono::milliseconds(FLAGS_ui_tight_loop_relaxing_delay_ms);
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    ui_params.entire_map = &entire_map;
-    ui_params.gt_cam_orient_cfw = &gt_cam_orient_cfw;
-#endif
+    if (demo_data_source == DemoDataSource::kVirtualScene)
+    {
+        ui_params.entire_map = &entire_map;
+        ui_params.gt_cam_orient_cfw = &gt_cam_orient_cfw;
+    }
 
     static constexpr int kKeyForward = static_cast<int>('f'); // 'Forward'
     static constexpr int kKeyIgnoreDetection = static_cast<int>('s'); // 'Skip'
@@ -1304,43 +1312,60 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
 #endif
 
-    Picture image;
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-    for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
-#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
-    LOG(INFO) << "imageseq_dir=" << FLAGS_scene_imageseq_dir;
-
+    //
     size_t frame_ind = -1;
-    auto dir = std::filesystem::directory_iterator(FLAGS_scene_imageseq_dir);
-    for (const auto& dir_entry : dir)
-#endif
+    std::filesystem::directory_iterator dir_it;
+
+    if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
+        LOG(INFO) << "imageseq_dir=" << FLAGS_scene_imageseq_dir;
+        dir_it = std::filesystem::directory_iterator(FLAGS_scene_imageseq_dir);
+    }
+
+    while(true)  // for each frame
+    {
         ++frame_ind;
-        auto image_file_path = dir_entry.path();
-        auto path_str = image_file_path.string();
-        LOG(INFO) << path_str;
-        
-        cv::Mat image_bgr = cv::imread(image_file_path.string());
-        bool match_size =
-            image_bgr.cols == cam_intrinsics.image_size.width &&
-            image_bgr.rows == cam_intrinsics.image_size.height;
-        if (!match_size)
+        Picture image;
+        cv::Mat image_bgr;
+
+        if (demo_data_source == DemoDataSource::kVirtualScene)
         {
-            LOG(ERROR)
-                << "got image of sizeWxH=[" << image_bgr.cols << "," << image_bgr.rows << "] "
-                << "but expected sizeWxH=[" << cam_intrinsics.image_size.width << "," << cam_intrinsics.image_size.height << "]";
-            break;
+            if (frame_ind >= frames_count) break;
+
+            image_bgr.create(cv::Size(cam_intrinsics.image_size.width, cam_intrinsics.image_size.height), CV_8UC3);
+        }
+        else if (demo_data_source == DemoDataSource::kImageSeqDir)
+        {
+            if (dir_it == std::filesystem::directory_iterator()) break;
+
+            std::filesystem::directory_entry dir_entry = *dir_it;
+            dir_it++;
+
+            auto image_file_path = dir_entry.path();
+            auto path_str = image_file_path.string();
+            LOG(INFO) << path_str;
+
+            image_bgr = cv::imread(image_file_path.string());
+            bool match_size =
+                image_bgr.cols == cam_intrinsics.image_size.width &&
+                image_bgr.rows == cam_intrinsics.image_size.height;
+            if (!match_size)
+            {
+                LOG(ERROR)
+                    << "got image of sizeWxH=[" << image_bgr.cols << "," << image_bgr.rows << "] "
+                    << "but expected sizeWxH=[" << cam_intrinsics.image_size.width << "," << cam_intrinsics.image_size.height << "]";
+                break;
+            }
+
+            cv::Mat image_gray;
+            cv::cvtColor(image_bgr, image_gray, CV_BGR2GRAY);
+
+            image.gray = image_gray;
+#if defined(SRK_DEBUG)
+            image.bgr_debug = image_bgr;
+#endif
         }
 
-        cv::Mat image_gray;
-        cv::cvtColor(image_bgr, image_gray, CV_BGR2GRAY);
-        image.gray = image_gray;
-#if defined(SRK_DEBUG)
-        image.bgr_debug = image_bgr;
-#endif
-#endif
         auto& corners_matcher = mono_slam.CornersMatcher();
         corners_matcher.AnalyzeFrame(frame_ind, image);
 
@@ -1373,41 +1398,51 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #if defined(SRK_HAS_OPENCV)
         if (FLAGS_ctrl_visualize_during_processing)
         {
-#if DEMO_DATA_SOURCE_TYPE == kVirtualScene
-            camera_image_bgr.setTo(0);
-            const SE3Transform& rt_cfw = gt_cam_orient_cfw[frame_ind];
-            auto project_fun = [&rt_cfw, &mono_slam](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+            if (demo_data_source == DemoDataSource::kVirtualScene)
             {
-                suriko::Point3 pnt_cam = SE3Apply(rt_cfw, sal_pnt_world);
-                suriko::Point2 pnt_pix = mono_slam.ProjectCameraPoint(pnt_cam);
-                return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
-            };
-            constexpr Scalar f0 = 1;
-            suriko_demos::Draw2DProjectedAxes(f0, project_fun, &camera_image_bgr);
-
-            //
-            auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&corners_matcher);
-            if (a_corners_matcher != nullptr)
-            {
-                for (const BlobInfo& blob_info : a_corners_matcher->DetectedBlobs())
+                auto draw_virtual_scene = [&mono_slam,&gt_cam_orient_cfw, frame_ind](const DemoCornersMatcher& corners_matcher, cv::Mat* out_image_bgr)
                 {
-                    Scalar pix_x = blob_info.Coord[0];
-                    Scalar pix_y = blob_info.Coord[1];
-                    camera_image_bgr.at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
+                    out_image_bgr->setTo(0);
+
+                    // the world axes are drawn on the image to provide richer context about the structure of the scene
+                    // (drawing just salient points would be vague)
+                    const SE3Transform& rt_cfw = gt_cam_orient_cfw[frame_ind];
+                    auto project_fun = [&rt_cfw, &mono_slam](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+                    {
+                        suriko::Point3 pnt_cam = SE3Apply(rt_cfw, sal_pnt_world);
+                        suriko::Point2 pnt_pix = mono_slam.ProjectCameraPoint(pnt_cam);
+                        return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
+                    };
+                    constexpr Scalar f0 = 1;
+                    suriko_demos::Draw2DProjectedAxes(f0, project_fun, out_image_bgr);
+
+                    //
+                    for (const BlobInfo& blob_info : corners_matcher.DetectedBlobs())
+                    {
+                        Scalar pix_x = blob_info.Coord[0];
+                        Scalar pix_y = blob_info.Coord[1];
+                        out_image_bgr->at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
+                    }
+                };
+
+                auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&corners_matcher);
+                if (a_corners_matcher != nullptr)
+                {
+                    draw_virtual_scene(*a_corners_matcher, &image_bgr);
                 }
             }
-
-            std::stringstream strbuf;
-            strbuf << "f=" << frame_ind;
-            cv::putText(camera_image_bgr, cv::String(strbuf.str()), cv::Point(10, (int)cam_intrinsics.image_size.height - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
-#elif DEMO_DATA_SOURCE_TYPE == kImageSeqDir
+            
             auto t1 = std::chrono::high_resolution_clock::now();
 
             drawer.DrawScene(mono_slam, image_bgr, &camera_image_bgr);
 
+            std::stringstream strbuf;
+            strbuf << "f=" << frame_ind;
+            cv::putText(camera_image_bgr, cv::String(strbuf.str()), cv::Point(10, (int)cam_intrinsics.image_size.height - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
+
             auto t2 = std::chrono::high_resolution_clock::now();
             frame_OpenCV_gui_time = t2 - t1;
-#endif
+
             cv::imshow("front-camera", camera_image_bgr);
             cv::waitKey(1); // allow to refresh an opencv view
         }

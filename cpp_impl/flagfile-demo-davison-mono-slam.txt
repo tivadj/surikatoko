@@ -4,10 +4,16 @@
 # vmodule doesn't work on Windows
 #--vmodule=bundle*=4
 
-# input=sequence of images
+--scene_source=virtscene
+#--scene_source=imageseqdir
+
+# input = virtual scene
+--virtual_scenario=3
+
+# input = sequence of images
 #--scene_imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM/
 --scene_imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM_Decimated/
---virtual_scenario=3
+
 
 # Controller
 --ctrl_multi_threaded_mode=false
