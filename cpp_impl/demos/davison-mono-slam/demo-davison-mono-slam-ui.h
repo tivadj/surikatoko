@@ -68,6 +68,12 @@ struct UIThreadParams
     std::chrono::milliseconds ui_tight_loop_relaxing_delay;
 };
 
+struct KeyHandlerResult
+{
+    bool handled;
+    bool stop_wait_loop = false;
+};
+
 class SceneVisualizationPangolinGui
 {
 public:
@@ -120,7 +126,7 @@ public:
     std::optional<bool> cov_mat_directly_to_rot_ellipsoid_;
     CameraIntrinsicParams cam_instrinsics_;
     std::vector<int> allowed_key_pressed_codes_;  // the set of key codes, for which the 'key pressed' handler is executed
-    std::function<bool(int)> key_pressed_handler_ = nullptr;
+    std::function<KeyHandlerResult(int)> key_pressed_handler_ = nullptr;
 private:
     bool got_user_input_ = false;  // indicates that a user made some input (pressed a key or clicked a mouse button)
     std::optional<int> key_;

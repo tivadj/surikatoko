@@ -341,6 +341,9 @@ public:
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
     Scalar sal_pnt_small_std_ = 0.001;
+    Scalar sal_pnt_first_cam_pos_std_ = 0;
+    Scalar sal_pnt_azimuth_std_ = 0;
+    Scalar sal_pnt_elevation_std_ = 0;
     Scalar cam_pos_std_m_ = 0; // in meters
     Scalar cam_orient_q_comp_std_ = 0;
     

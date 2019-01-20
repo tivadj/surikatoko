@@ -17,7 +17,7 @@
 
 # Controller
 --ctrl_multi_threaded_mode=false
---ctrl_wait_after_each_frame=false
+--ctrl_wait_after_each_frame=true
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true
@@ -31,6 +31,7 @@
 --world_ymax=-0.4
 --world_zmin=0
 --world_zmax=0.0001
+--world_z_ascent=0
 --world_cell_size_x=0.5
 --world_cell_size_y=0.5
 --world_cell_size_z=0.5
@@ -78,16 +79,21 @@
 --camera_up_y=1
 --camera_up_z=0
 
-# camera pos initial std
---kalman_estim_var_init_std=0
---kalman_cam_pos_std_m=0
---kalman_cam_orient_q_comp_std=0
 # for TestSeqMonoSLAM: 0.1
 --kalman_input_noise_std=0.1
 --kalman_measurm_noise_std_pix=1
+
+--kalman_estim_var_init_std=0
+# camera pos initial std
+--kalman_cam_pos_std_m=0
+--kalman_cam_orient_q_comp_std=0
+--kalman_sal_pnt_first_cam_pos_std=0
+--kalman_sal_pnt_azimuth_std=0
+--kalman_sal_pnt_elevation_std=0
 --kalman_sal_pnt_init_inv_dist=1
---kalman_sal_pnt_init_inv_dist_std=5
+--kalman_sal_pnt_init_inv_dist_std=1
 --kalman_fake_sal_pnt_init_inv_dist=true
+
 --kalman_ellipsoid_cut_thr=0.05
 # 1=all,2=one observation, 3=one component of one observation
 --kalman_update_impl=1

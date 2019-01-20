@@ -128,7 +128,7 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
     }
 }
 
-void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
+void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size, Scalar z_ascent,
     bool corrupt_salient_points_with_noise,
     std::mt19937* gen,
     std::normal_distribution<Scalar>* x3D_noise_dis, FragmentMap* entire_map)
@@ -139,30 +139,33 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
 
     Scalar xmid = (wb.x_min + wb.x_max) / 2;
     Scalar xlen = wb.x_max - wb.x_min;
-    Scalar zlen = wb.z_max - wb.z_min;
-    for (Scalar grid_x = wb.x_min; grid_x < wb.x_max + inclusive_gap; grid_x += cell_size[0])
+    for (Scalar grid_z = wb.z_min; grid_z < wb.z_max + inclusive_gap; grid_z += cell_size[2])
     {
         for (Scalar grid_y = wb.y_min; grid_y < wb.y_max + inclusive_gap; grid_y += cell_size[1])
         {
-            Scalar x = grid_x;
-            Scalar y = grid_y;
-
-            Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
-            Scalar z = wb.z_min + z_perc * zlen;
-
-            // jit x and y so the points can be distinguished during movement
-            if (corrupt_salient_points_with_noise)
+            for (Scalar grid_x = wb.x_min; grid_x < wb.x_max + inclusive_gap; grid_x += cell_size[0])
             {
-                x += (*x3D_noise_dis)(*gen);
-                y += (*x3D_noise_dis)(*gen);
-                z += (*x3D_noise_dis)(*gen);
-            }
+                Scalar x = grid_x;
+                Scalar y = grid_y;
 
-            SalientPointFragment& frag = entire_map->AddSalientPointPatch(Point3(x, y, z));
-            frag.synthetic_virtual_point_id = next_virtual_point_id++;
+                Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
+                Scalar z = grid_z + z_perc * z_ascent;
+
+                // jit x and y so the points can be distinguished during movement
+                if (corrupt_salient_points_with_noise)
+                {
+                    x += (*x3D_noise_dis)(*gen);
+                    y += (*x3D_noise_dis)(*gen);
+                    z += (*x3D_noise_dis)(*gen);
+                }
+
+                SalientPointFragment& frag = entire_map->AddSalientPointPatch(Point3(x, y, z));
+                frag.synthetic_virtual_point_id = next_virtual_point_id++;
+            }
         }
     }
 }
+
 
 /// Gets the transformation from world into camera in given frame.
 SE3Transform CurCamFromTrackerOrigin(const std::vector<SE3Transform>& gt_cam_orient_cfw, size_t frame_ind, const SE3Transform& tracker_from_world)
@@ -883,6 +886,7 @@ DEFINE_double(world_ymin, -1.5, "world ymin");
 DEFINE_double(world_ymax, 1.5, "world ymax");
 DEFINE_double(world_zmin, 0, "world zmin");
 DEFINE_double(world_zmax, 1, "world zmax");
+DEFINE_double(world_z_ascent, 0, "z_real=gridz+cos(z_ascent)");
 DEFINE_double(world_cell_size_x, 0.5, "cell size x");
 DEFINE_double(world_cell_size_y, 0.5, "cell size y");
 DEFINE_double(world_cell_size_z, 0.5, "cell size z");
@@ -931,6 +935,9 @@ DEFINE_double(kalman_estim_var_init_std, 0.001, "");
 DEFINE_double(kalman_cam_pos_std_m, 0, "");
 DEFINE_double(kalman_cam_orient_q_comp_std, 0, "");
 DEFINE_double(kalman_input_noise_std, 0.08, "");
+DEFINE_double(kalman_sal_pnt_first_cam_pos_std, 0, "");
+DEFINE_double(kalman_sal_pnt_azimuth_std, 0, "");
+DEFINE_double(kalman_sal_pnt_elevation_std, 0, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(kalman_sal_pnt_init_inv_dist_std, 1, "");
 DEFINE_double(kalman_measurm_noise_std_pix, 1, "");
@@ -1020,7 +1027,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         //
         entire_map.SetFragmentIdOffsetInternal(1000'000);
-        GenerateWorldPoints(wb, cell_size, corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
+        GenerateWorldPoints(wb, cell_size, FLAGS_world_z_ascent, corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
         LOG(INFO) << "points_count=" << entire_map.SalientPointsCount();
 
         suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
@@ -1163,6 +1170,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.cam_pos_std_m_ = FLAGS_kalman_cam_pos_std_m;
         mono_slam.cam_orient_q_comp_std_ = FLAGS_kalman_cam_orient_q_comp_std;
         mono_slam.sal_pnt_small_std_ = FLAGS_kalman_estim_var_init_std;
+        mono_slam.sal_pnt_first_cam_pos_std_ = FLAGS_kalman_sal_pnt_first_cam_pos_std;
+        mono_slam.sal_pnt_azimuth_std_ = FLAGS_kalman_sal_pnt_azimuth_std;
+        mono_slam.sal_pnt_elevation_std_ = FLAGS_kalman_sal_pnt_elevation_std;
         mono_slam.SetCamera(SE3Transform::NoTransform(), FLAGS_kalman_estim_var_init_std);
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
@@ -1322,7 +1332,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         dir_it = std::filesystem::directory_iterator(FLAGS_scene_imageseq_dir);
     }
 
-    while(true)  // for each frame
+    bool iterate_frames = true;
+    while(iterate_frames)  // for each frame
     {
         ++frame_ind;
         Picture image;
@@ -1394,159 +1405,167 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
 
         std::optional<std::chrono::duration<double>> frame_OpenCV_gui_time;
-
-#if defined(SRK_HAS_OPENCV)
-        if (FLAGS_ctrl_visualize_during_processing)
-        {
-            if (demo_data_source == DemoDataSource::kVirtualScene)
-            {
-                auto draw_virtual_scene = [&mono_slam,&gt_cam_orient_cfw, frame_ind](const DemoCornersMatcher& corners_matcher, cv::Mat* out_image_bgr)
-                {
-                    out_image_bgr->setTo(0);
-
-                    // the world axes are drawn on the image to provide richer context about the structure of the scene
-                    // (drawing just salient points would be vague)
-                    const SE3Transform& rt_cfw = gt_cam_orient_cfw[frame_ind];
-                    auto project_fun = [&rt_cfw, &mono_slam](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
-                    {
-                        suriko::Point3 pnt_cam = SE3Apply(rt_cfw, sal_pnt_world);
-                        suriko::Point2 pnt_pix = mono_slam.ProjectCameraPoint(pnt_cam);
-                        return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
-                    };
-                    constexpr Scalar f0 = 1;
-                    suriko_demos::Draw2DProjectedAxes(f0, project_fun, out_image_bgr);
-
-                    //
-                    for (const BlobInfo& blob_info : corners_matcher.DetectedBlobs())
-                    {
-                        Scalar pix_x = blob_info.Coord[0];
-                        Scalar pix_y = blob_info.Coord[1];
-                        out_image_bgr->at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
-                    }
-                };
-
-                auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&corners_matcher);
-                if (a_corners_matcher != nullptr)
-                {
-                    draw_virtual_scene(*a_corners_matcher, &image_bgr);
-                }
-            }
-            
-            auto t1 = std::chrono::high_resolution_clock::now();
-
-            drawer.DrawScene(mono_slam, image_bgr, &camera_image_bgr);
-
-            std::stringstream strbuf;
-            strbuf << "f=" << frame_ind;
-            cv::putText(camera_image_bgr, cv::String(strbuf.str()), cv::Point(10, (int)cam_intrinsics.image_size.height - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
-
-            auto t2 = std::chrono::high_resolution_clock::now();
-            frame_OpenCV_gui_time = t2 - t1;
-
-            cv::imshow("front-camera", camera_image_bgr);
-            cv::waitKey(1); // allow to refresh an opencv view
-        }
-#endif
         std::optional<std::chrono::duration<double>> frame_Pangolin_gui_time;
 
-#if defined(SRK_HAS_PANGOLIN)
-        if (FLAGS_ctrl_multi_threaded_mode)
+        // Draw / Render loop (usually run once, but a user may request to redraw current frame for some reason)
+        for (int redraw_times = 1; redraw_times > 0 && iterate_frames; redraw_times--)
         {
-            // check if UI requests the exit
-            std::lock_guard<std::mutex> lk(worker_chat->the_mutex);
-            std::optional<WorkerChatMessage> msg = PopMsgUnderLock(&worker_chat->worker_message);
-            if (msg == WorkerChatMessage::WorkerExit)
-                break;
-        }
-
-        auto pangolin_key_handler = [&mono_slam, &frame_ind](int key) -> bool
-        {
-            switch (key)
+#if defined(SRK_HAS_OPENCV)
+            if (FLAGS_ctrl_visualize_during_processing)
             {
-            case kKeySetToGroundTruth:
-                mono_slam.SetStateToGroundTruth(frame_ind);
-                return true;
-            case kKeyDumpInfo:
-                std::ostringstream os;
-                mono_slam.DumpTrackerState(os);
-                LOG(INFO) << os.str();
-                return true;
+                if (demo_data_source == DemoDataSource::kVirtualScene)
+                {
+                    auto draw_virtual_scene = [&mono_slam, &gt_cam_orient_cfw, frame_ind](const DemoCornersMatcher& corners_matcher, cv::Mat* out_image_bgr)
+                    {
+                        out_image_bgr->setTo(0);
+
+                        // the world axes are drawn on the image to provide richer context about the structure of the scene
+                        // (drawing just salient points would be vague)
+                        const SE3Transform& rt_cfw = gt_cam_orient_cfw[frame_ind];
+                        auto project_fun = [&rt_cfw, &mono_slam](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+                        {
+                            suriko::Point3 pnt_cam = SE3Apply(rt_cfw, sal_pnt_world);
+                            suriko::Point2 pnt_pix = mono_slam.ProjectCameraPoint(pnt_cam);
+                            return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
+                        };
+                        constexpr Scalar f0 = 1;
+                        suriko_demos::Draw2DProjectedAxes(f0, project_fun, out_image_bgr);
+
+                        //
+                        for (const BlobInfo& blob_info : corners_matcher.DetectedBlobs())
+                        {
+                            Scalar pix_x = blob_info.Coord[0];
+                            Scalar pix_y = blob_info.Coord[1];
+                            out_image_bgr->at<cv::Vec3b>((int)pix_y, (int)pix_x) = cv::Vec3b(0xFF, 0xFF, 0xFF);
+                        }
+                    };
+
+                    auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&corners_matcher);
+                    if (a_corners_matcher != nullptr)
+                    {
+                        draw_virtual_scene(*a_corners_matcher, &image_bgr);
+                    }
+                }
+
+                auto t1 = std::chrono::high_resolution_clock::now();
+
+                drawer.DrawScene(mono_slam, image_bgr, &camera_image_bgr);
+
+                std::stringstream strbuf;
+                strbuf << "f=" << frame_ind;
+                cv::putText(camera_image_bgr, cv::String(strbuf.str()), cv::Point(10, (int)cam_intrinsics.image_size.height - 15), cv::FONT_HERSHEY_PLAIN, 1, cv::Scalar(0, 0, 255));
+
+                auto t2 = std::chrono::high_resolution_clock::now();
+                frame_OpenCV_gui_time = t2 - t1;
+
+                cv::imshow("front-camera", camera_image_bgr);
+                cv::waitKey(1); // allow to refresh an opencv view
             }
-            return false;
-        };
-
-        // update UI
-        if (FLAGS_ctrl_visualize_during_processing)
-        {
-            auto key_of_interest = [](int key)
+#endif
+#if defined(SRK_HAS_PANGOLIN)
+            if (FLAGS_ctrl_multi_threaded_mode)
             {
-                return key == kKeyIgnoreDetection || key == kKeyForward || key == pangolin::PANGO_KEY_ESCAPE;
+                // check if UI requests the exit
+                std::lock_guard<std::mutex> lk(worker_chat->the_mutex);
+                std::optional<WorkerChatMessage> msg = PopMsgUnderLock(&worker_chat->worker_message);
+                if (msg == WorkerChatMessage::WorkerExit)
+                    break;
+            }
+
+            auto pangolin_key_handler = [&mono_slam, &frame_ind, &redraw_times](int key) -> KeyHandlerResult
+            {
+                KeyHandlerResult handler_result {false};
+                switch (key)
+                {
+                case kKeySetToGroundTruth:
+                    mono_slam.SetStateToGroundTruth(frame_ind);
+                    handler_result.handled = true;
+                    handler_result.stop_wait_loop = true;
+                    redraw_times++;  // request redrawing the OpenCV viewer
+                    break;
+                case kKeyDumpInfo:
+                    std::ostringstream os;
+                    mono_slam.DumpTrackerState(os);
+                    LOG(INFO) << os.str();
+                    handler_result.handled = true;
+                    break;
+                }
+                return handler_result;
             };
 
-            if (FLAGS_ctrl_wait_after_each_frame)
+            // update UI
+            if (FLAGS_ctrl_visualize_during_processing)
             {
-                // let a user observe the UI and signal back when to continue
-
-                int key = -1;
-                if (FLAGS_ctrl_multi_threaded_mode)
+                auto stop_wait_on_key = [](int key)
                 {
-                    std::unique_lock<std::mutex> ulk(worker_chat->the_mutex);
-                    worker_chat->ui_message = UIChatMessage::UIWaitKey; // reset the waiting flag
-                    worker_chat->ui_wait_key_predicate_ = key_of_interest;
+                    return key == kKeyIgnoreDetection || key == kKeyForward || key == pangolin::PANGO_KEY_ESCAPE;
+                };
 
-                    // wait till UI requests to resume processing
-                    worker_chat->worker_got_new_message_cv.wait(ulk, [&worker_chat] {return worker_chat->worker_message == WorkerChatMessage::WorkerKeyPressed; });
-                    key = worker_chat->ui_pressed_key.value_or(-1);
-                }
-                else
+                if (FLAGS_ctrl_wait_after_each_frame)
                 {
-                    // initialize GUI lazily here, because the handler depends on frame_ind which is not known during initialization
-                    if (pangolin_gui->key_pressed_handler_ == nullptr)
-                        pangolin_gui->key_pressed_handler_ = pangolin_key_handler;
+                    // let a user observe the UI and signal back when to continue
 
-                    key = pangolin_gui->WaitKey(key_of_interest);
-                }
+                    int key = -1;
+                    if (FLAGS_ctrl_multi_threaded_mode)
+                    {
+                        std::unique_lock<std::mutex> ulk(worker_chat->the_mutex);
+                        worker_chat->ui_message = UIChatMessage::UIWaitKey; // reset the waiting flag
+                        worker_chat->ui_wait_key_predicate_ = stop_wait_on_key;
 
-                if (key == pangolin::PANGO_KEY_ESCAPE)
-                    break;
-                
-                const bool suppress_observations = (key == kKeyIgnoreDetection);
+                        // wait till UI requests to resume processing
+                        worker_chat->worker_got_new_message_cv.wait(ulk, [&worker_chat] {return worker_chat->worker_message == WorkerChatMessage::WorkerKeyPressed; });
+                        key = worker_chat->ui_pressed_key.value_or(-1);
+                    }
+                    else
+                    {
+                        // initialize GUI lazily here, because the handler depends on frame_ind which is not known during initialization
+                        if (pangolin_gui->key_pressed_handler_ == nullptr)
+                            pangolin_gui->key_pressed_handler_ = pangolin_key_handler;
 
-                auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&mono_slam.CornersMatcher());
-                if (a_corners_matcher != nullptr)
-                    a_corners_matcher->SetSuppressObservations(suppress_observations);
-            }
-            else
-            {
-                if (FLAGS_ctrl_multi_threaded_mode) {}
-                else
-                {
-                    // in single thread mode the controller executes the tracker and gui code sequentially in the same thread
-                    auto break_on = [](int key) { return key == pangolin::PANGO_KEY_ESCAPE; };;
-
-                    // initialize GUI lazily here, because the handler depends on frame_ind which is not known during initialization
-                    if (pangolin_gui->key_pressed_handler_ == nullptr)
-                        pangolin_gui->key_pressed_handler_ = pangolin_key_handler;
-
-                    auto t1 = std::chrono::high_resolution_clock::now();
-
-                    std::optional<int> key = pangolin_gui->RenderFrameAndProlongUILoopOnUserInput(break_on);
-
-                    auto t2 = std::chrono::high_resolution_clock::now();
-                    frame_Pangolin_gui_time = t2 - t1;
+                        key = pangolin_gui->WaitKey(stop_wait_on_key);
+                    }
 
                     if (key == pangolin::PANGO_KEY_ESCAPE)
+                    {
+                        iterate_frames = false;
                         break;
+                    }
+
+                    const bool suppress_observations = (key == kKeyIgnoreDetection);
+
+                    auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&mono_slam.CornersMatcher());
+                    if (a_corners_matcher != nullptr)
+                        a_corners_matcher->SetSuppressObservations(suppress_observations);
+                }
+                else
+                {
+                    if (FLAGS_ctrl_multi_threaded_mode) {}
+                    else
+                    {
+                        // in single thread mode the controller executes the tracker and gui code sequentially in the same thread
+                        auto break_on = [](int key) { return key == pangolin::PANGO_KEY_ESCAPE; };;
+
+                        // initialize GUI lazily here, because the handler depends on frame_ind which is not known during initialization
+                        if (pangolin_gui->key_pressed_handler_ == nullptr)
+                            pangolin_gui->key_pressed_handler_ = pangolin_key_handler;
+
+                        auto t1 = std::chrono::high_resolution_clock::now();
+
+                        std::optional<int> key = pangolin_gui->RenderFrameAndProlongUILoopOnUserInput(break_on);
+
+                        auto t2 = std::chrono::high_resolution_clock::now();
+                        frame_Pangolin_gui_time = t2 - t1;
+
+                        if (key == pangolin::PANGO_KEY_ESCAPE)
+                        {
+                            iterate_frames = false;
+                            break;
+                        }
+                    }
                 }
             }
-        }
 #endif
-#if defined(SRK_HAS_OPENCV)
-        if (FLAGS_ctrl_visualize_during_processing)
-        {
-            cv::waitKey(1); // wait for a moment to allow OpenCV to redraw the image
         }
-#endif
         auto zero_time = std::chrono::seconds{ 0 };
         auto total_time = 
             frame_process_time.value_or(zero_time) +

@@ -21,8 +21,15 @@ using namespace suriko::internals;
 
 constexpr void MarkUsedTrackerStateToVisualize() {}
 
-auto EllipsePntPolarToEuclid(Scalar a, Scalar b, Scalar theta) -> suriko::Point2
+/// theta goes counter-clockwise from the major axis
+auto EllipsePntPolarToEuclid(Scalar semi_major, Scalar semi_minor, Scalar theta) -> suriko::Point2
 {
+    SRK_ASSERT(semi_major > 0);
+    SRK_ASSERT(semi_minor > 0);
+
+    const auto a = semi_major;
+    const auto b = semi_minor;
+
     Scalar cos_theta = std::cos(theta);
     Scalar sin_theta = std::sin(theta);
 
@@ -209,10 +216,25 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
 
     enum Axes { Largest, Middle, Smallest };
 
+    glLineWidth(1);
+
+    // draw narrow ellipse as a line
+    if (IsClose(0, sorted_semi_axes[Middle].second))
+    {
+        Scalar semi_major = sorted_semi_axes[Largest].second;
+        suriko::Point3 p1 = SE3Apply(rot_ellipsoid.world_from_ellipse, suriko::Point3{  semi_major, 0, 0 });
+        suriko::Point3 p2 = SE3Apply(rot_ellipsoid.world_from_ellipse, suriko::Point3{ -semi_major, 0, 0 });
+
+        glBegin(GL_LINES);
+        glVertex3d(p1.X(), p1.Y(), p1.Z());
+        glVertex3d(p2.X(), p2.Y(), p2.Z());
+        glEnd();
+        return;
+    }
+
     // The ellipsoid is drawn as an ellipse, built on two eigenvectors with largest eigenvalues.
     // ellipse axes OX,OY=Largest,Middle
 
-    glLineWidth(1);
     glBegin(GL_LINE_LOOP);
     for (size_t i = 0; i < dots_per_ellipse; ++i)
     {
@@ -747,8 +769,11 @@ int SceneVisualizationPangolinGui::WaitKey(std::function<bool(int key)> key_pred
                 break;
             if (key_pressed_handler_ != nullptr)
             {
-                bool processed = key_pressed_handler_(key_.value());
-                if (processed)
+                KeyHandlerResult handler_result = key_pressed_handler_(key_.value());
+
+                // if stop is requested then break out without resetting the pressed key
+                if (handler_result.stop_wait_loop) break;
+                if (handler_result.handled)
                     key_ = std::nullopt;
             }
         }
@@ -802,9 +827,10 @@ std::optional<int> SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnU
                 break;
             if (key_pressed_handler_ != nullptr)
             {
-                bool processed = key_pressed_handler_(key_.value());
-                if (processed)
+                KeyHandlerResult handler_result = key_pressed_handler_(key_.value());
+                if (handler_result.handled)
                     key_ = std::nullopt;
+                if (handler_result.stop_wait_loop) break;
             }
         }
         
@@ -992,6 +1018,19 @@ cv::Scalar OcvColorBgr(SrkColor c)
 
 void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam, const RotatedEllipse2D& ellipse_pix, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr)
 {
+    // draw narrow ellipse as a line
+    if (IsClose(0, ellipse_pix.semi_axes[1]))
+    {
+        Scalar semi_major = ellipse_pix.semi_axes[0];
+        suriko::Point2 p1 = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2{  semi_major, 0 });
+        suriko::Point2 p2 = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2{ -semi_major, 0 });
+        cv::line(*camera_image_bgr, 
+            cv::Point{ static_cast<int>(p1.X()), static_cast<int>(p1.Y()) },
+            cv::Point{ static_cast<int>(p2.X()), static_cast<int>(p2.Y()) },
+            color);
+        return;
+    }
+
     std::optional<cv::Point> pnt_int_prev;
     for (size_t i = 0; i <= dots_per_ellipse; ++i)
     {

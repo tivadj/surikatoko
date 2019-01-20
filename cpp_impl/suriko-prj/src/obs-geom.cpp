@@ -872,6 +872,16 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
 
     Eigen::Matrix<Scalar, 3, 3> eig_vecs = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
     Eigen::Matrix<Scalar, 3, 1> dd = eigen_solver.eigenvalues();
+
+    // each semi-axis of an ellipse must be positive
+    for (int i=0; i<dd.rows(); ++i)
+    {
+        Scalar val = dd[i];
+        // Fix small errors when semi-axis is a small negative number,
+        // which may occur when dealing with zero-covariance variables.
+        if (val < 0 && IsClose(0, val))
+            dd[i] = 0;
+    }
     
     // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
     // but we want the semi-axes of an allipse to be in decreasing order
@@ -915,6 +925,10 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
     semi[2] = std::sqrt(right_side * dd[minor_col_ind]);
 
     result->world_from_ellipse.T = mean;
+
+    SRK_ASSERT(IsFinite(semi[0]));
+    SRK_ASSERT(IsFinite(semi[1]));
+    SRK_ASSERT(IsFinite(semi[2]));
 }
 
 // Note, on why the direct conversion is used: covariance_matrix -> rotated_ellipse=(semi_axes,R).
@@ -953,6 +967,16 @@ void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
     Eigen::Matrix<Scalar, kDim, kDim> eig_vecs = eigen_solver.eigenvectors(); // rot_mat_ellipse_from_world
     Eigen::Matrix<Scalar, kDim, 1> dd = eigen_solver.eigenvalues();
 
+    // each semi-axis of an ellipse must be positive
+    for (int i = 0; i < dd.rows(); ++i)
+    {
+        Scalar val = dd[i];
+        // Fix small errors when semi-axis is a small negative number,
+        // which may occur when dealing with zero-covariance variables.
+        if (val < 0 && IsClose(0, val))
+            dd[i] = 0;
+    }
+
     // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
     int major_col_ind = kDim - 1;
     int minor_col_ind = 0;
@@ -988,6 +1012,8 @@ void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
     auto& semi = *semi_axes;
     semi[0] = std::sqrt(right_side * dd[major_col_ind]);
     semi[1] = std::sqrt(right_side * dd[minor_col_ind]);
+    SRK_ASSERT(IsFinite(semi[0]));
+    SRK_ASSERT(IsFinite(semi[1]));
 }
 
 RotatedEllipse2D Get2DRotatedEllipseFromCovMat(

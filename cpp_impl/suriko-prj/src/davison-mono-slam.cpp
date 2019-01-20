@@ -1159,6 +1159,9 @@ void DavisonMonoSlam::SetStateToGroundTruth(size_t frame_ind)
     estim_vars_[6] = cam_tfc_quat[3];
 
     const Scalar small_variance = suriko::Sqr(sal_pnt_small_std_);
+    const Scalar sal_pnt_first_cam_pos_variance = suriko::Sqr(sal_pnt_first_cam_pos_std_);
+    const Scalar sal_pnt_azimuth_variance = suriko::Sqr(sal_pnt_azimuth_std_);
+    const Scalar sal_pnt_elevation_variance = suriko::Sqr(sal_pnt_elevation_std_);
 
     for (size_t i = 0; i < kCamStateComps; ++i)
         estim_vars_covar_(i, i) = small_variance;
@@ -1168,7 +1171,7 @@ void DavisonMonoSlam::SetStateToGroundTruth(size_t frame_ind)
         const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
 
         // the frame where the salient point was first seen
-        size_t first_cam_frame_ind = 0;
+        size_t first_cam_frame_ind = frame_ind;
 #if defined(SRK_DEBUG)
         // NOTE: this field available only in Debug configuration
         first_cam_frame_ind = sal_pnt.initial_frame_ind_debug_;
@@ -1199,14 +1202,14 @@ void DavisonMonoSlam::SetStateToGroundTruth(size_t frame_ind)
         gsl::span<Scalar> dst = Span(estim_vars_).subspan(sal_pnt.estim_vars_ind, kSalientPointComps);
         SaveSalientPointDataToArray(sal_pnt_vars, dst);
 
-        auto sal_pnt_var = estim_vars_covar_.block< kSalientPointComps, kSalientPointComps>(sal_pnt.estim_vars_ind, sal_pnt.estim_vars_ind);
+        auto sal_pnt_covar = estim_vars_covar_.block< kSalientPointComps, kSalientPointComps>(sal_pnt.estim_vars_ind, sal_pnt.estim_vars_ind);
 
-        sal_pnt_var(0, 0) = small_variance;
-        sal_pnt_var(1, 1) = small_variance;
-        sal_pnt_var(2, 2) = small_variance;
-        sal_pnt_var(3, 3) = small_variance;
-        sal_pnt_var(4, 4) = small_variance;
-        sal_pnt_var(5, 5) = small_variance;
+        sal_pnt_covar(0, 0) = sal_pnt_first_cam_pos_variance;
+        sal_pnt_covar(1, 1) = sal_pnt_first_cam_pos_variance;
+        sal_pnt_covar(2, 2) = sal_pnt_first_cam_pos_variance;
+        sal_pnt_covar(3, 3) = sal_pnt_azimuth_variance;
+        sal_pnt_covar(4, 4) = sal_pnt_elevation_variance;
+        sal_pnt_covar(5, 5) = suriko::Sqr(sal_pnt_init_inv_dist_std_);
     }
 
     MakePredictions();  // recalculate the predictions

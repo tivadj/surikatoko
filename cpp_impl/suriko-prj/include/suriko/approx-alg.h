@@ -34,6 +34,12 @@ bool IsClose(F1 a, F2 b, AbsRelTol<typename std::common_type<F1, F2>::type> tol)
     return IsClose(a, b, tol.RTol, tol.ATol);
 }
 
+template<typename F>
+bool IsFinite(F x)
+{
+    return std::isfinite(x);
+}
+
 template <typename F>
 constexpr auto Sqr(F x) -> F { return x*x; }
 
