@@ -449,7 +449,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
             if (!point_track.SalientPointId.has_value())
                 continue;
 
-            std::optional<suriko::Point2> corner = point_track.GetCorner(frame_ind);
+            std::optional<suriko::Point2f> corner = point_track.GetCorner(frame_ind);
             if (!corner.has_value())
             {
                 // the salient point is not detected in current frame and 
@@ -457,7 +457,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
                 continue;
             }
 
-            suriko::Point2 corner_pix = corner.value();
+            suriko::Point2f corner_pix = corner.value();
             Eigen::Matrix<Scalar, 2, 1> corner_div_f0 = corner_pix.Mat() / f0;
             suriko::Point3 x3D = map.GetSalientPoint(point_track.SalientPointId.value());
 
@@ -1175,14 +1175,14 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
 
             for (size_t frame_ind = 0; frame_ind < frames_count; ++frame_ind)
             {
-                std::optional<suriko::Point2> corner_pix_opt = point_track.GetCorner(frame_ind);
+                std::optional<suriko::Point2f> corner_pix_opt = point_track.GetCorner(frame_ind);
                 if (!corner_pix_opt.has_value())
                 {
                     // Te salient point is not detected in current frame and hence doesn't influence the reprojection error.
                     continue;
                 }
 
-                const suriko::Point2& corner_pix = corner_pix_opt.value();
+                const suriko::Point2f& corner_pix = corner_pix_opt.value();
 
                 const SE3Transform& inverse_orient_cam = (*inverse_orient_cams_)[frame_ind];
                 const Eigen::Matrix<Scalar, 3, 3>& K = *GetSharedOrIndividualIntrinsicCamMat(frame_ind);
@@ -1286,14 +1286,14 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
 
             pnt_ind += 1; // only increment for corresponding reconstructed salient point
 
-            std::optional<suriko::Point2> corner_pix_opt = point_track.GetCorner(frame_ind);
+            std::optional<suriko::Point2f> corner_pix_opt = point_track.GetCorner(frame_ind);
             if (!corner_pix_opt.has_value())
             {
                 // Te salient point is not detected in current frame and hence doesn't influence the reprojection error.
                 continue;
             }
             
-            const suriko::Point2& corner_pix = corner_pix_opt.value();
+            const suriko::Point2f& corner_pix = corner_pix_opt.value();
 
             const suriko::Point3& salient_point = map_->GetSalientPoint(point_track.SalientPointId.value());
 
@@ -1456,7 +1456,7 @@ void BundleAdjustmentKanatani::ComputePointPqrDerivatives(const Eigen::Matrix<Sc
 }
 
 void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& inverse_orient_cam, 
-    const suriko::Point3& salient_point, const suriko::Point2& corner_pix,
+    const suriko::Point3& salient_point, const suriko::Point2f& corner_pix,
     Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount>* frame_pqr_deriv, gsl::not_null<size_t*> out_frame_vars_count) const
 {
     Scalar fx = K(0, 0);
@@ -1526,7 +1526,7 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
 }
 
 // formula 8, returns scalar or vector depending on gradp_byvar type
-Scalar BundleAdjustmentKanatani::FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2& corner_pix,
+Scalar BundleAdjustmentKanatani::FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2f& corner_pix,
     Scalar gradp_byvar, Scalar gradq_byvar, Scalar gradr_byvar) const
 {
     SRK_ASSERT(!IsClose(0, pqr[2])) << "z != 0 because z is in denominator";

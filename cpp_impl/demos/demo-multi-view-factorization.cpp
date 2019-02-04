@@ -340,7 +340,7 @@ public:
                 corner_track = &new_corner_track;
             }
 
-            suriko::Point2 pix(pix_x, pix_y);
+            suriko::Point2f pix(pix_x, pix_y);
 
             CornerData& corner_data = corner_track->AddCorner(frame_ind);
             corner_data.pixel_coord = pix;
@@ -593,7 +593,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
                     new_track_per_frame_count += 1;
                 }
 
-                suriko::Point2 pix(pix_x, pix_y);
+                suriko::Point2f pix(pix_x, pix_y);
 
                 CornerData& corner_data = corner_track->AddCorner(frame_ind);
                 corner_data.pixel_coord = pix;

@@ -229,10 +229,10 @@ private:
     void ComputePointPqrDerivatives(const Eigen::Matrix<Scalar, 3, 4>& P, Eigen::Matrix<Scalar, 3, 3>* point_pqr_deriv) const;
 
     void ComputeFramePqrDerivatives(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& inverse_orient_cam, 
-        const suriko::Point3& salient_point, const suriko::Point2& corner_pix,
+        const suriko::Point3& salient_point, const suriko::Point2f& corner_pix,
         Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount>* frame_pqr_deriv, gsl::not_null<size_t*> out_frame_vars_count) const;
 
-    Scalar FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2& corner_pix,
+    Scalar FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2f& corner_pix,
         Scalar gradp_byvar, Scalar gradq_byvar, Scalar gradr_byvar) const;
 
     Scalar SecondDerivFromPqrDerivative(const Eigen::Matrix<Scalar, 3, 1>& pqr,

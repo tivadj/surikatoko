@@ -22,7 +22,7 @@ using namespace suriko::internals;
 constexpr void MarkUsedTrackerStateToVisualize() {}
 
 /// theta goes counter-clockwise from the major axis
-auto EllipsePntPolarToEuclid(Scalar semi_major, Scalar semi_minor, Scalar theta) -> suriko::Point2
+auto EllipsePntPolarToEuclid(Scalar semi_major, Scalar semi_minor, Scalar theta) -> suriko::Point2f
 {
     SRK_ASSERT(semi_major > 0);
     SRK_ASSERT(semi_minor > 0);
@@ -37,7 +37,7 @@ auto EllipsePntPolarToEuclid(Scalar semi_major, Scalar semi_minor, Scalar theta)
     // r=a*b/sqrt((b*cos(theta))^2 + (a*sin(theta))^2)
     Scalar r = a * b / std::sqrt(suriko::Sqr(b * cos_theta) + suriko::Sqr(a * sin_theta));
 
-    suriko::Point2 p;
+    suriko::Point2f p;
     p[0] = r * cos_theta;
     p[1] = r * sin_theta;
     return p;
@@ -240,7 +240,7 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
     {
         // draw in the plane of largest-2nd-largest eigenvectors
         Scalar theta = i * (2 * M_PI) / dots_per_ellipse;
-        suriko::Point2 eucl = EllipsePntPolarToEuclid(sorted_semi_axes[Largest].second, sorted_semi_axes[Middle].second, theta);
+        suriko::Point2f eucl = EllipsePntPolarToEuclid(sorted_semi_axes[Largest].second, sorted_semi_axes[Middle].second, theta);
 
         // ellipse OX is on largest, ellipse OY on the 2nd-largest
 
@@ -270,7 +270,7 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
         for (Scalar ang : thick_stroke_angs)
         {
             // draw in the plane of middle-smallest eigenvectors
-            suriko::Point2 eucl = EllipsePntPolarToEuclid(sorted_semi_axes[Middle].second, sorted_semi_axes[Smallest].second, ang);
+            suriko::Point2f eucl = EllipsePntPolarToEuclid(sorted_semi_axes[Middle].second, sorted_semi_axes[Smallest].second, ang);
 
             Eigen::Matrix<Scalar, 3, 1> ws;
             ws[sorted_semi_axes[Middle].first] = eucl[0];  // ellipse OX
@@ -689,7 +689,7 @@ void SceneVisualizationPangolinGui::InitUI()
 
     a_frame_ind_ = std::make_unique<pangolin::Var<ptrdiff_t>>("ui.frame_ind", -1);
     cb_displ_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_trajectory", true, true);
-    cb_displ_ground_truth_ = std::make_unique<pangolin::Var<bool>>("ui.displ_gt", true, true);
+    cb_displ_ground_truth_ = std::make_unique<pangolin::Var<bool>>("ui.displ_gt", false, true);
     slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
     cb_displ_mid_cam_type_ = std::make_unique<pangolin::Var<bool>>("ui.displ_3D_uncert", true, true);
 
@@ -1022,8 +1022,8 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam, const Rotat
     if (IsClose(0, ellipse_pix.semi_axes[1]))
     {
         Scalar semi_major = ellipse_pix.semi_axes[0];
-        suriko::Point2 p1 = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2{  semi_major, 0 });
-        suriko::Point2 p2 = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2{ -semi_major, 0 });
+        suriko::Point2f p1 = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2f{  semi_major, 0 });
+        suriko::Point2f p2 = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2f{ -semi_major, 0 });
         cv::line(*camera_image_bgr, 
             cv::Point{ static_cast<int>(p1.X()), static_cast<int>(p1.Y()) },
             cv::Point{ static_cast<int>(p2.X()), static_cast<int>(p2.Y()) },
@@ -1035,10 +1035,10 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam, const Rotat
     for (size_t i = 0; i <= dots_per_ellipse; ++i)
     {
         Scalar theta = i * (2 * M_PI) / dots_per_ellipse;
-        suriko::Point2 eucl = EllipsePntPolarToEuclid(ellipse_pix.semi_axes[0], ellipse_pix.semi_axes[1], theta);
+        suriko::Point2f eucl = EllipsePntPolarToEuclid(ellipse_pix.semi_axes[0], ellipse_pix.semi_axes[1], theta);
 
         Eigen::Matrix<Scalar, 2, 1> ws = eucl.Mat();
-        suriko::Point2 pnt_pix = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2{ ws });
+        suriko::Point2f pnt_pix = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2f{ ws });
 
         cv::Point pnt_int{ static_cast<int>(pnt_pix[0]), static_cast<int>(pnt_pix[1]) };
 

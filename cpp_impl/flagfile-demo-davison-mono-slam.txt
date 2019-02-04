@@ -80,33 +80,33 @@
 --camera_up_z=0
 
 # for TestSeqMonoSLAM: 0.1
---kalman_input_noise_std=0.1
---kalman_measurm_noise_std_pix=1
+--monoslam_input_noise_std=0.1
+--monoslam_measurm_noise_std_pix=1
 
---kalman_estim_var_init_std=0
+--monoslam_estim_var_init_std=0
 # camera pos initial std
---kalman_cam_pos_std_m=0
---kalman_cam_orient_q_comp_std=0
---kalman_sal_pnt_first_cam_pos_std=0
---kalman_sal_pnt_azimuth_std=0
---kalman_sal_pnt_elevation_std=0
---kalman_sal_pnt_init_inv_dist=1
---kalman_sal_pnt_init_inv_dist_std=1
---kalman_fake_sal_pnt_init_inv_dist=true
+--monoslam_cam_pos_std_m=0
+--monoslam_cam_orient_q_comp_std=0
+--monoslam_sal_pnt_first_cam_pos_std=0
+--monoslam_sal_pnt_azimuth_std=0
+--monoslam_sal_pnt_elevation_std=0
+--monoslam_sal_pnt_init_inv_dist=1
+--monoslam_sal_pnt_init_inv_dist_std=1
+--monoslam_fake_sal_pnt_init_inv_dist=true
 
---kalman_ellipsoid_cut_thr=0.05
+--monoslam_ellipsoid_cut_thr=0.05
 # 1=all,2=one observation, 3=one component of one observation
---kalman_update_impl=1
---kalman_max_new_blobs_in_first_frame=-10
---kalman_max_new_blobs_per_frame=-1
---kalman_match_blob_prob=-0.3
---kalman_fix_estim_vars_covar_symmetry=true
---kalman_templ_width=17
---kalman_templ_min_corr_coeff=0.65
---kalman_stop_on_sal_pnt_moved_too_far=false
---kalman_debug_estim_vars_cov=true
---kalman_debug_predicted_vars_cov=true
---kalman_debug_max_sal_pnt_count=-1
+--monoslam_update_impl=1
+--monoslam_max_new_blobs_in_first_frame=-10
+--monoslam_max_new_blobs_per_frame=-1
+--monoslam_match_blob_prob=-0.3
+--monoslam_fix_estim_vars_covar_symmetry=true
+--monoslam_templ_width=17
+--monoslam_templ_min_corr_coeff=0.65
+--monoslam_stop_on_sal_pnt_moved_too_far=false
+--monoslam_debug_estim_vars_cov=true
+--monoslam_debug_predicted_vars_cov=true
+--monoslam_debug_max_sal_pnt_count=-1
 
 
 # Visualizer

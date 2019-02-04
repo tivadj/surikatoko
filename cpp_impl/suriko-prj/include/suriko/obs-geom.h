@@ -9,14 +9,14 @@
 
 namespace suriko
 {
-class Point2 {
+class Point2f {
     Eigen::Matrix<Scalar,2,1> mat_;
 public:
-    Point2() = default;
-    explicit Point2(const Eigen::Matrix<Scalar, 2, 1> &m) : mat_(m) {}
+    Point2f() = default;
+    explicit Point2f(const Eigen::Matrix<Scalar, 2, 1> &m) : mat_(m) {}
 
     template <typename F0, typename F1>
-    Point2(const F0 &x, const F1 &y) {
+    Point2f(const F0 &x, const F1 &y) {
         mat_(0) = x;
         mat_(1) = y;
     }
@@ -33,7 +33,7 @@ public:
     Scalar& operator[] (size_t i)       { return mat_(i); };
 };
 
-struct Pointi
+struct Point2i
 {
     int x, y;
     auto Mat() const { return Eigen::Matrix<int, 2, 1> { x, y}; }
@@ -78,8 +78,8 @@ struct RectProto
     F x, y, width, height;
     int Right() const { return x + width; }
     int Bottom() const { return y + height; }
-    auto TopLeft() const { return suriko::Pointi{ x, y }; }
-    auto BotRight() const { return suriko::Pointi{ x + width, y + height }; }
+    auto TopLeft() const { return suriko::Point2i{ x, y }; }
+    auto BotRight() const { return suriko::Point2i{ x + width, y + height }; }
 };
 
 template <typename F>
@@ -97,6 +97,7 @@ std::ostream& operator<<(std::ostream& os, const Recti& r);
 std::optional<Recti> IntersectRects(const Recti& a, const Recti& b);
 Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom);
 Recti TruncateRect(const Rect& a);
+Recti ClampRectWhenFixedCenter(const Recti& r, suriko::Sizei min_size);
 
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
 
@@ -134,7 +135,7 @@ struct SE3Transform
 };
 
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform;
-auto SE2Apply(const SE2Transform& rt, const suriko::Point2& x)->suriko::Point2;
+auto SE2Apply(const SE2Transform& rt, const suriko::Point2f& x)->suriko::Point2f;
 auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3;
 auto SE3Compose(const SE3Transform& rt1, const SE3Transform& rt2) -> suriko::SE3Transform;
 auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_world) -> suriko::SE3Transform;
@@ -188,7 +189,7 @@ private:
 
 struct CornerData
 {
-    suriko::Point2 pixel_coord;
+    suriko::Point2f pixel_coord;
     Eigen::Matrix<Scalar, 3, 1> image_coord;
 };
 
@@ -215,10 +216,10 @@ public:
     bool HasCorners() const;
     size_t CornersCount() const;
 
-    void AddCorner(size_t frame_ind, const suriko::Point2& value);
+    void AddCorner(size_t frame_ind, const suriko::Point2f& value);
     CornerData& AddCorner(size_t frame_ind);
 
-    std::optional<suriko::Point2> GetCorner(size_t frame_ind) const;
+    std::optional<suriko::Point2f> GetCorner(size_t frame_ind) const;
     std::optional<CornerData> GetCornerData(size_t frame_ind) const;
 
     void EachCorner(std::function<void(size_t, const std::optional<CornerData>&)> on_item) const;
@@ -300,7 +301,7 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 
 /// Finds the 3D coordinate of a world point from a list of corresponding 2D pixels in multiple images.
 /// The orientation of the camera for each shot is specified in the list of projection matrices.
-auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D,
+auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2f> &xs2D,
                                  const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0)
     -> suriko::Point3;
 

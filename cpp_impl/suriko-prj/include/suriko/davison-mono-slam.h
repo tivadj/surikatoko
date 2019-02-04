@@ -64,7 +64,7 @@ struct TemplMatchStats
 };
 
 // Internal
-suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center, suriko::Sizei templ_size);
+suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei templ_size);
 
 /// Represents the portion of the image, which is the projection of salient image into a camera.
 struct SalPntPatch
@@ -78,17 +78,17 @@ struct SalPntPatch
     SalPntTrackStatus track_status;
 
     // The distorted coordinates in the current camera, corresponds to the center of the image template.
-    std::optional <suriko::Point2> templ_center_pix_;
-    suriko::Point2 offset_from_top_left_;  // =center-top_left; initialized once for the first frame
+    std::optional <suriko::Point2f> templ_center_pix_;
+    suriko::Point2f offset_from_top_left_;  // =center-top_left; initialized once for the first frame
 
 #if defined(SRK_DEBUG)
-    std::optional<suriko::Pointi> templ_top_left_pix_debug_; // in pixels
-    suriko::Point2 initial_templ_center_pix_debug_;          // in pixels
-    suriko::Pointi initial_templ_top_left_pix_debug_;        // in pixels
+    std::optional<suriko::Point2i> templ_top_left_pix_debug_; // in pixels
+    suriko::Point2f initial_templ_center_pix_debug_;          // in pixels
+    suriko::Point2i initial_templ_top_left_pix_debug_;        // in pixels
 
     // tracking of template center; used to debug large jumps
     size_t prev_detection_frame_ind_debug_ = static_cast<size_t>(-1);  // the latest frame, where the sal pnt was detected
-    suriko::Point2 prev_detection_templ_center_pix_debug_ = suriko::Point2{-1, -1};  // in pixels
+    suriko::Point2f prev_detection_templ_center_pix_debug_ = suriko::Point2f{-1, -1};  // in pixels
 #endif
 
     // As the patch of the image, related to this salient point, doesn't change during tracking,
@@ -107,7 +107,7 @@ struct SalPntPatch
         return track_status == SalPntTrackStatus::New || track_status == SalPntTrackStatus::Matched;
     }
 
-    void SetTemplCenterPix(suriko::Point2 center, suriko::Sizei templ_size)
+    void SetTemplCenterPix(suriko::Point2f center, suriko::Sizei templ_size)
     {
         templ_center_pix_ = center;
 #if defined(SRK_DEBUG)
@@ -124,7 +124,7 @@ struct SalPntPatch
 #endif
     }
 
-    suriko::Point2 OffsetFromTopLeft() const { return offset_from_top_left_; }
+    suriko::Point2f OffsetFromTopLeft() const { return offset_from_top_left_; }
 };
 
 /// Represents publicly transferable key to refer to a salient point.
@@ -171,7 +171,7 @@ public:
         const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         std::vector<CornersMatcherBlobId>* new_blob_ids) {}
 
-    virtual suriko::Point2 GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
+    virtual suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
     
     virtual Picture GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const Picture& image) {
         return Picture{};
@@ -418,7 +418,7 @@ public:
 
     void PredictEstimVarsHelper();
 
-    suriko::Point2 ProjectCameraPoint(const suriko::Point3& pnt_camera) const;
+    suriko::Point2f ProjectCameraPoint(const suriko::Point3& pnt_camera) const;
 
     size_t EstimatedVarsCount() const;
 
@@ -432,7 +432,7 @@ public:
 
     void GetCameraEstimatedVarsUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
 
-    std::optional<suriko::Point2> GetDetectedSalientPatchCenter(SalPntId sal_pnt_id) const;
+    std::optional<suriko::Point2f> GetDetectedSalientPatchCenter(SalPntId sal_pnt_id) const;
 
     bool GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
@@ -456,7 +456,7 @@ public:
     
     SalPntId GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind);
 
-    suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center) const;
+    suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center) const;
 
     /// Calculates the 3D rectangle, corresponding to a salient point's template.
     /// The information, used in the calculation is:
@@ -537,19 +537,19 @@ private:
     void ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind);
 
     void InitStateForNewSalientPoint(size_t old_sal_pnts_count, size_t new_sal_pnt_var_ind,
-        const CameraStateVars& cam_state, suriko::Point2 corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
+        const CameraStateVars& cam_state, suriko::Point2f corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
 
     void AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_var_ind,
-        const CameraStateVars& cam_state, suriko::Point2 corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
+        const CameraStateVars& cam_state, suriko::Point2f corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
     
-    void GetNewSalientPointStateAndCovar(const CameraStateVars& cam_state, suriko::Point2 corner_pix,
+    void GetNewSalientPointStateAndCovar(const CameraStateVars& cam_state, suriko::Point2f corner_pix,
         std::optional<Scalar> pnt_inv_dist_gt,
         size_t take_estim_vars_count,
         Eigen::Matrix<Scalar, kSalientPointComps,1>* sal_pnt_vars,
         Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>* sal_pnt_to_sal_pnt_covar,
         Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic>* sal_pnt_to_other_covar);
 
-    SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2 corner, 
+    SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner, 
         Picture patch_template, TemplMatchStats templ_stats,
         std::optional<Scalar> pnt_inv_dist_gt);
 
@@ -625,8 +625,8 @@ private:
         EigenDynMat* H_by_estim_vars) const;
 
     // Derivative of distorted observed corner (in pixels) by undistorted observed corner (in pixels).
-    void Deriv_hu_by_hd(suriko::Point2 corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const;
-    void Deriv_hd_by_hu(suriko::Point2 corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hd_by_hu) const;
+    void Deriv_hu_by_hd(suriko::Point2f corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const;
+    void Deriv_hd_by_hu(suriko::Point2f corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hd_by_hu) const;
 
     // Derivative of distorted observed corner (in pixels) by camera's state variables
     void Deriv_hu_by_hc(const SalPntProjectionIntermidVars& proj_hist, Eigen::Matrix<Scalar, kPixPosComps, kEucl3 >* dhu_by_dhc) const;

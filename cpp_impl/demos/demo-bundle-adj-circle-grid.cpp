@@ -208,7 +208,7 @@ int CircleGridDemo(int argc, char* argv[])
 
             Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, RT_cfw, frag.coord.value());
             auto pnt_div_f0 = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
-            auto pnt_pix = suriko::Point2(pnt_div_f0 * f0);
+            auto pnt_pix = suriko::Point2f(pnt_div_f0 * f0);
             track.AddCorner(ang_ind, pnt_pix);
 
 #if defined(SRK_HAS_OPENCV)

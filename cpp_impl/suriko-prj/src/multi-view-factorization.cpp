@@ -9,7 +9,7 @@ void PopulateCornerTrackIds(const CornerTrackRepository& track_rep, size_t frame
 {
     for (const CornerTrack& corner_track : track_rep.CornerTracks)
     {
-        std::optional<Point2> corner = corner_track.GetCorner(frame_ind);
+        std::optional<Point2f> corner = corner_track.GetCorner(frame_ind);
         if (corner.has_value())
             track_ids->insert(corner_track.TrackId);
     }
@@ -23,7 +23,7 @@ size_t MultiViewIterativeFactorizer::CountCommonPoints(size_t a_frame_ind, const
     {
         const CornerTrack& corner_track = track_rep_.GetPointTrackById(track_id);
 
-        std::optional<Point2> corner = corner_track.GetCorner(b_frame_ind);
+        std::optional<Point2f> corner = corner_track.GetCorner(b_frame_ind);
         if (!corner.has_value())
             continue;
 
@@ -436,7 +436,7 @@ bool MultiViewIterativeFactorizer::ReprojError(Scalar f0,
             if (!point_track.SalientPointId.has_value()) // require 3D point for projection
                 continue;
 
-            std::optional<suriko::Point2> corner = point_track.GetCorner(frame_ind);
+            std::optional<suriko::Point2f> corner = point_track.GetCorner(frame_ind);
             if (!corner.has_value())
             {
                 // the salient point is not detected in current frame and 
@@ -444,7 +444,7 @@ bool MultiViewIterativeFactorizer::ReprojError(Scalar f0,
                 continue;
             }
 
-            suriko::Point2 corner_pix = corner.value();
+            suriko::Point2f corner_pix = corner.value();
             Eigen::Matrix<Scalar, 2, 1> corner_div_f0 = corner_pix.Mat() / f0;
             suriko::Point3 x3D = map.GetSalientPoint(point_track.SalientPointId.value());
 

@@ -45,7 +45,7 @@ void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff
             auto y = viff_data_by_row[i+1];
             if (x == -1 || y == -1) continue;
 
-            track.AddCorner(frame_ind, suriko::Point2(x,y));
+            track.AddCorner(frame_ind, suriko::Point2f(x,y));
         }
         if (!track.HasCorners()) continue; // track without registered corners
         if (min_frames_per_point != -1 && track.CornersCount() < (size_t)min_frames_per_point)
@@ -177,7 +177,7 @@ int DinoDemo(int argc, char* argv[])
     }
 
     // triangulate 3D points
-    vector<Point2> one_pnt_corner_per_frame;
+    vector<Point2f> one_pnt_corner_per_frame;
     vector<Eigen::Matrix<Scalar,3,4>> one_pnt_proj_mat_per_frame;
     FragmentMap map;
     for (size_t pnt_track_id : subset_point_track_ids)
@@ -188,7 +188,7 @@ int DinoDemo(int argc, char* argv[])
         one_pnt_proj_mat_per_frame.clear();
         for (size_t frame_ind = 0; frame_ind < orig_frames_count; ++frame_ind)
         {
-            optional<Point2> corner = corner_track.GetCorner(frame_ind);
+            optional<Point2f> corner = corner_track.GetCorner(frame_ind);
             if (!corner.has_value())
                 continue;
             one_pnt_corner_per_frame.push_back(corner.value());
@@ -218,7 +218,7 @@ int DinoDemo(int argc, char* argv[])
                     continue;
 
                 // homogeneous component for corner is constant = 1
-                const suriko::Point2& cor = corner.value();
+                const suriko::Point2f& cor = corner.value();
 
                 const auto &P = proj_mat_per_frame_f0scaled[frame_ind];
                 Eigen::Matrix<Scalar, 3, 1> x2D_homog = P * x3D_homog;

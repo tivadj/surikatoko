@@ -79,6 +79,28 @@ Recti TruncateRect(const Rect& a)
     return result;
 }
 
+// Ensures the size of the rectangle is at least of a given value, keeping the center intact.
+Recti ClampRectWhenFixedCenter(const Recti& r, suriko::Sizei min_size)
+{
+    Recti result = r;
+    if (result.width < min_size.width)
+    {
+        int expand_x = min_size.width - result.width;
+        int expand_left_x = expand_x / 2;
+        result.x -= expand_left_x;
+        result.width = min_size.width;
+    }
+
+    if (result.height < min_size.height)
+    {
+        int expand_y = min_size.height - result.height;
+        int expand_up_y = expand_y / 2;
+        result.y -= expand_up_y;
+        result.height = min_size.height;
+    }
+    return result;
+}
+
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform {
     SE3Transform result;
     result.R = rt.R.transpose();
@@ -86,9 +108,9 @@ auto SE3Inv(const SE3Transform& rt) -> SE3Transform {
     return result;
 }
 
-auto SE2Apply(const SE2Transform& rt, const suriko::Point2& x)->suriko::Point2
+auto SE2Apply(const SE2Transform& rt, const suriko::Point2f& x)->suriko::Point2f
 {
-    return suriko::Point2 { rt.R * x.Mat() + rt.T };
+    return suriko::Point2f { rt.R * x.Mat() + rt.T };
 }
 
 auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3
@@ -240,7 +262,7 @@ size_t CornerTrack::CornersCount() const
     return CoordPerFramePixels.size();
 }
 
-void CornerTrack::AddCorner(size_t frame_ind, const suriko::Point2& value)
+void CornerTrack::AddCorner(size_t frame_ind, const suriko::Point2f& value)
 {
     if (StartFrameInd == -1)
         StartFrameInd = frame_ind;
@@ -279,17 +301,17 @@ CornerData& CornerTrack::AddCorner(size_t frame_ind)
     return CoordPerFramePixels.back().value();
 }
 
-std::optional<suriko::Point2> CornerTrack::GetCorner(size_t frame_ind) const
+std::optional<suriko::Point2f> CornerTrack::GetCorner(size_t frame_ind) const
 {
     CHECK(StartFrameInd != -1);
     ptrdiff_t local_ind = frame_ind - StartFrameInd;
 
     if (local_ind < 0 || (size_t)local_ind >= CoordPerFramePixels.size())
-        return std::optional<suriko::Point2>();
+        return std::optional<suriko::Point2f>();
 
     std::optional<CornerData> corner_data = CoordPerFramePixels[local_ind];
     if (!corner_data.has_value())
-        return std::optional<suriko::Point2>();
+        return std::optional<suriko::Point2f>();
     return corner_data.value().pixel_coord;
 }
 
@@ -641,7 +663,7 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
     return std::make_tuple(true, scale_factor, K, direct_orient_cam);
 }
 
-auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2> &xs2D, const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0) -> suriko::Point3
+auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2f> &xs2D, const std::vector<Eigen::Matrix<Scalar,3,4>> &proj_mat_list, Scalar f0) -> suriko::Point3
 {
     size_t frames_count_P = proj_mat_list.size();
     size_t frames_count_xs = xs2D.size();
