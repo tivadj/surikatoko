@@ -1478,11 +1478,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 switch (key)
                 {
                 case kKeySetToGroundTruth:
-                    mono_slam.SetStateToGroundTruth(frame_ind);
+                {
+                    static bool set_gt_impl = true;
+                    if (set_gt_impl)
+                        mono_slam.SetStateToGroundTruthInitNonDiagonal(frame_ind);
+                    else
+                        mono_slam.SetStateToGroundTruth(frame_ind);
                     handler_result.handled = true;
                     handler_result.stop_wait_loop = true;
                     redraw_times++;  // request redrawing the OpenCV viewer
                     break;
+                }
                 case kKeyDumpInfo:
                     std::ostringstream os;
                     mono_slam.DumpTrackerState(os);

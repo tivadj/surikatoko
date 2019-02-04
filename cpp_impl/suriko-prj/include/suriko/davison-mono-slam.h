@@ -453,6 +453,8 @@ public:
 
     SalPntPatch& GetSalientPoint(SalPntId id);
     const SalPntPatch& GetSalientPoint(SalPntId id) const;
+    
+    SalPntId GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind);
 
     suriko::Pointi TemplateTopLeftInt(const suriko::Point2& center) const;
 
@@ -473,6 +475,11 @@ public:
 
     // Resets estimated and update predicted state of the tracker. In virtual mode only.
     void SetStateToGroundTruth(size_t frame_ind);
+
+    // this method attempts to initialize elements outside the covariance matrix's diagonal,
+    // so that covariance between camera position and the inverse distance to a salient point are correlated
+    void SetStateToGroundTruthInitNonDiagonal(size_t frame_ind);
+
     void DumpTrackerState(std::ostringstream& os);
 private:
     struct SalPntProjectionIntermidVars
@@ -531,6 +538,16 @@ private:
 
     void InitStateForNewSalientPoint(size_t old_sal_pnts_count, size_t new_sal_pnt_var_ind,
         const CameraStateVars& cam_state, suriko::Point2 corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
+
+    void AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_var_ind,
+        const CameraStateVars& cam_state, suriko::Point2 corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
+    
+    void GetNewSalientPointStateAndCovar(const CameraStateVars& cam_state, suriko::Point2 corner_pix,
+        std::optional<Scalar> pnt_inv_dist_gt,
+        size_t take_estim_vars_count,
+        Eigen::Matrix<Scalar, kSalientPointComps,1>* sal_pnt_vars,
+        Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>* sal_pnt_to_sal_pnt_covar,
+        Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic>* sal_pnt_to_other_covar);
 
     SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2 corner, 
         Picture patch_template, TemplMatchStats templ_stats,
