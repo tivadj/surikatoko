@@ -300,8 +300,8 @@ public:
     static constexpr size_t kCamStateComps = kCamStateComps;
     static constexpr Scalar kFiniteDiffEpsDebug = (Scalar)1e-5; // used for debugging derivatives
 
-    typedef Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic> EigenDynMat;
-    typedef Eigen::Matrix<Scalar, Eigen::Dynamic, 1> EigenDynVec;
+    using EigenDynMat = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
+    using EigenDynVec = Eigen::Matrix<Scalar, Eigen::Dynamic, 1>;
 public:
     enum class DebugPathEnum
     {
@@ -322,15 +322,16 @@ private:
 
     EigenDynVec estim_vars_; // x[13+N*6], camera position plus all salient points
     EigenDynMat estim_vars_covar_; // P[13+N*6, 13+N*6], state's covariance matrix
+
+    std::shared_mutex predicted_estim_vars_mutex_;
+    EigenDynVec predicted_estim_vars_; // x[13+N*6]
+    EigenDynMat predicted_estim_vars_covar_; // P[13+N*6, 13+N*6]
+
     std::vector<std::unique_ptr<SalPntPatch>> sal_pnts_; // the set of tracked salient points
     std::set<SalPntId> sal_pnts_as_ids_; // the set ids of tracked salient points
     std::set<SalPntId> latest_frame_sal_pnts_; // contains subset of salient points which were tracked in the latest frame
 
     Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps> input_noise_covar_; // Qk[6,6] input noise covariance matrix
-
-    std::shared_mutex predicted_estim_vars_mutex_;
-    EigenDynVec predicted_estim_vars_; // x[13+N*6]
-    EigenDynMat predicted_estim_vars_covar_; // P[13+N*6, 13+N*6]
 public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
@@ -535,9 +536,6 @@ private:
 
     // Updates the centers of detected patches.
     void ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind);
-
-    void InitStateForNewSalientPoint(size_t old_sal_pnts_count, size_t new_sal_pnt_var_ind,
-        const CameraStateVars& cam_state, suriko::Point2f corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
 
     void AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_var_ind,
         const CameraStateVars& cam_state, suriko::Point2f corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
