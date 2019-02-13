@@ -34,6 +34,7 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     Scalar max_deviation,
     int periods_count,
     int shots_per_period,
+    bool const_view_dir,
     std::vector<SE3Transform>* inverse_orient_cams);
 
 void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,

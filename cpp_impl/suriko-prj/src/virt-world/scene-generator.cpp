@@ -101,6 +101,7 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     Scalar max_deviation,
     int periods_count,
     int shots_per_period,
+    bool head_straight,
     std::vector<SE3Transform>* inverse_orient_cams)
 {
     Eigen::Matrix<Scalar, 3, 1> view_dir = center.Mat() - eye.Mat();
@@ -118,7 +119,13 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
 
         Eigen::Matrix<Scalar, 3, 1> shifted_eye = eye.Mat() + right_dir * right_deviation;
 
-        auto wfc = LookAtLufWfc(shifted_eye, center.Mat(), up);
+        Eigen::Matrix<Scalar, 3, 1> cur_center;
+        if (head_straight)
+            cur_center = shifted_eye + view_dir;  // the direction of view is constant
+        else
+            cur_center = center.Mat();            // the center point we are looking at is constant
+
+        auto wfc = LookAtLufWfc(shifted_eye, cur_center, up);
 
         SE3Transform RT = SE3Inv(wfc);
 

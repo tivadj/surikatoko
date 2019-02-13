@@ -886,6 +886,7 @@ DEFINE_int32(s2_num_steps, 100, "");
 DEFINE_double(s3_max_deviation, 0.1, "");
 DEFINE_double(s3_periods_count, 1.0, "");
 DEFINE_int32(s3_shots_per_period, 4, "");
+DEFINE_bool(s3_const_view_dir, false, "");
 // virtual scenario4
 DEFINE_int32(s4_periods_count, 0, "");
 DEFINE_double(s4_0_eye_x, 0.0, "");
@@ -1028,6 +1029,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 FLAGS_s3_max_deviation,
                 FLAGS_s3_periods_count,
                 FLAGS_s3_shots_per_period,
+                FLAGS_s3_const_view_dir,
                 &gt_cam_orient_cfw);
         }
         else if (FLAGS_virtual_scenario == 4)
@@ -1162,7 +1164,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.SetCamera(cam_cfw, FLAGS_monoslam_estim_var_init_std);
     }
 
-    mono_slam.kalman_update_impl_ = FLAGS_monoslam_update_impl;
+    mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_monoslam_fix_estim_vars_covar_symmetry;
     mono_slam.debug_ellipsoid_cut_thr_ = FLAGS_monoslam_ellipsoid_cut_thr;
     if (FLAGS_monoslam_debug_max_sal_pnt_count != -1)
@@ -1204,7 +1206,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         };
     }
     mono_slam.PredictEstimVarsHelper();
-    LOG(INFO) << "kalman_update_impl=" << FLAGS_monoslam_update_impl;
+    LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
+    LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {

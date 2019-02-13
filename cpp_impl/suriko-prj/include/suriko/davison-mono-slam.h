@@ -31,8 +31,30 @@ namespace
     constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
     constexpr size_t kInputNoiseComps = kVelocComps + kAngVelocComps; // Qk.rows: velocity and angular velocity are updated an each iteration by noise
     constexpr size_t kSalientPointPolarCompsCount = 3; // [theta elevation rho], theta: 1 for azimuth angle, 1 for elevation angle, rho: 1 for distance
-    constexpr size_t kRhoComps = 1; // inverse distance
-    constexpr size_t kSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;
+    constexpr size_t kRho = 1; // inverse distance
+
+    /// Specifies the data to store for each salient point.
+    enum class SalPntComps
+    {
+        kEucl3D,                // [3x1] [X Y Z] the Euclidean point case
+        kFirstCamPolarInvDepth  // [6x1] [x y z azim elev rho] inverse depth case
+    };
+
+// The flags to specify the representation of a salient point is for debugging 
+// (to demarcate the code which depends on a particular representation).
+// Salient point = Euclid 3D
+#define SAL_PNT_REPRES_EUCLID_XYZ
+// Salient point = azimuth - elevation - inverse distance
+#define SAL_PNT_REPRES_INV_DIST
+
+#define SAL_PNT_REPRES 2
+#if SAL_PNT_REPRES == 1
+    constexpr size_t kSalientPointComps = kEucl3;  // Q[3x3]
+    constexpr SalPntComps kSalPntRepres = SalPntComps::kEucl3D;
+#elif SAL_PNT_REPRES == 2
+    constexpr size_t kSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;  // Q[6x6]
+    constexpr SalPntComps kSalPntRepres = SalPntComps::kFirstCamPolarInvDepth;
+#endif
 
     // the index of a camera frame to choose for the origin of tracker
     constexpr size_t kTrackerOriginCamInd = 0;
@@ -298,6 +320,7 @@ class DavisonMonoSlam
 {
 public:
     static constexpr size_t kCamStateComps = kCamStateComps;
+    static constexpr size_t kSalientPointComps = kSalientPointComps;
     static constexpr Scalar kFiniteDiffEpsDebug = (Scalar)1e-5; // used for debugging derivatives
 
     using EigenDynMat = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
@@ -331,7 +354,7 @@ private:
     std::set<SalPntId> sal_pnts_as_ids_; // the set ids of tracked salient points
     std::set<SalPntId> latest_frame_sal_pnts_; // contains subset of salient points which were tracked in the latest frame
 
-    Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps> input_noise_covar_; // Qk[6,6] input noise covariance matrix
+    Eigen::Matrix<Scalar, kInputNoiseComps, kInputNoiseComps> input_noise_covar_; // Qk[6,6] input noise covariance matrix
 public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
@@ -370,7 +393,7 @@ public:
     /// 1. Stack all corners in one [2m,1] vector. Require inverting one [2m,2m] innovation matrix.
     /// 2. Process each corner individually. Require inverting m innovation matrices of size [2x2].
     /// 3. Process [x,y] component of each corner individually. Require inverting 2m scalars.
-    int kalman_update_impl_ = 0;
+    int mono_slam_update_impl_ = 0;
 
     bool fix_estim_vars_covar_symmetry_ = false;
 private:
@@ -404,10 +427,6 @@ private:
     {
         EigenDynVec Knew; // [13+N*6, 1]
     } one_comp_of_obs_per_update_cache_;
-    struct
-    {
-        Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic> J_P; // [7,13+N*6]
-    } add_sal_pnt_cache_;
 public:
     DavisonMonoSlam();
 
@@ -486,17 +505,24 @@ private:
     struct SalPntProjectionIntermidVars
     {
         Eigen::Matrix<Scalar, kEucl3, 1> hc; // euclidean position of salient point in camera coordinates
+#if defined(SAL_PNT_REPRES_INV_DIST)
         Eigen::Matrix<Scalar, kEucl3, 1> first_cam_sal_pnt_unity_dir; // unity direction from first camera to the salient point in world coordinates
+#endif
     };
 
     struct SalientPointStateVars
     {
+#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+        Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // the salient point's position
+#endif
+#if defined(SAL_PNT_REPRES_INV_DIST)
         Eigen::Matrix<Scalar, kEucl3, 1> first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
         
         // polar coordinates of the salient point in the camera where the feature was seen for the first time
-        Scalar azimuth_theta_w; // theta=azimuth, rotates clockwise around worldOY, zero corresponds to worldOZ direction
-        Scalar elevation_phi_w; // elevation=latin_phi, rotates clockwise around worldOX, zero corresponds to worldOZ direction
-        Scalar inverse_dist_rho; // inverse distance (=rho) from the first camera, where the salient point was seen the first time, to this salient point
+        Scalar azimuth_theta_w = kNan; // theta=azimuth, rotates clockwise around worldOY, zero corresponds to worldOZ direction
+        Scalar elevation_phi_w = kNan; // elevation=latin_phi, rotates clockwise around worldOX, zero corresponds to worldOZ direction
+        Scalar inverse_dist_rho = kNan; // inverse distance (=rho) from the first camera, where the salient point was seen the first time, to this salient point
+#endif
     };
 
     void ResetCamera(Scalar estim_var_init_std, bool init_estim_vars = true);
@@ -565,8 +591,16 @@ private:
 
     void SaveSalientPointDataToArray(const SalientPointStateVars& sal_pnt_vars, gsl::span<Scalar> dst) const;
 
+#if defined(SAL_PNT_REPRES_INV_DIST)
     void PropagateSalPntPosUncertainty(const SalientPointStateVars& sal_pnt,
         const Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>& sal_pnt_covar,
+        Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
+#endif
+
+    void GetSalientPointPositionUncertainty(
+        const EigenDynMat& src_estim_vars_covar,
+        const SalPntPatch& sal_pnt,
+        const SalientPointStateVars& sal_pnt_vars,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
 
     /// NOTE: The resultant 2D uncertainty does depend on the uncertainty of the camera frame in which the salient point is projected.
@@ -656,12 +690,6 @@ private:
         const Eigen::Matrix<Scalar, kEucl3, 1>& hw,
         Eigen::Matrix<Scalar, 1, kEucl3>* azim_theta_by_hw,
         Eigen::Matrix<Scalar, 1, kEucl3>* elev_phi_by_hw) const;
-
-    void Deriv_sal_pnt_by_cam_q(const CameraStateVars& cam_state,
-        const Eigen::Matrix<Scalar, kEucl3, 1>& hc, 
-        const Eigen::Matrix<Scalar, 1, kEucl3>& azim_theta_by_hw,
-        const Eigen::Matrix<Scalar, 1, kEucl3>& elev_phi_by_hw,
-        Eigen::Matrix<Scalar, kSalientPointComps, kQuat4>* sal_pnt_by_cam_q) const;
 
     void FiniteDiff_hd_by_camera_state(const EigenDynVec& derive_at_pnt,
         const SalientPointStateVars& sal_pnt,
