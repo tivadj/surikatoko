@@ -433,12 +433,12 @@ void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar
     // camera velocity is unchanged
     new_cam_vel = cam_vel;
     if (noise_state != nullptr)
-        new_cam_vel += noise_state->middleRows<kAngAccelComps>(kAccelComps);
+        new_cam_vel += noise_state->middleRows<kAccelComps>(0);
 
     // camera angular velocity is unchanged
     new_cam_ang_vel = cam_ang_vel;
     if (noise_state != nullptr)
-        new_cam_vel += noise_state->middleRows<kAngAccelComps>(kAccelComps);
+        new_cam_ang_vel += noise_state->middleRows<kAngAccelComps>(kAccelComps);
 }
 
 void DavisonMonoSlam::PredictEstimVars(EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const
@@ -466,7 +466,7 @@ void DavisonMonoSlam::PredictEstimVars(EigenDynVec* predicted_estim_vars, EigenD
         FiniteDiff_cam_state_by_input_noise(kFiniteDiffEpsDebug, &finite_diff_G);
 
         Scalar diff2 = (finite_diff_G - G).norm();
-        int z = 0;
+        SRK_ASSERT(true);
     }
 
     // Pvv = F*Pvv*Ft+G*Q*Gt
