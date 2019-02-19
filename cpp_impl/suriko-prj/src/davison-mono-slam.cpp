@@ -1371,8 +1371,10 @@ std::ostringstream& FormatVec(std::ostringstream& os, const EigenVec& v)
 
 void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os)
 {
+    auto filter_state = FilterStageType::Estimated;
+
     os << "Estimated state:" << std::endl;
-    CameraStateVars cam_vars = GetCameraEstimatedVars();
+    CameraStateVars cam_vars = GetCameraStateVars(filter_state);
     os << "cam.pos: ";
     FormatVec(os, cam_vars.pos_w) << std::endl;
     os << "cam.orient_wfc: ";
@@ -1389,6 +1391,17 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os)
     os << "cam.angvel: ";
     FormatVec(os, cam_vars.angular_velocity_c) << std::endl;
 
+    EigenDynVec* p_src_estim_vars;
+    EigenDynMat* p_src_estim_vars_covar;
+    std::tie(p_src_estim_vars, p_src_estim_vars_covar) = GetFilterState(filter_state);
+
+    // camera covariance
+    auto cam_covar = p_src_estim_vars_covar->topLeftCorner<kEucl3, kEucl3>().eval();
+    Eigen::Matrix<Scalar, kEucl3, 1> cam_covar_diag = cam_covar.diagonal();
+    os << "cam.covar.diag: ";
+    FormatVec(os, cam_covar_diag) << std::endl;
+
+    //
     for (SalPntId sal_pnt_id : latest_frame_sal_pnts_)
     {
         auto& sal_pnt = GetSalientPoint(sal_pnt_id);
@@ -1399,9 +1412,9 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os)
             os << "none";
         
         // get 3D position in tracker (usually =cam0) coordinates
-        os << " 3D=";
+        os << " estim3D=";
         Eigen::Matrix<Scalar, kEucl3, 1> pos_mean;
-        bool op = GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType::Estimated, sal_pnt_id, &pos_mean, nullptr);
+        bool op = GetSalientPoint3DPosWithUncertaintyHelper(filter_state, sal_pnt_id, &pos_mean, nullptr);
         if (op)
             FormatVec(os, pos_mean);
         else
@@ -1435,7 +1448,12 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os)
                 os << "NA";
 #endif
         }
-        os << std::endl;
+
+        // salient point covariance
+         auto sal_pnt_covar = p_src_estim_vars_covar->block<kSalientPointComps, kSalientPointComps>(sal_pnt.estim_vars_ind, sal_pnt.estim_vars_ind).eval();
+        Eigen::Matrix<Scalar, kSalientPointComps, 1> sal_pnt_covar_diag = sal_pnt_covar.diagonal();
+        os << "SP.covar.diag: ";
+        FormatVec(os, sal_pnt_covar_diag) << std::endl;
     }
 }
 
