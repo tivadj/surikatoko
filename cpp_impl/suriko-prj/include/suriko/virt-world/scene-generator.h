@@ -37,11 +37,10 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     bool const_view_dir,
     std::vector<SE3Transform>* inverse_orient_cams);
 
-void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
+void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
     suriko::Point3 eye,
-    suriko::Point3 center,
     const Eigen::Matrix<Scalar, 3, 1>& up,
-    Scalar max_deviation,
+    Scalar min_ang, Scalar max_ang,
     int periods_count,
     int shots_per_period,
     std::vector<SE3Transform>* inverse_orient_cams);

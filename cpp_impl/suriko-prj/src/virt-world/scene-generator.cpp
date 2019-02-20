@@ -133,6 +133,37 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     }
 }
 
+void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
+    suriko::Point3 eye,
+    const Eigen::Matrix<Scalar, 3, 1>& up,
+    Scalar min_ang, Scalar max_ang,
+    int periods_count,
+    int shots_per_period,
+    std::vector<SE3Transform>* inverse_orient_cams)
+{
+    Scalar init_ang = (min_ang + max_ang) / 2;
+    Scalar half_fov = (max_ang - min_ang) / 2;
+
+    int max_shots = periods_count * shots_per_period;
+    for (int shot_ind = 0; shot_ind < max_shots; ++shot_ind)
+    {
+        auto w = 2.0 * M_PI / shots_per_period * shot_ind;
+
+        float cur_ang = init_ang + std::sin(w) * half_fov;
+
+        Eigen::Matrix<Scalar, 3, 1> view_dir;
+        view_dir[0] = std::cos(cur_ang);
+        view_dir[1] = std::sin(cur_ang);
+        view_dir[2] = 0;
+
+        auto wfc = LookAtLufWfc(eye.Mat(), eye.Mat() + view_dir, up);
+
+        SE3Transform RT = SE3Inv(wfc);
+
+        inverse_orient_cams->push_back(RT);
+    }
+}
+
 void GenerateCameraShots3DPath(const WorldBounds& wb,
     const std::vector<LookAtComponents>& cam_poses, int periods_count,
     std::vector<SE3Transform>* inverse_orient_cams)

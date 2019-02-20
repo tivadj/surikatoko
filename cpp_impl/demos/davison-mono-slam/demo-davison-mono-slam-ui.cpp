@@ -893,7 +893,7 @@ void SceneVisualizationPangolinGui::RunInSeparateThread()
 
 void SceneVisualizationPangolinGui::OnKeyPressed(int key)
 {
-    LOG(INFO) << "pressed key '" <<(char)key << "'(" << key << ")";
+    VLOG(6) << "pressed key '" <<(char)key << "'(" << key << ")";
     got_user_input_ = true;
     key_ = key;
 

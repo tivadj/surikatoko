@@ -907,6 +907,11 @@ DEFINE_double(s4_1_center_z, 0.0, "");
 DEFINE_double(s4_1_up_x, 0.0, "");
 DEFINE_double(s4_1_up_y, 0.0, "");
 DEFINE_double(s4_1_up_z, 0.0, "");
+// virtual scenario5
+DEFINE_double(s5_min_ang, 0.78, "pi/4");
+DEFINE_double(s5_max_ang, 2.35, "3pi/4");
+DEFINE_int32(s5_shots_per_period, 4, "");
+DEFINE_int32(s5_periods_count, 100, "");
 
 DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
 DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
@@ -1046,6 +1051,16 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 suriko::Point3{FLAGS_s4_1_up_x,FLAGS_s4_1_up_y,FLAGS_s4_1_up_z}
                 });
             GenerateCameraShots3DPath(wb, cam_poses, FLAGS_s4_periods_count, &gt_cam_orient_cfw);
+        }
+        else if (FLAGS_virtual_scenario == 5)
+        {
+            auto viewer_eye = viewer_eye_offset;
+            GenerateCameraShotsRotateLeftAndRight(wb, viewer_eye, up,
+                FLAGS_s5_min_ang,
+                FLAGS_s5_max_ang,
+                FLAGS_s5_periods_count,
+                FLAGS_s5_shots_per_period,
+                &gt_cam_orient_cfw);
         }
 
         std::vector<SE3Transform> gt_cam_orient_wfc;

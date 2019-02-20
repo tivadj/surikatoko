@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm> // std::max
 #include <Eigen/Dense>
 #include "suriko/rt-config.h"
 
@@ -21,7 +22,12 @@ public:
 
         Eigen::SelfAdjointEigenSolver<EigenDynMat> eigenSolver(covar);
         SRK_ASSERT(eigenSolver.info() == Eigen::Success);
-        transform_ = eigenSolver.eigenvectors() * eigenSolver.eigenvalues().cwiseSqrt().asDiagonal();
+        auto positive_eig_vals = eigenSolver.eigenvalues().eval();
+        for (int i = 0; i < positive_eig_vals.rows(); ++i)
+            positive_eig_vals[i] = std::max((Scalar)0, positive_eig_vals[i]);
+
+        transform_ = eigenSolver.eigenvectors() * positive_eig_vals.cwiseSqrt().asDiagonal();
+        SRK_ASSERT(transform_.allFinite());
     }
 
     template <typename OutMat>

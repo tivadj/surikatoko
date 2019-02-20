@@ -47,7 +47,10 @@ namespace
 // Salient point = azimuth - elevation - inverse distance
 #define SAL_PNT_REPRES_INV_DIST
 
-#define SAL_PNT_REPRES 2
+// or set compiler flag eg: SAL_PNT_REPRES=1
+#ifndef SAL_PNT_REPRES
+#  define SAL_PNT_REPRES 2
+#endif
 #if SAL_PNT_REPRES == 1
     constexpr size_t kSalientPointComps = kEucl3;  // Q[3x3]
     constexpr SalPntComps kSalPntRepres = SalPntComps::kEucl3D;
@@ -531,8 +534,8 @@ private:
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar) const;
 
-    auto GetFilterState(FilterStageType filter_stage) -> std::tuple<EigenDynVec*, EigenDynMat*>;
-    auto GetFilterState(FilterStageType filter_stage) const -> std::tuple<const EigenDynVec*, const EigenDynMat*>;
+    auto GetFilterStage(FilterStageType filter_stage) -> std::tuple<EigenDynVec*, EigenDynMat*>;
+    auto GetFilterStage(FilterStageType filter_stage) const -> std::tuple<const EigenDynVec*, const EigenDynMat*>;
 
     CameraStateVars GetCameraStateVars(FilterStageType filter_stage);
     CameraStateVars GetCameraStateVars(FilterStageType filter_stage) const;
@@ -551,7 +554,9 @@ private:
 
     void PredictCameraMotionByKinematicModel(gsl::span<const Scalar> cam_state, gsl::span<Scalar> new_cam_state,
         const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state = nullptr) const;
-    void PredictEstimVars(EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const;
+    void PredictEstimVars(
+        const EigenDynVec& src_estim_vars, const EigenDynMat& src_estim_vars_covar,
+        EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const;
 
     void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind);
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind);
@@ -639,14 +644,11 @@ private:
     void FiniteDiff_cam_state_by_input_noise(Scalar finite_diff_eps,
         Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const;
 
-    void Deriv_Hrowblock_by_estim_vars(const SalPntPatch& sal_pnt,
-        const CameraStateVars& cam_state, const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
+    void Deriv_hd_by_cam_state_and_sal_pnt(
         const EigenDynVec& derive_at_pnt,
-        Eigen::Matrix<Scalar, kPixPosComps, Eigen::Dynamic>* Hrowblock_by_estim_vars) const;
-
-    void Deriv_hd_by_cam_state_and_sal_pnt(const SalPntPatch& sal_pnt,
         const CameraStateVars& cam_state, const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
-        const EigenDynVec& derive_at_pnt,
+        const SalPntPatch& sal_pnt,
+        const SalientPointStateVars& sal_pnt_vars,
         Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam_state,
         Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt,
         Eigen::Matrix<Scalar, kPixPosComps, 1>* hd = nullptr) const;
