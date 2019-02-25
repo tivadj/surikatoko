@@ -468,6 +468,8 @@ public:
     auto GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id)
         ->MeanAndCov2D;
 
+    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr);
+
     Scalar CurrentFrameReprojError() const;
 
     size_t SalientPointsCount() const;

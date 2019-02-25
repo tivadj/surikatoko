@@ -1016,7 +1016,13 @@ cv::Scalar OcvColorBgr(SrkColor c)
     };
 }
 
-void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam, const RotatedEllipse2D& ellipse_pix, size_t dots_per_ellipse, cv::Scalar color, cv::Mat* camera_image_bgr)
+/// Draws ellipse in camera plane by dividing it into points and projecting/distorting them into pixels.
+void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam,
+    const RotatedEllipse2D& ellipse_pix,
+    size_t dots_per_ellipse,
+    cv::Scalar color,
+    std::function<suriko::Point2f(suriko::Point2f)> transform_ellipse_pnt_fun,
+    cv::Mat* camera_image_bgr)
 {
     // draw narrow ellipse as a line
     if (IsClose(0, ellipse_pix.semi_axes[1]))
@@ -1040,6 +1046,9 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam, const Rotat
         Eigen::Matrix<Scalar, 2, 1> ws = eucl.Mat();
         suriko::Point2f pnt_pix = SE2Apply(ellipse_pix.world_from_ellipse, suriko::Point2f{ ws });
 
+        if (transform_ellipse_pnt_fun != nullptr)
+            pnt_pix = transform_ellipse_pnt_fun(pnt_pix);
+
         cv::Point pnt_int{ static_cast<int>(pnt_pix[0]), static_cast<int>(pnt_pix[1]) };
 
         if (pnt_int_prev.has_value())
@@ -1053,17 +1062,65 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam, const Rotat
 void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
     cv::Mat* out_image_bgr) const
 {
-    MarkUsedTrackerStateToVisualize();
-    MeanAndCov2D corner = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Estimated, sal_pnt_id);
-
-    RotatedEllipse2D corner_ellipse = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
-
-    //
     const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
     SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
     cv::Scalar sal_pnt_color_bgr = OcvColorBgr(sal_pnt_color);
 
-    DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, out_image_bgr);
+    // 1 = propagate (using derivatives) 3D uncertainty of a ([3x1] or [6x1]) salient point into the [2x1] 2D pixels uncertainty.
+    // The result of this approach is very bad, we get dot-like circles when the correct shape is the elongated ellipse.
+    // Perhaps the big errors are due to approximation of uncertainty using derivatives.
+    // 2 = construct 3D uncertainty ellipsoid and then try to project it into picture.
+    static int draw_sal_pnt_uncert_impl = 2;
+    if (draw_sal_pnt_uncert_impl == 1)
+    {
+        MarkUsedTrackerStateToVisualize();
+        MeanAndCov2D corner = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Estimated, sal_pnt_id);
+
+        RotatedEllipse2D corner_ellipse = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
+
+        DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, nullptr, out_image_bgr);
+    }
+    else if (draw_sal_pnt_uncert_impl == 2)
+    {
+        Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
+        Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
+        bool op = mono_slam.GetSalientPointEstimated3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
+        if (!op)
+            return;
+
+        RotatedEllipsoid3D rot_ellipsoid;
+        GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellipse_cut_thr_, &rot_ellipsoid);
+
+        MarkUsedTrackerStateToVisualize();
+        CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();
+
+        // The set of ellipsoid 3D points, visible from given camera position, is in implicit form and to
+        // enumerate them is a problem, source: "Perspective Projection of an Ellipsoid", David Eberly, GeometricTools, https://www.geometrictools.com/
+        // If it is solved, we can just enumerate them and project-distort into pixels.
+        // Instead, we project those contour 3D points onto the camera (z=1) and get the ellipse,
+        // 3D points of which can be easily enumerated.
+
+        int impl_with = -1;
+        RotatedEllipse2D rotated_ellipse = mono_slam.ProjectEllipsoidOnCameraOrApprox(rot_ellipsoid, cam_state, &impl_with);
+
+        if (impl_with == 1)
+            sal_pnt_color_bgr = cv::Scalar{ 0, 0, 255 }; // red, projected ellipsoid
+        else if (impl_with == 2)
+            sal_pnt_color_bgr = cv::Scalar{ 0, 255, 255 }; // yellow, ellipsoid cuts camera plane
+        else if (impl_with == 3)
+            sal_pnt_color_bgr = cv::Scalar{ 255, 255, 0 }; // cyan, projected beacon points
+
+        auto cam_coord_to_pix_fun = [&mono_slam](suriko::Point2f pos_camera) -> suriko::Point2f
+        {
+            // due to distortion, the pixel coordinates of contour will not form an ellipse
+            // hence usage of 2D ellipse drawing functions is inappropriate
+            // instead we just project 3D points onto the image
+            suriko::Point2f pnt_pix = mono_slam.ProjectCameraPoint(suriko::Point3(pos_camera[0], pos_camera[1], kCamPlaneZ));
+            return pnt_pix;
+        };
+
+        DrawDistortedEllipseOnPicture(mono_slam, rotated_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, cam_coord_to_pix_fun, out_image_bgr);
+    }
 }
 
 void DavisonMonoSlam2DDrawer::DrawScene(DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const

@@ -2165,6 +2165,81 @@ RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(c
     return result;
 }
 
+RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellip, const CameraStateVars& cam_state,
+    int* impl_with)
+{
+    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
+    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
+
+    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
+    Eigen::Matrix<Scalar, 3, 1> u_world = cam_wfc.leftCols<1>();
+    Eigen::Matrix<Scalar, 3, 1> v_world = cam_wfc.middleCols<1>(1);
+
+    // convert camera plane n*x=lam into world coordinates
+
+    // n_world=Rwc*n_cam=col<3rd>(Rwc), because n_cam=OZ=(0 0 1)
+    Eigen::Matrix<Scalar, 3, 1> n_world = cam_wfc.rightCols<1>();
+
+    Scalar lam_cam = suriko::kCamPlaneZ;
+    Scalar lam_world = cam_state.pos_w.transpose() * n_world + lam_cam;
+
+    // check if eye is inside the ellipsoid
+    SE3Transform ellip_from_world = SE3Inv(rot_ellip.world_from_ellipse);
+    suriko::Point3 eye_in_ellip = SE3Apply(ellip_from_world, eye);
+    Scalar ellip_pnt =
+        suriko::Sqr(eye_in_ellip[0]) / suriko::Sqr(rot_ellip.semi_axes[0]) +
+        suriko::Sqr(eye_in_ellip[1]) / suriko::Sqr(rot_ellip.semi_axes[1]) +
+        suriko::Sqr(eye_in_ellip[2]) / suriko::Sqr(rot_ellip.semi_axes[2]);
+    bool eye_inside_ellip = ellip_pnt <= RotatedEllipsoid3D::kRightSide;
+
+    Ellipse2DWithCenter ellipse_on_cam_plane;
+    bool found_ellipse_with_center = false;
+
+    int impl = -1;
+
+    if (eye_inside_ellip)
+    {
+        bool op2 = IntersectRotEllipsoidAndPlane(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
+        if (op2)
+        {
+            found_ellipse_with_center = true;
+            impl = 2;
+        }
+        else
+        {
+            // Eye _inside_ the uncertainty ellipsoid, behind the camera plane. Ellipsoid is so short, that it doesn't cross the camera plane.
+            // This feature should not be tracked.
+            // for now, return approximate ellipse
+        }
+    }
+    else
+    {
+        bool op = ProjectEllipsoidOnCamera(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
+        if (op)
+        {
+            found_ellipse_with_center = true;
+            impl = 1;
+        }
+    }
+
+    RotatedEllipse2D result_ellipse;
+    if (found_ellipse_with_center)
+    {
+        result_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
+    }
+    else
+    {
+        result_ellipse = ApproxProjectEllipsoidOnCameraByBeaconPoints(rot_ellip, cam_state);
+        impl = 3;
+    }
+
+    SRK_ASSERT(impl != -1);
+    if (impl_with != nullptr)
+        *impl_with = impl;
+
+    return result_ellipse;
+}
+
 void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(
     const EigenDynVec& derive_at_pnt,
     const CameraStateVars& cam_state,
