@@ -19,10 +19,6 @@ macro(AddDepsM dem)
     target_link_libraries(${dem} suriko-engine)
     target_include_directories(${dem} PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
 
-    target_include_directories(${dem} PRIVATE ${Boost_INCLUDE_DIRS})
-    target_link_libraries(${dem} ${Boost_LIBRARIES})
-    #target_link_libraries(dem Boost::filesystem)
-
     #target_include_directories(dem PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_link_libraries (${dem} Eigen3::Eigen)
     target_link_libraries (${dem} gflags)
@@ -36,10 +32,6 @@ function(AddDepsF dem)
 
     target_link_libraries(${dem} suriko-engine)
     target_include_directories(${dem} PRIVATE ${PROJECT_SOURCE_DIR}/../suriko-prj/include) # TODO: use variable
-
-    target_include_directories(${dem} PRIVATE ${Boost_INCLUDE_DIRS})
-    target_link_libraries(${dem} ${Boost_LIBRARIES})
-    #target_link_libraries(dem Boost::filesystem)
 
     #target_include_directories(dem PRIVATE ${EIGEN3_INCLUDE_DIR})
     target_link_libraries (${dem} Eigen3::Eigen)

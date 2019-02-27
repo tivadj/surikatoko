@@ -9,9 +9,6 @@
 #include <corecrt_math_defines.h>
 #include <tuple>
 #include <random>
-//#include <filesystem>
-//#include <experimental/filesystem>
-#include <boost/filesystem.hpp>
 #include <Eigen/Dense>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
@@ -37,7 +34,6 @@
 namespace suriko_demos
 {
 using namespace std;
-using namespace boost::filesystem;
 using namespace suriko;
 using namespace suriko::internals;
 using namespace suriko::virt_world;

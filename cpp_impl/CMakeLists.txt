@@ -36,14 +36,12 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_NEGATORS_DEPRECATION_WARNING") # suppress warning: std::not1() is deprecated
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING") # suppress warning: STL4015: The std::iterator class template (used as a base class to provide typedefs) is deprecated in C++17
 elseif(UNIX)
-    # PIC (position-independent code) is required by boost_filesystem (compile boost with this cxxflags=-fPIC too)
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17") # tested on clang
 endif()
 
 
 
 # TODO: why libstc++?
-# break boost::filesystem: error: no member named 'move' in namespace 'std'
 #set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libstdc++")
 #set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
 #set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --verbose")
@@ -57,17 +55,6 @@ endif()
 #    endif()
 #endif()
 #set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
-
-set(Boost_USE_STATIC_LIBS OFF)
-set(Boost_USE_MULTITHREADED ON)
-set(Boost_USE_STATIC_RUNTIME OFF)
-
-find_package(Boost REQUIRED COMPONENTS filesystem)
-if (Boost_FOUND)
-    message(STATUS "Boost_INCLUDE_DIRS=${Boost_INCLUDE_DIRS}") #
-    message(STATUS "Boost_LIBRARIES=${Boost_LIBRARIES}") #
-    message(STATUS "Boost_FILESYSTEM_LIBRARY_DEBUG=${Boost_FILESYSTEM_LIBRARY_DEBUG}")
-endif()
 
 find_package(Eigen3 REQUIRED NO_MODULE)
 if (TARGET Eigen3::Eigen)

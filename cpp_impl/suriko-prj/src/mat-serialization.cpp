@@ -4,12 +4,11 @@
 #include <iostream>
 #include <fstream> // std::ifstream
 #include <sstream> // std::stringstream
-#include <boost/filesystem.hpp>
 #include "suriko/mat-serialization.h"
 
 namespace suriko
 {
-bool ReadMatrixFromFile(const boost::filesystem::path &file_path, char delimiter,
+bool ReadMatrixFromFile(const std::filesystem::path &file_path, char delimiter,
                         std::vector<Scalar> *data_by_row, size_t *rows, size_t *cols,
                         std::string *err_msg)
 {

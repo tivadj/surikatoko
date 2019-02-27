@@ -42,7 +42,6 @@
 namespace suriko_demos_davison_mono_slam
 {
 using namespace std;
-using namespace boost::filesystem;
 using namespace suriko; 
 using namespace suriko::internals;
 using namespace suriko::virt_world;

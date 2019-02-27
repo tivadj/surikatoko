@@ -6,9 +6,7 @@
 #include <cassert>
 #include <cmath>
 #include <tuple>
-//#include <filesystem>
-//#include <experimental/filesystem>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <Eigen/Dense>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
@@ -21,8 +19,6 @@
 namespace suriko_demos
 {
 using namespace std;
-//using namespace std::experimental::filesystem;
-using namespace boost::filesystem;
 using namespace suriko;
 
 void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff_num_rows, size_t viff_num_cols,
@@ -59,8 +55,8 @@ void PopulateCornersPerFrame(const vector<Scalar>& viff_data_by_row, size_t viff
 
 static bool ValidateDirectoryExists(const char *flagname, const std::string &value)
 {
-    boost::filesystem::path test_data_path = boost::filesystem::absolute(value).normalize();
-    if (boost::filesystem::is_directory(test_data_path))
+    std::filesystem::path test_data_path = std::filesystem::canonical(std::filesystem::absolute(value));
+    if (std::filesystem::is_directory(test_data_path))
         return true;
     std::cout <<"directory " <<test_data_path.string() << " doesn't exist" <<std::endl;
     return false;
@@ -78,7 +74,7 @@ int DinoDemo(int argc, char* argv[])
 
     const string& test_data = FLAGS_testdata;
 
-    boost::filesystem::path test_data_path = boost::filesystem::absolute(test_data).normalize();
+    std::filesystem::path test_data_path = std::filesystem::canonical(std::filesystem::absolute(test_data));
     LOG(INFO) <<"testdata=" << test_data_path;
 
     ptrdiff_t min_frames_per_point = -1; // set -1 to ignore
@@ -86,7 +82,7 @@ int DinoDemo(int argc, char* argv[])
     bool zero_cam_intrinsic_mat_01 = true; // sets K[0,1]=1
     bool equalize_fxfy = false; // makes fx=fy
 
-    auto proj_mats_file_path = (test_data_path / "oxfvisgeom/dinosaur/dinoPs_as_mat108x4.txt").normalize();
+    auto proj_mats_file_path = std::filesystem::canonical(test_data_path / "oxfvisgeom/dinosaur/dinoPs_as_mat108x4.txt");
 
     vector<Scalar> P_data_by_row;
     size_t P_num_rows, P_num_cols;
@@ -101,7 +97,7 @@ int DinoDemo(int argc, char* argv[])
     size_t orig_frames_count = P_num_rows / 3; // 36
     LOG(INFO) <<"frames_count=" <<orig_frames_count <<endl;
 
-    auto viff_mats_file_path = (test_data_path / "oxfvisgeom/dinosaur/viff.xy").normalize();
+    auto viff_mats_file_path = std::filesystem::canonical(test_data_path / "oxfvisgeom/dinosaur/viff.xy");
     vector<Scalar> viff_data_by_row;
     size_t viff_num_rows, viff_num_cols;
     op= ReadMatrixFromFile(viff_mats_file_path, ' ', &viff_data_by_row, &viff_num_rows, &viff_num_cols, &err_msg);
