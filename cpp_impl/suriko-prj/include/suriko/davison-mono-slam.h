@@ -101,6 +101,7 @@ struct SalPntPatch
     size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
 
     SalPntTrackStatus track_status;
+    size_t undetected_frames_count = 0;  // number of frames for which this salient point isn't detected; 0 if it is observed.
 
     // The distorted coordinates in the current camera, corresponds to the center of the image template.
     std::optional <suriko::Point2f> templ_center_pix_;
@@ -371,6 +372,7 @@ public:
     Scalar sal_pnt_first_cam_pos_std_ = 0;
     Scalar sal_pnt_azimuth_std_ = 0;
     Scalar sal_pnt_elevation_std_ = 0;
+    std::optional<size_t> sal_pnt_max_undetected_frames_count_;  // salient points greater than this value are removed from tracker
     Scalar cam_pos_std_m_ = 0; // in meters
     Scalar cam_orient_q_comp_std_ = 0;
     
@@ -559,6 +561,9 @@ private:
     void PredictEstimVars(
         const EigenDynVec& src_estim_vars, const EigenDynMat& src_estim_vars_covar,
         EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const;
+
+    void RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_delete_desc);
+    void RemoveObsoleteSalientPoints();
 
     void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind);
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind);

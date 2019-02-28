@@ -923,6 +923,7 @@ DEFINE_double(monoslam_sal_pnt_azimuth_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_elevation_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist_std, 1, "");
+DEFINE_double(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
 DEFINE_double(monoslam_measurm_noise_std_pix, 1, "");
 DEFINE_int32(monoslam_update_impl, 1, "");
 DEFINE_double(monoslam_max_new_blobs_in_first_frame, 7, "");
@@ -1158,6 +1159,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.SetInputNoiseStd(FLAGS_monoslam_input_noise_std);
     mono_slam.measurm_noise_std_pix_ = FLAGS_monoslam_measurm_noise_std_pix;
     mono_slam.sal_pnt_patch_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
+    if (FLAGS_monoslam_sal_pnt_max_undetected_frames_count > 0)
+        mono_slam.sal_pnt_max_undetected_frames_count_ = FLAGS_monoslam_sal_pnt_max_undetected_frames_count;
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {

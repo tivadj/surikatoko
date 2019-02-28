@@ -504,6 +504,117 @@ void DavisonMonoSlam::PredictEstimVarsHelper()
     PredictEstimVars(estim_vars_, estim_vars_covar_, &predicted_estim_vars_, &predicted_estim_vars_covar_);
 }
 
+void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_delete_desc)
+{
+    size_t last_sal_pnt_ind = SalientPointsCount();
+    size_t last_sal_pnt_var_ind = SalientPointOffset(last_sal_pnt_ind);
+    for (auto remove_sal_pnt_ind : sal_pnt_inds_to_delete_desc)
+    {
+        VLOG(4) << "Removing SPind=" << remove_sal_pnt_ind;
+
+        last_sal_pnt_ind--;
+        last_sal_pnt_var_ind -= kSalientPointComps;
+
+        // collect all salient points, which are marked for removing, in the back of corresponding array by
+        // swapping each removing salient point with the back salient point
+        // then all salient points in the back may be swept in one pass
+
+        auto remove_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(remove_sal_pnt_ind);
+        auto last_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(last_sal_pnt_ind);
+        SalPntPatch& last_sal_pnt = GetSalientPoint(last_sal_pnt_id);
+
+        sal_pnts_as_ids_.erase(remove_sal_pnt_id);
+
+        bool has_removing_sal_pnt = latest_frame_sal_pnts_.find(remove_sal_pnt_id) != latest_frame_sal_pnts_.end();
+        SRK_ASSERT(!has_removing_sal_pnt);
+
+        bool need_moving = remove_sal_pnt_ind != last_sal_pnt_ind;  // otherwise it is already in the end and ready to be truncated
+        if (need_moving)
+        {
+            // process indices in the order from high to low
+            size_t remove_var_ind = SalientPointOffset(remove_sal_pnt_ind);
+
+            auto move_estim_vars_back = [](size_t rem_ind, size_t back_ind, EigenDynVec* src_estim_vars)
+            {
+                // move last salient point into the place of deleting salient point
+                src_estim_vars->middleRows<kSalientPointComps>(rem_ind) =
+                    src_estim_vars->middleRows<kSalientPointComps>(back_ind);
+            };
+            move_estim_vars_back(remove_var_ind, last_sal_pnt_var_ind, &estim_vars_);
+            move_estim_vars_back(remove_var_ind, last_sal_pnt_var_ind, &predicted_estim_vars_);
+
+            auto move_estim_vars_covar_back = [](size_t rem_ind, size_t back_ind, EigenDynMat* src_estim_vars_covar)
+            {
+                src_estim_vars_covar->middleRows<kSalientPointComps>(rem_ind) =
+                    src_estim_vars_covar->middleRows<kSalientPointComps>(back_ind);
+                src_estim_vars_covar->middleCols<kSalientPointComps>(rem_ind) =
+                    src_estim_vars_covar->middleCols<kSalientPointComps>(back_ind);
+            };
+            move_estim_vars_covar_back(remove_var_ind, last_sal_pnt_var_ind, &estim_vars_covar_);
+            move_estim_vars_covar_back(remove_var_ind, last_sal_pnt_var_ind, &predicted_estim_vars_covar_);
+
+            std::swap(sal_pnts_[remove_sal_pnt_ind], sal_pnts_[last_sal_pnt_ind]);
+
+            // update maintaining indices
+            SRK_ASSERT(last_sal_pnt.sal_pnt_ind == last_sal_pnt_ind);
+            last_sal_pnt.sal_pnt_ind = remove_sal_pnt_ind;
+
+            SRK_ASSERT(last_sal_pnt.estim_vars_ind == last_sal_pnt_var_ind);
+            last_sal_pnt.estim_vars_ind = remove_var_ind;
+        }
+    }
+
+    // truncate salient points in the back
+    if (!sal_pnt_inds_to_delete_desc.empty())
+    {
+        auto new_sal_pnt_count = sal_pnts_.size() - sal_pnt_inds_to_delete_desc.size();
+        sal_pnts_.resize(new_sal_pnt_count);
+
+        estim_vars_.conservativeResize(last_sal_pnt_var_ind);
+        predicted_estim_vars_.conservativeResize(last_sal_pnt_var_ind);
+
+        estim_vars_covar_.conservativeResize(last_sal_pnt_var_ind, last_sal_pnt_var_ind);
+        predicted_estim_vars_covar_.conservativeResize(last_sal_pnt_var_ind, last_sal_pnt_var_ind);
+    }
+}
+
+void DavisonMonoSlam::RemoveObsoleteSalientPoints()
+{
+    if (!sal_pnt_max_undetected_frames_count_.has_value())
+        return;
+
+    // update 'unobserved' counter
+    std::vector<size_t> sal_pnt_inds_to_delete;
+    for (auto sal_pnt_id : sal_pnts_as_ids_)
+    {
+        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        if (sal_pnt.track_status == SalPntTrackStatus::Unobserved)
+            ++sal_pnt.undetected_frames_count;
+        else
+            sal_pnt.undetected_frames_count = 0;  // reset counter
+
+        if (sal_pnt_max_undetected_frames_count_.has_value() &&
+            sal_pnt.undetected_frames_count > sal_pnt_max_undetected_frames_count_.value())
+        {
+            sal_pnt_inds_to_delete.push_back(sal_pnt.sal_pnt_ind);
+        }
+    }
+
+    // init this during debugging to force removing the salient point
+    static int sal_pnt_dummy_ind_to_remove = -1;
+    if (sal_pnt_dummy_ind_to_remove != -1)
+    {
+        sal_pnt_inds_to_delete.push_back(sal_pnt_dummy_ind_to_remove);
+        auto remove_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(sal_pnt_dummy_ind_to_remove);
+        latest_frame_sal_pnts_.erase(remove_sal_pnt_id);
+    }
+
+    std::sort(sal_pnt_inds_to_delete.begin(), sal_pnt_inds_to_delete.end(),
+        [](auto x, auto y) { return x > y; });
+
+    RemoveSalientPoints(sal_pnt_inds_to_delete);
+}
+
 void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 {
     if (stats_logger_ != nullptr) stats_logger_->StartNewFrameStats();
@@ -530,6 +641,8 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
         sal_pnt.SetTemplCenterPix(templ_center, sal_pnt_patch_size_);
         latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
+
+    RemoveObsoleteSalientPoints();
 
     std::unique_lock<std::shared_mutex> lk(predicted_estim_vars_mutex_, std::defer_lock);
     if (in_multi_threaded_mode_)
@@ -2659,10 +2772,8 @@ const SalPntPatch& DavisonMonoSlam::GetSalientPoint(SalPntId id) const
 
 SalPntId DavisonMonoSlam::GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind)
 {
-    for (const std::unique_ptr<SalPntPatch >& sal_pnt : sal_pnts_)
-        if (sal_pnt->sal_pnt_ind == sal_pnt_ind)
-            return SalPntId{ sal_pnt.get() };
-    return SalPntId{};
+    SalPntPatch *sp = sal_pnts_[sal_pnt_ind].get();
+    return SalPntId{ sp };
 }
 
 std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointPatchIntoWorld(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const
