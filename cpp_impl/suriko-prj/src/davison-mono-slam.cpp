@@ -3406,6 +3406,16 @@ suriko::Point2i DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2f& cente
     return suriko::TemplateTopLeftInt(center, sal_pnt_patch_size_);
 }
 
+Scalar DavisonMonoSlam::ClosestSalientPointTemplateMinDistance() const
+{
+    if (closest_sal_pnt_templ_min_dist_pix_.has_value())
+        return closest_sal_pnt_templ_min_dist_pix_.value();
+
+    // when two salient points touch each other, the distance between them is 2R, R='radius of a template'
+    const Scalar touch_dist = std::sqrt(suriko::Sqr(sal_pnt_patch_size_.width) + suriko::Sqr(sal_pnt_patch_size_.height));
+    return touch_dist;
+}
+
 void DavisonMonoSlam::FixSymmetricMat(EigenDynMat* sym_mat) const
 {
     FixAlmostSymmetricMat(sym_mat);

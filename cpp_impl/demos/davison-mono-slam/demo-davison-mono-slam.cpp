@@ -684,8 +684,8 @@ public:
         detector_->compute(image.gray, keypoints, descr_per_row);
 
         std::vector<cv::KeyPoint> sparse_keypoints;
-        const float rad_diag = std::sqrt(suriko::Sqr(mono_slam_->sal_pnt_patch_size_.width) + suriko::Sqr(mono_slam_->sal_pnt_patch_size_.height)) / 2;
-        FilterOutClosest(keypoints, rad_diag, &sparse_keypoints);
+        Scalar closest_templ_min_dist = mono_slam_->ClosestSalientPointTemplateMinDistance();
+        FilterOutClosest(keypoints, closest_templ_min_dist, &sparse_keypoints);
 
         cv::Mat sparse_img;
         static bool debug_keypoints = false;
@@ -718,7 +718,7 @@ public:
         };
 
         new_keypoints_.clear();
-        filter_out_close_to_existing(sparse_keypoints, rad_diag, &new_keypoints_);
+        filter_out_close_to_existing(sparse_keypoints, closest_templ_min_dist, &new_keypoints_);
 
         cv::Mat img_no_closest;
         if (debug_keypoints)
@@ -933,6 +933,7 @@ DEFINE_int32(monoslam_templ_width, 15, "width of patch template");
 DEFINE_int32(monoslam_templ_min_search_rect_width, 7, "the min width of a rectangle when searching for tempplate in the next frame");
 DEFINE_int32(monoslam_templ_min_search_rect_height, 7, "");
 DEFINE_double(monoslam_templ_min_corr_coeff, -1, "");
+DEFINE_double(monoslam_templ_min_dist_pix, 0, "");
 DEFINE_bool(monoslam_stop_on_sal_pnt_moved_too_far, false, "width of patch template");
 DEFINE_bool(monoslam_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(monoslam_debug_estim_vars_cov, false, "");
@@ -1159,6 +1160,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.SetInputNoiseStd(FLAGS_monoslam_input_noise_std);
     mono_slam.measurm_noise_std_pix_ = FLAGS_monoslam_measurm_noise_std_pix;
     mono_slam.sal_pnt_patch_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
+    if (FLAGS_monoslam_templ_min_dist_pix > 0)
+        mono_slam.closest_sal_pnt_templ_min_dist_pix_ = FLAGS_monoslam_templ_min_dist_pix;
     if (FLAGS_monoslam_sal_pnt_max_undetected_frames_count > 0)
         mono_slam.sal_pnt_max_undetected_frames_count_ = FLAGS_monoslam_sal_pnt_max_undetected_frames_count;
 
@@ -1225,6 +1228,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.PredictEstimVarsHelper();
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
+    LOG(INFO) << "mono_slam_templ_min_dist=" << mono_slam.ClosestSalientPointTemplateMinDistance();
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {

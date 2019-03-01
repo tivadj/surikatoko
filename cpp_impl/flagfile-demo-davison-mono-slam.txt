@@ -17,7 +17,7 @@
 
 # Controller
 --ctrl_multi_threaded_mode=false
---ctrl_wait_after_each_frame=true
+--ctrl_wait_after_each_frame=false
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true
@@ -80,10 +80,10 @@
 --camera_up_z=0
 
 # for TestSeqMonoSLAM: 0.1
---monoslam_input_noise_std=0.1
---monoslam_measurm_noise_std_pix=1
+--monoslam_input_noise_std=0.03
+--monoslam_measurm_noise_std_pix=0.5
 
---monoslam_estim_var_init_std=0
+--monoslam_estim_var_init_std=0.01
 # camera pos initial std
 --monoslam_cam_pos_std_m=0
 --monoslam_cam_orient_q_comp_std=0
@@ -104,6 +104,7 @@
 --monoslam_fix_estim_vars_covar_symmetry=true
 --monoslam_templ_width=17
 --monoslam_templ_min_corr_coeff=0.65
+--monoslam_templ_min_dist_pix=35
 --monoslam_stop_on_sal_pnt_moved_too_far=false
 --monoslam_debug_estim_vars_cov=true
 --monoslam_debug_predicted_vars_cov=true

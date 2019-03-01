@@ -380,6 +380,11 @@ public:
     // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
     suriko::Sizei sal_pnt_patch_size_ = { 15, 15 };
 
+    // this allow to register a new salient point only if the distance (between the centers of templates)
+    // to the closest salient point is greater than this value;
+    // this prevents overlapping of templates of tracked salient points
+    std::optional<Scalar> closest_sal_pnt_templ_min_dist_pix_;
+
     std::optional<int> debug_max_sal_pnt_coun_;
 
     // camera
@@ -484,6 +489,9 @@ public:
     SalPntId GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind);
 
     suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center) const;
+
+    // New salient points should be farther away from other salient points in the picture by this distance.
+    Scalar ClosestSalientPointTemplateMinDistance() const;
 
     /// Calculates the 3D rectangle, corresponding to a salient point's template.
     /// The information, used in the calculation is:
