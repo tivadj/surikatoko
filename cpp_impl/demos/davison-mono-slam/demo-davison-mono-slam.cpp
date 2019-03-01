@@ -980,6 +980,15 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     if (FLAGS_scene_source == std::string(kImageSeqDirCStr))
         demo_data_source = DemoDataSource::kImageSeqDir;
 
+    if (demo_data_source == DemoDataSource::kImageSeqDir &&
+        DavisonMonoSlam::kSalPntRepres == SalPntComps::kEucl3D)
+    {
+        LOG(ERROR) << "XYZ [3x1] representation of a salient point is allowed only for virtual scenarios, "
+                   << "because in real-world scenario the depth of a salient point is unknown and can't be initialized. "
+                   << "Set [6x1] representation of a salient point (use c++ flag: SAL_PNT_REPRES=2)";
+        return 1;
+    }
+
     //
     FragmentMap entire_map;
     std::vector<SE3Transform> gt_cam_orient_cfw; // ground truth camera orientation transforming into camera from world

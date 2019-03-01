@@ -325,6 +325,7 @@ class DavisonMonoSlam
 public:
     static constexpr size_t kCamStateComps = kCamStateComps;
     static constexpr size_t kSalientPointComps = kSalientPointComps;
+    static constexpr SalPntComps kSalPntRepres = kSalPntRepres;
     static constexpr Scalar kFiniteDiffEpsDebug = (Scalar)1e-5; // used for debugging derivatives
 
     using EigenDynMat = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;

@@ -13,6 +13,9 @@ message(STATUS "PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}") #
 option (SURIKO_DEBUG "Adds extra run-time checks, slightly slowing the run-time speed" OFF)
 set (SURIKO_SCALAR_TYPE_STRING "f64" CACHE STRING "f32 (for c++ float) or f64 (for c++ double)")
 set_property(CACHE SURIKO_SCALAR_TYPE_STRING PROPERTY STRINGS f32 f64)
+set(SURIKO_MONOSLAM_SALIENT_POINT_REPRES FirstCamPolarInvDist CACHE STRING "A represents for salient point, 'XYZ' for 3x1 vector, 'FirstCamPolarInvDist' for 6x1 vector")
+set_property(CACHE SURIKO_MONOSLAM_SALIENT_POINT_REPRES PROPERTY STRINGS XYZ FirstCamPolarInvDist)
+
 #
 set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.h
@@ -71,11 +74,17 @@ else()
     message(SEND_ERROR "Unrecognized floating type SURIKO_SCALAR_TYPE_STRING=${SURIKO_SCALAR_TYPE_STRING}")
 endif()
 
+set (sal_pnt_repres_id 2) # 2 for 6-element vector, see "davison-mono-slam.h"
+if (SURIKO_MONOSLAM_SALIENT_POINT_REPRES STREQUAL XYZ)
+    set (sal_pnt_repres_id 1)
+endif()
+
 configure_file(
   "${PROJECT_SOURCE_DIR}/include/suriko/rt-config-autogen.h.in"
   "${PROJECT_BINARY_DIR}/rt-config-autogen.h"
   )
 
+target_compile_definitions(suriko-engine PUBLIC SAL_PNT_REPRES=${sal_pnt_repres_id})
 target_include_directories(suriko-engine PUBLIC "${PROJECT_BINARY_DIR}")
 
 #target_include_directories(suriko-engine PRIVATE ${EIGEN3_INCLUDE_DIR})
