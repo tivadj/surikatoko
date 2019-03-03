@@ -1481,7 +1481,7 @@ std::ostringstream& FormatVec(std::ostringstream& os, const EigenVec& v)
     return os;
 }
 
-void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os)
+void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os) const
 {
     auto filter_state = FilterStageType::Estimated;
 
@@ -1503,8 +1503,8 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os)
     os << "cam.angvel: ";
     FormatVec(os, cam_vars.angular_velocity_c) << std::endl;
 
-    EigenDynVec* p_src_estim_vars;
-    EigenDynMat* p_src_estim_vars_covar;
+    const EigenDynVec* p_src_estim_vars;
+    const EigenDynMat* p_src_estim_vars_covar;
     std::tie(p_src_estim_vars, p_src_estim_vars_covar) = GetFilterStage(filter_state);
 
     // camera covariance
@@ -1631,7 +1631,7 @@ void DavisonMonoSlam:: GetNewSalientPointStateAndCovar(const CameraStateVars& ca
     size_t take_estim_vars_count,
     Eigen::Matrix<Scalar, kSalientPointComps, 1>* sal_pnt_vars,
     Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>* sal_pnt_to_sal_pnt_covar,
-    Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic>* sal_pnt_to_other_covar)
+    Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic>* sal_pnt_to_other_covar) const
 {
     // undistort 2D image coordinate
     Eigen::Matrix<Scalar, kPixPosComps, 1> hd = corner_pix.Mat(); // distorted
@@ -2223,14 +2223,14 @@ suriko::Point2f DavisonMonoSlam::ProjectCameraPoint(const suriko::Point3& pnt_ca
 }
 
 RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid,
-    const CameraStateVars& cam_state)
+    const CameraStateVars& cam_state) const
 {
     RotatedEllipsoid3D rot_ellipsoid = GetRotatedEllipsoid(ellipsoid);
     return ApproxProjectEllipsoidOnCameraByBeaconPoints(rot_ellipsoid, cam_state);
 }
 
 RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid,
-    const CameraStateVars& cam_state)
+    const CameraStateVars& cam_state) const
 {
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_wfc;
     RotMatFromQuat(Span(cam_state.orientation_wfc), &cam_wfc);
@@ -2279,7 +2279,7 @@ RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(c
 }
 
 RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellip, const CameraStateVars& cam_state,
-    int* impl_with)
+    int* impl_with) const
 {
     Eigen::Matrix<Scalar, 3, 3> cam_wfc;
     RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
@@ -2770,7 +2770,7 @@ const SalPntPatch& DavisonMonoSlam::GetSalientPoint(SalPntId id) const
     return const_cast<DavisonMonoSlam*>(this)->GetSalientPoint(id);
 }
 
-SalPntId DavisonMonoSlam::GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind)
+SalPntId DavisonMonoSlam::GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind) const
 {
     SalPntPatch *sp = sal_pnts_[sal_pnt_ind].get();
     return SalPntId{ sp };
@@ -2911,7 +2911,7 @@ CameraStateVars DavisonMonoSlam::GetCameraStateVars(FilterStageType filter_step)
 
 CameraStateVars DavisonMonoSlam::GetCameraStateVars(FilterStageType filter_step) const
 {
-    return const_cast<decltype(this)>(this)->GetCameraStateVars(filter_step);
+    return const_cast<DavisonMonoSlam*>(this)->GetCameraStateVars(filter_step);
 }
 
 CameraStateVars DavisonMonoSlam::GetCameraEstimatedVars()
@@ -2921,7 +2921,7 @@ CameraStateVars DavisonMonoSlam::GetCameraEstimatedVars()
 
 CameraStateVars DavisonMonoSlam::GetCameraEstimatedVars() const
 {
-    return const_cast<decltype(this)>(this)->GetCameraEstimatedVars();
+    return const_cast<DavisonMonoSlam*>(this)->GetCameraEstimatedVars();
 }
 
 CameraStateVars DavisonMonoSlam::GetCameraPredictedVars()
@@ -2932,10 +2932,10 @@ CameraStateVars DavisonMonoSlam::GetCameraPredictedVars()
 void DavisonMonoSlam::GetCameraPosAndOrientationWithUncertainty(FilterStageType filter_stage,
     Eigen::Matrix<Scalar, kEucl3, 1>* cam_pos,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* cam_pos_uncert,
-    Eigen::Matrix<Scalar, kQuat4, 1>* cam_orient_quat)
+    Eigen::Matrix<Scalar, kQuat4, 1>* cam_orient_quat) const
 {
-    EigenDynVec* p_src_estim_vars;
-    EigenDynMat* p_src_estim_vars_covar;
+    const EigenDynVec* p_src_estim_vars;
+    const EigenDynMat* p_src_estim_vars_covar;
     std::tie(p_src_estim_vars, p_src_estim_vars_covar) = GetFilterStage(filter_stage);
     auto& src_estim_vars = *p_src_estim_vars;
     auto& src_estim_vars_covar = *p_src_estim_vars_covar;
@@ -2967,7 +2967,7 @@ void DavisonMonoSlam::GetCameraPosAndOrientationWithUncertainty(FilterStageType 
 void DavisonMonoSlam::GetCameraEstimatedPosAndOrientationWithUncertainty(
     Eigen::Matrix<Scalar, kEucl3, 1>* cam_pos,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* cam_pos_uncert,
-    Eigen::Matrix<Scalar, kQuat4, 1>* cam_orient_quat)
+    Eigen::Matrix<Scalar, kQuat4, 1>* cam_orient_quat) const
 {
     GetCameraPosAndOrientationWithUncertainty(FilterStageType::Estimated, cam_pos, cam_pos_uncert, cam_orient_quat);
 }
@@ -3049,11 +3049,11 @@ void DavisonMonoSlam::GetSalientPointPositionUncertainty(
     }
 }
 
-auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) 
+auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) const
     -> MeanAndCov2D
 {
-    EigenDynVec* src_estim_vars;
-    EigenDynMat* src_estim_vars_covar;
+    const EigenDynVec* src_estim_vars;
+    const EigenDynMat* src_estim_vars_covar;
     std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterStage(filter_stage);
     
     const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
@@ -3064,7 +3064,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageTy
 auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar,
-    const SalPntPatch& sal_pnt) ->MeanAndCov2D
+    const SalPntPatch& sal_pnt) const ->MeanAndCov2D
 {
     // fun(camera frame, salient point) -> pixel_coord, 13->2
     // collect 13x13 covariance matrix for
@@ -3307,15 +3307,15 @@ auto DavisonMonoSlam::GetFilterStage(FilterStageType filter_stage)
 auto DavisonMonoSlam::GetFilterStage(FilterStageType filter_stage) const
 -> std::tuple<const EigenDynVec*, const EigenDynMat*>
 {
-    return const_cast<decltype(this)>(this)->GetFilterStage(filter_stage);
+    return const_cast<DavisonMonoSlam*>(this)->GetFilterStage(filter_stage);
 }
 
 bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType filter_stage, SalPntId sal_pnt_id,
     Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
-    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert)
+    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const
 {
-    EigenDynVec* src_estim_vars;
-    EigenDynMat* src_estim_vars_covar;
+    const EigenDynVec* src_estim_vars;
+    const EigenDynMat* src_estim_vars_covar;
     std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterStage(filter_stage);
 
     const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
@@ -3325,14 +3325,14 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType 
 
 bool DavisonMonoSlam::GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
     Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
-    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert)
+    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const
 {
     return GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType::Estimated, sal_pnt_id, pos_mean, pos_uncert);
 }
 
 bool DavisonMonoSlam::GetSalientPointPredicted3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
     Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
-    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert)
+    Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const
 {
     return GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType::Predicted, sal_pnt_id, pos_mean, pos_uncert);
 }

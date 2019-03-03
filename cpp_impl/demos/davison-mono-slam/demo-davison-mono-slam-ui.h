@@ -55,7 +55,7 @@ std::optional<WorkerChatMessage> PopMsgUnderLock(std::optional<WorkerChatMessage
 
 struct UIThreadParams
 {
-    DavisonMonoSlam* mono_slam;
+    const DavisonMonoSlam* mono_slam;
     SE3Transform tracker_origin_from_world;
     Scalar ellipsoid_cut_thr;
     bool wait_for_user_input_after_each_frame;
@@ -161,9 +161,9 @@ void SceneVisualizationThread(UIThreadParams ui_params);
 class DavisonMonoSlam2DDrawer
 {
 public:
-    void DrawScene(DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const;
+    void DrawScene(const DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const;
     
-    void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
+    void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
         cv::Mat* out_image_bgr) const;
 public:
     Scalar ellipse_cut_thr_;

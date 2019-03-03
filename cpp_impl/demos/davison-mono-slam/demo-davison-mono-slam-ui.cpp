@@ -403,7 +403,7 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
     }
 }
 
-void RenderSalientTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
+void RenderSalientTemplate(const DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId sal_pnt_id)
 {
     MarkUsedTrackerStateToVisualize();
     std::optional<SalPntRectFacet> rect = mono_slam->ProtrudeSalientTemplateIntoWorld(sal_pnt_id);
@@ -517,7 +517,7 @@ void RenderSalientTemplate(DavisonMonoSlam* mono_slam, DavisonMonoSlam::SalPntId
     }
 }
 
-void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
+void RenderMap(const DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
     bool display_3D_uncertainties,
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
@@ -564,7 +564,7 @@ void RenderMap(DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
     }
 }
 
-void RenderScene(const UIThreadParams& ui_params, DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar ellipsoid_cut_thr,
+void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar ellipsoid_cut_thr,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
     bool display_3D_uncertainties,
@@ -1059,7 +1059,7 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam,
     }
 }
 
-void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
+void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
     cv::Mat* out_image_bgr) const
 {
     const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
@@ -1123,7 +1123,7 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(DavisonMonoSlam& mono_sl
     }
 }
 
-void DavisonMonoSlam2DDrawer::DrawScene(DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const
+void DavisonMonoSlam2DDrawer::DrawScene(const DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const
 {
     background_image_bgr.copyTo(*out_image_bgr);
 

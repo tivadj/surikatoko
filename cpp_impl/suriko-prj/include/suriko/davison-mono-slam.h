@@ -163,7 +163,7 @@ struct SalPntId
         ptrdiff_t sal_pnt_as_bits_internal;
     };
 
-    constexpr SalPntId() = default;
+    SalPntId() = default;
     constexpr SalPntId(SalPntPatch* sal_pnt) : sal_pnt_internal(sal_pnt) {}
     constexpr bool HasId() const { return sal_pnt_internal != nullptr; }
     auto static constexpr Null() { return SalPntId{ nullptr }; }
@@ -459,7 +459,7 @@ public:
 
     void GetCameraEstimatedPosAndOrientationWithUncertainty(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
-        Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat);
+        Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat) const;
 
     void GetCameraEstimatedVarsUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
 
@@ -467,16 +467,16 @@ public:
 
     bool GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
-        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
+        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     bool GetSalientPointPredicted3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
-        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
+        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
-    auto GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id)
+    auto GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) const
         ->MeanAndCov2D;
 
-    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr);
+    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr) const;
 
     Scalar CurrentFrameReprojError() const;
 
@@ -487,7 +487,7 @@ public:
     SalPntPatch& GetSalientPoint(SalPntId id);
     const SalPntPatch& GetSalientPoint(SalPntId id) const;
     
-    SalPntId GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind);
+    SalPntId GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind) const;
 
     suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center) const;
 
@@ -516,7 +516,7 @@ public:
     // so that covariance between camera position and the inverse distance to a salient point are correlated
     void SetStateToGroundTruthInitNonDiagonal(size_t frame_ind);
 
-    void DumpTrackerState(std::ostringstream& os);
+    void DumpTrackerState(std::ostringstream& os) const;
 private:
     struct SalPntProjectionIntermidVars
     {
@@ -556,11 +556,11 @@ private:
     void GetCameraPosAndOrientationWithUncertainty(FilterStageType filter_stage,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
-        Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat);
+        Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat) const;
 
     bool GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType filter_stage, SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
-        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert);
+        Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     void FillRk(size_t obs_sal_pnt_count, EigenDynMat* Rk) const;
     void FillRk2x2(Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* Rk) const;
@@ -592,7 +592,7 @@ private:
         size_t take_estim_vars_count,
         Eigen::Matrix<Scalar, kSalientPointComps,1>* sal_pnt_vars,
         Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>* sal_pnt_to_sal_pnt_covar,
-        Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic>* sal_pnt_to_other_covar);
+        Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic>* sal_pnt_to_other_covar) const;
 
     SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner, 
         Picture patch_template, TemplMatchStats templ_stats,
@@ -628,7 +628,7 @@ private:
     auto GetSalientPointProjected2DPosWithUncertainty(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar,
-        const SalPntPatch& sal_pnt) ->MeanAndCov2D;
+        const SalPntPatch& sal_pnt) const->MeanAndCov2D;
 
     /// NOTE: The resultant uncertainty doesn't respect uncertainty of the current camera frame.
     bool GetSalientPoint3DPosWithUncertainty(
@@ -741,8 +741,8 @@ private:
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraStateVars& cam_state, const SalientPointStateVars& sal_pnt_vars, SalPntProjectionIntermidVars *proj_hist) const;
 
-    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state);
-    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state);
+    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state) const;
+    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state) const;
     
     void FixSymmetricMat(EigenDynMat* sym_mat) const;
 
