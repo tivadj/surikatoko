@@ -842,6 +842,41 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const DavisonMonoSl
     return true;
 }
 
+std::optional<Scalar> GetMaxCamShift(const std::vector<SE3Transform>& gt_cam_orient_cfw)
+{
+    std::optional<SE3Transform> prev_cam_wfc;
+    std::optional<Scalar> between_frames_max_cam_shift;
+    for (const auto& cfw : gt_cam_orient_cfw)
+    {
+        auto wfc = SE3Inv(cfw);
+        if (prev_cam_wfc.has_value())
+        {
+            Eigen::Matrix<Scalar, 3, 1> cam_shift = wfc.T - prev_cam_wfc.value().T;
+            auto dist = cam_shift.norm();
+            if (!between_frames_max_cam_shift.has_value() ||
+                dist > between_frames_max_cam_shift.value())
+                between_frames_max_cam_shift = dist;
+        }
+        prev_cam_wfc = wfc;
+    }
+    return between_frames_max_cam_shift;
+}
+
+void CheckDavisonMonoSlamConfigurationAndDump(const DavisonMonoSlam& mono_slam, 
+    const std::vector<SE3Transform>& gt_cam_orient_cfw)
+{
+    // check max shift of the camera is expected by tracker
+    std::optional<Scalar> between_frames_max_cam_shift = GetMaxCamShift(gt_cam_orient_cfw);
+    if (between_frames_max_cam_shift.has_value())
+    {
+        auto max_expected_cam_shift = mono_slam.input_noise_std_ * 3;
+        if (between_frames_max_cam_shift.value() > max_expected_cam_shift)
+            LOG(INFO)
+                << "Note: max_cam_shift=" << between_frames_max_cam_shift.value()
+                << " is too big compared to input (process) noise 3sig=" << max_expected_cam_shift;
+    }
+}
+
 static bool ValidateDirectoryExists(const char *flagname, const std::string &value)
 {
     auto test_data_path = std::filesystem::absolute(value);
@@ -980,10 +1015,24 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     if (FLAGS_scene_source == std::string(kImageSeqDirCStr))
         demo_data_source = DemoDataSource::kImageSeqDir;
 
-    if (demo_data_source == DemoDataSource::kImageSeqDir &&
-        DavisonMonoSlam::kSalPntRepres == SalPntComps::kEucl3D)
+    auto check_sal_pnt_representation = [&]() -> bool
     {
-        LOG(ERROR) << "XYZ [3x1] representation of a salient point is allowed only for virtual scenarios, "
+        // 6x1 salient point's representation is generic and works everywhere
+        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+            return true;
+
+        // 3x1 Euclidean representation of a salient point is allowed only in virtual scenarios with turned on fake initialization of inverse depth.
+        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kEucl3D)
+        {
+            if (demo_data_source == DemoDataSource::kVirtualScene && FLAGS_monoslam_fake_sal_pnt_init_inv_dist)
+                return true;
+        }
+        return false;
+    };
+    
+    if (!check_sal_pnt_representation())
+    {
+        LOG(ERROR) << "XYZ [3x1] representation of a salient point is allowed only in virtual scenarios, "
                    << "because in real-world scenario the depth of a salient point is unknown and can't be initialized. "
                    << "Set [6x1] representation of a salient point (use c++ flag: SAL_PNT_REPRES=2)";
         return 1;
@@ -1097,6 +1146,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 }
             }
         }
+
+        std::optional<Scalar> between_frames_max_cam_shift = GetMaxCamShift(gt_cam_orient_cfw);
+        LOG(INFO) << "max_cam_shift=" << between_frames_max_cam_shift.value();
     }
 
     size_t frames_count = gt_cam_orient_cfw.size();
@@ -1235,6 +1287,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         };
     }
     mono_slam.PredictEstimVarsHelper();
+    LOG(INFO) << "mono_slam_input_noise_std=" << FLAGS_monoslam_input_noise_std;
+    LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << FLAGS_monoslam_measurm_noise_std_pix;
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
     LOG(INFO) << "mono_slam_templ_min_dist=" << mono_slam.ClosestSalientPointTemplateMinDistance();
@@ -1332,6 +1386,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
     }
 #endif
+
+    CheckDavisonMonoSlamConfigurationAndDump(mono_slam, gt_cam_orient_cfw);
 
     //
     size_t frame_ind = -1;

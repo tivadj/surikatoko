@@ -789,7 +789,14 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         
         //EigenDynMat innov_var_inv = innov_var.inverse();
         auto& innov_var_inv = cache.innov_var_inv;
-        innov_var_inv.noalias() = innov_var.inverse();
+        static int innov_var_inv_impl = 1;
+        if (innov_var_inv_impl == 1)
+            innov_var_inv.noalias() = innov_var.inverse();
+        else if (innov_var_inv_impl == 2)
+        {
+            Eigen::FullPivLU<EigenDynMat> llt_of_innov_var(innov_var);
+            innov_var_inv.noalias() = llt_of_innov_var.inverse();
+        }
 
         // K=P*Ht*inv(S)
         //EigenDynMat Knew = Pprev * Hk.transpose() * innov_var_inv; // [13+6n,2m]
@@ -829,6 +836,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         // Xnew=Xold+K(z-obs)
         // update estimated variables
 #if defined(SRK_DEBUG)
+        auto zk_projected_sal_pnts_delta = (zk - projected_sal_pnts).eval();
         EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
         Eigen::Map<Eigen::Matrix<Scalar, kQuat4, 1>> cam_quat(estim_vars_delta.data() + kEucl3);
         Scalar cam_quat_len = cam_quat.norm();
@@ -1508,10 +1516,26 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os) const
     std::tie(p_src_estim_vars, p_src_estim_vars_covar) = GetFilterStage(filter_state);
 
     // camera covariance
-    auto cam_covar = p_src_estim_vars_covar->topLeftCorner<kEucl3, kEucl3>().eval();
-    Eigen::Matrix<Scalar, kEucl3, 1> cam_covar_diag = cam_covar.diagonal();
-    os << "cam.covar.diag: ";
-    FormatVec(os, cam_covar_diag) << std::endl;
+    DependsOnCameraPosPackOrder();
+    auto cam_pos_covar = p_src_estim_vars_covar->topLeftCorner<kEucl3, kEucl3>().eval();
+    Eigen::Matrix<Scalar, kEucl3, 1> cam_pos_covar_diag = cam_pos_covar.diagonal();
+    os << "cam.pos.covar.diag: ";
+    FormatVec(os, cam_pos_covar_diag) << std::endl;
+
+    auto cam_orient_covar = p_src_estim_vars_covar->block<kQuat4, kQuat4>(kEucl3, kEucl3).eval();
+    Eigen::Matrix<Scalar, kQuat4, 1> cam_orient_covar_diag = cam_orient_covar.diagonal();
+    os << "cam.orient.covar.diag: ";
+    FormatVec(os, cam_orient_covar_diag) << std::endl;
+
+    auto cam_vel_covar = p_src_estim_vars_covar->block<kEucl3, kEucl3>(kEucl3 + kQuat4, kEucl3 + kQuat4).eval();
+    Eigen::Matrix<Scalar, kEucl3, 1> cam_vel_covar_diag = cam_vel_covar.diagonal();
+    os << "cam.vel.covar.diag: ";
+    FormatVec(os, cam_vel_covar_diag) << std::endl;
+
+    auto cam_ang_vel_covar = p_src_estim_vars_covar->block<kEucl3, kEucl3>(kEucl3 + kQuat4 + kEucl3, kEucl3 + kQuat4 + kEucl3).eval();
+    Eigen::Matrix<Scalar, kEucl3, 1> cam_ang_vel_covar_diag = cam_ang_vel_covar.diagonal();
+    os << "cam.angvel.covar.diag: ";
+    FormatVec(os, cam_ang_vel_covar_diag) << std::endl;
 
     //
     for (SalPntId sal_pnt_id : latest_frame_sal_pnts_)
