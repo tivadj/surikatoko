@@ -976,7 +976,7 @@ std::shared_ptr<SceneVisualizationPangolinGui> SceneVisualizationPangolinGui::Ne
     return gui;
 }
 
-void SceneVisualizationPangolinGui::SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, float back_dist)
+void SceneVisualizationPangolinGui::SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, Scalar back_dist)
 {
     pangolin::OpenGlMatrix model_view_col_major;
 

@@ -693,7 +693,7 @@ public:
             cv::drawKeypoints(image.gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         // remove keypoints which are close to 'matched' salient points
-        auto filter_out_close_to_existing = [this,&matched_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, float exclude_radius,
+        auto filter_out_close_to_existing = [this,&matched_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, Scalar exclude_radius,
             std::vector<cv::KeyPoint>* result)
         {
             for (size_t cand_ind = 0; cand_ind < keypoints.size(); ++cand_ind)
@@ -705,7 +705,7 @@ public:
                 {
                     std::optional<suriko::Point2f> exist_pix_opt = mono_slam_->GetDetectedSalientPatchCenter(sal_pnt_id);
                     suriko::Point2f exist_pix = exist_pix_opt.value();
-                    float dist = std::sqrt(suriko::Sqr(cand.pt.x - exist_pix[0]) + suriko::Sqr(cand.pt.y - exist_pix[1]));
+                    Scalar dist = (Scalar)std::sqrt(suriko::Sqr(cand.pt.x - exist_pix[0]) + suriko::Sqr(cand.pt.y - exist_pix[1]));
                     if (dist < exclude_radius)
                     {
                         has_close_blob = true;
@@ -730,7 +730,7 @@ public:
         }
     }
 
-    static void FilterOutClosest(const std::vector<cv::KeyPoint>& keypoints, float exclude_radius, std::vector<cv::KeyPoint>* sparse_keypoints)
+    static void FilterOutClosest(const std::vector<cv::KeyPoint>& keypoints, Scalar exclude_radius, std::vector<cv::KeyPoint>* sparse_keypoints)
     {
         std::vector<char> processed(keypoints.size(), (char)false);
         for (size_t stage_ind = 0; stage_ind < keypoints.size(); ++stage_ind)
@@ -746,7 +746,7 @@ public:
                 if (processed[i]) continue;
 
                 const auto& cand = keypoints[i];
-                float dist = std::sqrt(suriko::Sqr(cand.pt.x - stage.pt.x) + suriko::Sqr(cand.pt.y - stage.pt.y));
+                auto dist = (Scalar)std::sqrt(suriko::Sqr(cand.pt.x - stage.pt.x) + suriko::Sqr(cand.pt.y - stage.pt.y));
                 if (dist < exclude_radius)
                     processed[i] = (char)true;
             }
@@ -883,7 +883,7 @@ DEFINE_double(s2_max_deviation, 0.1, "");
 DEFINE_int32(s2_num_steps, 100, "");
 // virtual scenario3
 DEFINE_double(s3_max_deviation, 0.1, "");
-DEFINE_double(s3_periods_count, 1.0, "");
+DEFINE_int32(s3_periods_count, 1, "");
 DEFINE_int32(s3_shots_per_period, 4, "");
 DEFINE_bool(s3_const_view_dir, false, "");
 // virtual scenario4
@@ -923,11 +923,11 @@ DEFINE_double(monoslam_sal_pnt_azimuth_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_elevation_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist_std, 1, "");
-DEFINE_double(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
+DEFINE_int32(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
 DEFINE_double(monoslam_measurm_noise_std_pix, 1, "");
 DEFINE_int32(monoslam_update_impl, 1, "");
-DEFINE_double(monoslam_max_new_blobs_in_first_frame, 7, "");
-DEFINE_double(monoslam_max_new_blobs_per_frame, 1, "");
+DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
+DEFINE_int32(monoslam_max_new_blobs_per_frame, 1, "");
 DEFINE_double(monoslam_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
 DEFINE_int32(monoslam_templ_width, 15, "width of patch template");
 DEFINE_int32(monoslam_templ_min_search_rect_width, 7, "the min width of a rectangle when searching for tempplate in the next frame");
@@ -1106,10 +1106,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     std::array<Scalar, 2> foc_len_pix = { FLAGS_camera_focal_length_pix_x, FLAGS_camera_focal_length_pix_y };
 
     // assume dy=PixelSizeMm[1]=some constant
-    const float pix_size_y = 0.001f;
+    const Scalar pix_size_y = 0.001f;
 
-    const float focal_length_mm = foc_len_pix[1] * pix_size_y;
-    float pix_size_x = focal_length_mm / foc_len_pix[0];
+    const Scalar focal_length_mm = foc_len_pix[1] * pix_size_y;
+    Scalar pix_size_x = focal_length_mm / foc_len_pix[0];
 
     CameraIntrinsicParams cam_intrinsics;
     cam_intrinsics.image_size = { FLAGS_camera_image_width, FLAGS_camera_image_height };
@@ -1249,7 +1249,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         if (FLAGS_monoslam_max_new_blobs_per_frame > 0)
             corners_matcher->max_new_blobs_per_frame_ = FLAGS_monoslam_max_new_blobs_per_frame;
         if (FLAGS_monoslam_match_blob_prob > 0)
-            corners_matcher->match_blob_prob_ = FLAGS_monoslam_match_blob_prob;
+            corners_matcher->match_blob_prob_ = (float)FLAGS_monoslam_match_blob_prob;
 
         mono_slam.SetCornersMatcher(std::move(corners_matcher));
     }
@@ -1327,7 +1327,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 kKeySetToGroundTruth, kKeyDumpInfo };
             pangolin_gui->key_pressed_handler_ = nullptr; // initialized lazily later
             pangolin_gui->InitUI();
-            int back_dist = 5;
+            Scalar back_dist = 5;
             pangolin_gui->SetCameraBehindTrackerOnce(tracker_origin_from_world, back_dist);
         }
     }

@@ -92,7 +92,7 @@ public:
     std::optional<int> RenderFrameAndProlongUILoopOnUserInput(std::function<bool(int key)> break_on);
 
     /// Puts observer behind given camera position, so that the camera will be in front of observer at distance 'back_dist'.
-    void SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, float back_dist);
+    void SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, Scalar back_dist);
 private:
     void RenderFrame();
     void OnKeyPressed(int key);

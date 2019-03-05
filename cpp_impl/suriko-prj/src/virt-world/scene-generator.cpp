@@ -115,7 +115,7 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     {
         auto w = 2.0 * M_PI / shots_per_period * shot_ind;
 
-        float right_deviation = std::sin(w) * max_deviation;
+        auto right_deviation = std::sin(w) * max_deviation;
 
         Eigen::Matrix<Scalar, 3, 1> shifted_eye = eye.Mat() + right_dir * right_deviation;
 
@@ -149,7 +149,7 @@ void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
     {
         auto w = 2.0 * M_PI / shots_per_period * shot_ind;
 
-        float cur_ang = init_ang + std::sin(w) * half_fov;
+        auto cur_ang = init_ang + std::sin(w) * half_fov;
 
         Eigen::Matrix<Scalar, 3, 1> view_dir;
         view_dir[0] = std::cos(cur_ang);
