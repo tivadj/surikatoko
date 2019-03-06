@@ -53,3 +53,18 @@ title('t,ms')
 subplot(5,1,5)
 plot(time,1./[data.Frames.FrameProcessingDur],'k')
 title('fps')
+
+%% check optimal estimate and its error are uncorrelated
+figure(4)
+subplot(3,1,1)
+plot(time,[data.Frames.CurReprojErrMeas],'k')
+title('ReprErr Meas')
+
+subplot(3,1,2)
+plot(time,[data.Frames.CurReprojErrPred],'c')
+title('ReprErr Pred')
+
+subplot(3,1,3)
+plot(time,[data.Frames.OptimalEstimMulErr],'k')
+title('check estimate and its error are uncorrelated')
+

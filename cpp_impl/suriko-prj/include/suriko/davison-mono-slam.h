@@ -280,7 +280,9 @@ struct DavisonMonoSlamTrackerInternalsSlice
     Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
     Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> cam_state_uncert;
     std::optional<Eigen::Matrix<Scalar, 3, 3>> sal_pnts_uncert_median; // median of uncertainty of all salient points; null if there are 0 salient points
-    Scalar cur_reproj_err;
+    Scalar cur_reproj_err_meas = -1;  // measured
+    Scalar cur_reproj_err_pred = -1;  // predicted
+    Scalar optimal_estim_mul_err = -1; // product of optimal estimate and its error, should be zero (optimal estimate and its error are uncorrelated E[x_hat*x_err']=0)
     size_t estimated_sal_pnts; // number of tracking salient points (which are stored in estimated variables array)
     size_t new_sal_pnts; // number of new salient points allocated in current frame
     size_t common_sal_pnts; // number of same salient points in the previous and current frame
@@ -313,6 +315,7 @@ public:
     virtual void FinishFrameStats();
     virtual void NotifyNewComDelSalPnts(size_t new_count, size_t common_count, size_t deleted_count);
     virtual void NotifyEstimatedSalPnts(size_t estimated_sal_pnts_count);
+    DavisonMonoSlamTrackerInternalsSlice& CurStats() { return cur_stats_; }
 
     DavisonMonoSlamTrackerInternalsHist& BuildStats();
 };
@@ -370,6 +373,7 @@ public:
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
     Scalar sal_pnt_small_std_ = 0.001;
+    Scalar sal_pnt_pos_std_ = 0;
     Scalar sal_pnt_first_cam_pos_std_ = 0;
     Scalar sal_pnt_azimuth_std_ = 0;
     Scalar sal_pnt_elevation_std_ = 0;
@@ -394,7 +398,7 @@ public:
 public:
     std::function<SE3Transform(size_t frame_ind)> gt_cami_from_world_fun_;  // used to get the first camera cam0 in the world coordinates
     std::function<SE3Transform(size_t frame_ind)> gt_cami_from_tracker_fun_;  // gets ground truth camera position in coordinates of tracker
-    std::function<SE3Transform(SE3Transform tracker_from_world, size_t frame_ind)> gt_cami_from_tracker_new_;  // gets ground truth camera frame in coordinates of a given tracker
+    std::function<std::optional<SE3Transform>(SE3Transform tracker_from_world, size_t frame_ind)> gt_cami_from_tracker_new_;  // gets ground truth camera frame in coordinates of a given tracker
     std::function<Dir3DAndDistance(SE3Transform tracker_from_world, SE3Transform camera_from_tracker, SalPntId sal_pnt_id)> gt_sal_pnt_in_camera_fun_;  // gets ground truth 3D position of salient point in coordinates of tracker
 
     Scalar debug_ellipsoid_cut_thr_ = 0.04; // value 0.05 corresponds to 2sig
@@ -478,7 +482,7 @@ public:
 
     RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr) const;
 
-    Scalar CurrentFrameReprojError() const;
+    Scalar CurrentFrameReprojError(FilterStageType filter_stage = FilterStageType::Predicted) const;
 
     size_t SalientPointsCount() const;
 
@@ -508,6 +512,8 @@ public:
     DavisonMonoSlamInternalsLogger* StatsLogger() const;
 
     static void SetDebugPath(DebugPathEnum debug_path);
+
+    void GetGroundTruthEstimVars(size_t frame_ind, EigenDynVec* dst_estim_vars) const;
 
     // Resets estimated and update predicted state of the tracker. In virtual mode only.
     void SetStateToGroundTruth(size_t frame_ind);

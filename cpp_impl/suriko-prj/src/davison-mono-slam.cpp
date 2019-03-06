@@ -121,7 +121,8 @@ void DavisonMonoSlamInternalsLogger::FinishFrameStats()
     // the first operation is to stop a timer to reduce overhead of logger
     frame_finish_time_point_ = std::chrono::high_resolution_clock::now();
     cur_stats_.frame_processing_dur = frame_finish_time_point_ - frame_start_time_point_;
-    cur_stats_.cur_reproj_err = mono_slam_->CurrentFrameReprojError();
+    cur_stats_.cur_reproj_err_meas = mono_slam_->CurrentFrameReprojError(FilterStageType::Estimated);
+    cur_stats_.cur_reproj_err_pred = mono_slam_->CurrentFrameReprojError(FilterStageType::Predicted);
 
     //
     CameraStateVars cam_state = mono_slam_->GetCameraEstimatedVars();
@@ -1242,13 +1243,125 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
 
 void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
 {
-    
+    EigenDynVec gt_measured_estim_vars;
+    gt_measured_estim_vars.resizeLike(estim_vars_);
+    GetGroundTruthEstimVars(frame_ind, &gt_measured_estim_vars);
+
+    EigenDynVec estim_errs = estim_vars_ - gt_measured_estim_vars;
+
+    // check that optimal estimate and its error are uncorrelated E[x_hat*x_err']=0
+    Scalar est_mul_err = (estim_vars_ * estim_errs.transpose()).norm();
+
+    if (stats_logger_ != nullptr)
+        stats_logger_->CurStats().optimal_estim_mul_err = est_mul_err;
 }
 
 void DavisonMonoSlam::MakePredictions()
 {
     // make predictions
     PredictEstimVars(estim_vars_, estim_vars_covar_, &predicted_estim_vars_, &predicted_estim_vars_covar_);
+}
+
+void DavisonMonoSlam::GetGroundTruthEstimVars(size_t frame_ind, EigenDynVec* dst_estim_vars) const
+{
+    SE3Transform tracker_from_world = gt_cami_from_world_fun_(kTrackerOriginCamInd); // =cam0 from world
+
+    SE3Transform cam_cft = gt_cami_from_tracker_new_(tracker_from_world, frame_ind).value();  // cft=camera from tracker
+    SE3Transform cam_tfc = SE3Inv(cam_cft);  // tfc=tracker from camera
+
+    std::array<Scalar, kQuat4> cam_tfc_quat;
+    QuatFromRotationMatNoRChecks(cam_tfc.R, cam_tfc_quat);
+
+    auto& est = *dst_estim_vars;
+    est.setZero();
+
+    // camera position
+    DependsOnCameraPosPackOrder();
+    est[0] = cam_tfc.T[0];
+    est[1] = cam_tfc.T[1];
+    est[2] = cam_tfc.T[2];
+
+    // camera orientation
+    est[3] = cam_tfc_quat[0];
+    est[4] = cam_tfc_quat[1];
+    est[5] = cam_tfc_quat[2];
+    est[6] = cam_tfc_quat[3];
+
+    // for the last frame there is no 'next' frame, thus velocity and angular velocity can't be computed - keep them zero
+    std::optional<SE3Transform> next_cam_cft = gt_cami_from_tracker_new_(tracker_from_world, frame_ind + 1);
+    if (next_cam_cft.has_value())
+    {
+        SE3Transform next_cam_tfc = SE3Inv(next_cam_cft.value());
+
+        // camera velocity
+        auto cam_vel = (next_cam_tfc.T - cam_tfc.T).eval();
+        est[7] = cam_vel[0];
+        est[8] = cam_vel[1];
+        est[9] = cam_vel[2];
+
+        // camera angular velocity
+        // R * Rdelta = Rnext => Rdelta = inv(R)*Rnext
+        auto Rdelta = (cam_tfc.R.transpose() * next_cam_tfc.R).eval();
+        Eigen::Matrix<Scalar, kEucl3, 1> cam_ang_vel;
+        bool op = AxisAngleFromRotMat(Rdelta, &cam_ang_vel);  // false for identity matrix
+        if (op)
+        {
+            est[10] = cam_ang_vel[0];
+            est[11] = cam_ang_vel[1];
+            est[12] = cam_ang_vel[2];
+        }
+    }
+
+    for (size_t sal_pnt_ind = 0; sal_pnt_ind < SalientPointsCount(); ++sal_pnt_ind)
+    {
+        SalPntId sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(sal_pnt_ind);
+
+        SalientPointStateVars sal_pnt_state;
+        if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+        {
+#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+            Dir3DAndDistance sal_pnt_in_tracker = gt_sal_pnt_in_camera_fun_(tracker_from_world, SE3Transform::NoTransform(), sal_pnt_id);
+            Eigen::Matrix<Scalar, 3, 1> pnt_in_tracker = sal_pnt_in_tracker.unity_dir * sal_pnt_in_tracker.dist.value();
+            sal_pnt_state.pos_w = pnt_in_tracker;
+#endif
+        }
+        else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+        {
+#if defined(SAL_PNT_REPRES_INV_DIST)
+            // the frame where the salient point was first seen
+            size_t first_cam_frame_ind = frame_ind;
+#if defined(SRK_DEBUG)
+            // NOTE: this field available only in Debug configuration
+            //first_cam_frame_ind = sal_pnt.initial_frame_ind_debug_;
+#endif
+            SE3Transform sal_pnt_first_cam_cft = gt_cami_from_tracker_new_(tracker_from_world, first_cam_frame_ind).value();  // cft=camera from tracker
+            SE3Transform sal_pnt_first_cam_tfc = SE3Inv(sal_pnt_first_cam_cft);
+            suriko::Point3 sal_pnt_first_cam_pos_in_tracker = suriko::Point3{ sal_pnt_first_cam_tfc.T };
+
+            Dir3DAndDistance sal_pnt_in_camera = gt_sal_pnt_in_camera_fun_(tracker_from_world, sal_pnt_first_cam_cft, sal_pnt_id);
+
+            // we are interested in a point, centered in the first camera, where the salient point was first seen,
+            // but oriented parallel to the world frame
+            suriko::Point3 dir_in_camera_by_tracker{ sal_pnt_first_cam_tfc.R * sal_pnt_in_camera.unity_dir };
+
+            Scalar azim_theta = kNan;
+            Scalar elev_phi = kNan;
+            AzimElevFromEuclidCoords(dir_in_camera_by_tracker, &azim_theta, &elev_phi);
+
+            // when dist=inf (or unavailable) the rho(or inv_dist)=0
+            Scalar inv_dist_rho = sal_pnt_in_camera.dist.has_value() ? 1 / sal_pnt_in_camera.dist.value() : 0;
+
+            sal_pnt_state.first_cam_pos_w = sal_pnt_first_cam_pos_in_tracker.Mat();
+            sal_pnt_state.azimuth_theta_w = azim_theta;
+            sal_pnt_state.elevation_phi_w = elev_phi;
+            sal_pnt_state.inverse_dist_rho = inv_dist_rho;
+#endif
+        }
+
+        auto sal_pnt_offset = SalientPointOffset(sal_pnt_ind);
+        gsl::span<Scalar> dst = Span(est).subspan(sal_pnt_offset, kSalientPointComps);
+        SaveSalientPointDataToArray(sal_pnt_state, dst);
+    }
 }
 
 void DavisonMonoSlam::SetStateToGroundTruth(size_t frame_ind)
@@ -1258,7 +1371,7 @@ void DavisonMonoSlam::SetStateToGroundTruth(size_t frame_ind)
 
     SE3Transform tracker_from_world = gt_cami_from_world_fun_(kTrackerOriginCamInd); // =cam0 from world
 
-    SE3Transform cam_cft = gt_cami_from_tracker_new_(tracker_from_world, frame_ind);  // cft=camera from tracker
+    SE3Transform cam_cft = gt_cami_from_tracker_new_(tracker_from_world, frame_ind).value();  // cft=camera from tracker
     SE3Transform cam_tfc = SE3Inv(cam_cft);  // tfc=tracker from camera
 
     std::array<Scalar, kQuat4> cam_tfc_quat;
@@ -1294,7 +1407,7 @@ void DavisonMonoSlam::SetStateToGroundTruth(size_t frame_ind)
         // NOTE: this field available only in Debug configuration
         //first_cam_frame_ind = sal_pnt.initial_frame_ind_debug_;
 #endif
-        SE3Transform sal_pnt_first_cam_cft = gt_cami_from_tracker_new_(tracker_from_world, first_cam_frame_ind);  // cft=camera from tracker
+        SE3Transform sal_pnt_first_cam_cft = gt_cami_from_tracker_new_(tracker_from_world, first_cam_frame_ind).value();  // cft=camera from tracker
         SE3Transform sal_pnt_first_cam_tfc = SE3Inv(sal_pnt_first_cam_cft);
         suriko::Point3 sal_pnt_first_cam_pos_in_tracker = suriko::Point3{ sal_pnt_first_cam_tfc.T };
 
@@ -1366,7 +1479,7 @@ void DavisonMonoSlam::SetStateToGroundTruthInitNonDiagonal(size_t frame_ind)
 
     SE3Transform tracker_from_world = gt_cami_from_world_fun_(kTrackerOriginCamInd); // =cam0 from world
 
-    SE3Transform cam_cft = gt_cami_from_tracker_new_(tracker_from_world, frame_ind);  // cft=camera from tracker
+    SE3Transform cam_cft = gt_cami_from_tracker_new_(tracker_from_world, frame_ind).value();  // cft=camera from tracker
     SE3Transform cam_tfc = SE3Inv(cam_cft);  // tfc=tracker from camera
 
     std::array<Scalar, kQuat4> cam_tfc_quat;
@@ -1405,7 +1518,7 @@ void DavisonMonoSlam::SetStateToGroundTruthInitNonDiagonal(size_t frame_ind)
         // NOTE: this field available only in Debug configuration
         //first_cam_frame_ind = sal_pnt.initial_frame_ind_debug_;
 #endif
-        SE3Transform sal_pnt_first_cam_cft = gt_cami_from_tracker_new_(tracker_from_world, first_cam_frame_ind);  // cft=camera from tracker
+        SE3Transform sal_pnt_first_cam_cft = gt_cami_from_tracker_new_(tracker_from_world, first_cam_frame_ind).value();  // cft=camera from tracker
         SE3Transform sal_pnt_first_cam_tfc = SE3Inv(sal_pnt_first_cam_cft);
         suriko::Point3 sal_pnt_first_cam_pos_in_tracker = suriko::Point3{ sal_pnt_first_cam_tfc.T };
 
@@ -3398,10 +3511,10 @@ DavisonMonoSlamInternalsLogger* DavisonMonoSlam::StatsLogger() const
     return stats_logger_.get();
 }
 
-Scalar DavisonMonoSlam::CurrentFrameReprojError() const
+Scalar DavisonMonoSlam::CurrentFrameReprojError(FilterStageType filter_stage) const
 {
     // specify state the reprojection error is based on
-    const auto& src_estim_vars = predicted_estim_vars_;
+    const auto& src_estim_vars = filter_stage == FilterStageType::Estimated ? estim_vars_ : predicted_estim_vars_;
 
     CameraStateVars cam_state;
     LoadCameraStateVarsFromArray(Span(src_estim_vars, kCamStateComps), &cam_state);

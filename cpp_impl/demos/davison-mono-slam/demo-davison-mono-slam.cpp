@@ -816,11 +816,13 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const DavisonMonoSl
     {
         fs << "{";
 
-        cv::write(fs, "CurReprojErr", item.cur_reproj_err);
+        cv::write(fs, "CurReprojErrMeas", item.cur_reproj_err_meas);
+        cv::write(fs, "CurReprojErrPred", item.cur_reproj_err_pred);
         cv::write(fs, "EstimatedSalPnts", static_cast<int>(item.estimated_sal_pnts));
         cv::write(fs, "NewSalPnts", static_cast<int>(item.new_sal_pnts));
         cv::write(fs, "CommonSalPnts", static_cast<int>(item.common_sal_pnts));
         cv::write(fs, "DeletedSalPnts", static_cast<int>(item.deleted_sal_pnts));
+        cv::write(fs, "OptimalEstimMulErr", static_cast<float>(item.optimal_estim_mul_err));
         cv::write(fs, "FrameProcessingDur", item.frame_processing_dur.count()); // seconds
 
         Eigen::Map<const Eigen::Matrix<Scalar, 9, 1>> cam_pos_uncert(item.cam_pos_uncert.data());
@@ -953,6 +955,7 @@ DEFINE_double(monoslam_estim_var_init_std, 0.001, "");
 DEFINE_double(monoslam_cam_pos_std_m, 0, "");
 DEFINE_double(monoslam_cam_orient_q_comp_std, 0, "");
 DEFINE_double(monoslam_input_noise_std, 0.08, "");
+DEFINE_double(monoslam_sal_pnt_cam_pos_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_first_cam_pos_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_azimuth_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_elevation_std, 0, "");
@@ -1231,6 +1234,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.cam_pos_std_m_ = FLAGS_monoslam_cam_pos_std_m;
         mono_slam.cam_orient_q_comp_std_ = FLAGS_monoslam_cam_orient_q_comp_std;
         mono_slam.sal_pnt_small_std_ = FLAGS_monoslam_estim_var_init_std;
+        mono_slam.sal_pnt_pos_std_ = FLAGS_monoslam_sal_pnt_cam_pos_std;
         mono_slam.sal_pnt_first_cam_pos_std_ = FLAGS_monoslam_sal_pnt_first_cam_pos_std;
         mono_slam.sal_pnt_azimuth_std_ = FLAGS_monoslam_sal_pnt_azimuth_std;
         mono_slam.sal_pnt_elevation_std_ = FLAGS_monoslam_sal_pnt_elevation_std;
@@ -1258,8 +1262,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             SE3Transform c = gt_cam_orient_cfw[frame_ind];
             return c;
         };
-        mono_slam.gt_cami_from_tracker_new_ = [&gt_cam_orient_cfw](SE3Transform tracker_from_world, size_t frame_ind) -> SE3Transform
+        mono_slam.gt_cami_from_tracker_new_ = [&gt_cam_orient_cfw](SE3Transform tracker_from_world, size_t frame_ind) -> std::optional<SE3Transform>
         {
+            if (frame_ind >= gt_cam_orient_cfw.size())
+                return std::nullopt;
             SE3Transform cami_from_world = gt_cam_orient_cfw[frame_ind];
             SE3Transform cami_from_tracker = SE3AFromB(cami_from_world, tracker_from_world);
             return cami_from_tracker;
@@ -1645,10 +1651,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             frame_OpenCV_gui_time.value_or(zero_time) +
             frame_Pangolin_gui_time.value_or(zero_time);
         VLOG(4) << "done f=" << frame_ind
-            << " core=" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f) << "fps"
-            << "(core+gui=" << 1 / total_time.count() << "fps)"
-            << " core=" << std::chrono::duration_cast<std::chrono::milliseconds>(frame_process_time.value_or(zero_time)).count() <<"ms"
-            << "(core+gui=" << std::chrono::duration_cast<std::chrono::milliseconds>(total_time).count() <<"ms)"
+            << " track=" << std::chrono::duration_cast<std::chrono::milliseconds>(frame_process_time.value_or(zero_time)).count() << "ms"
+            << "|" << (frame_process_time.has_value() ? 1 / frame_process_time.value().count() : 0.0f) << "fps"
+            << " track+gui=" << std::chrono::duration_cast<std::chrono::milliseconds>(total_time).count() << "ms"
+            << "|" << 1 / total_time.count() << "fps"
             << " #SP=" << mono_slam.SalientPointsCount();
     } // for each frame
 
