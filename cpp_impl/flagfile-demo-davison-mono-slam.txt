@@ -17,7 +17,7 @@
 
 # Controller
 --ctrl_multi_threaded_mode=false
---ctrl_wait_after_each_frame=false
+--ctrl_wait_after_each_frame=true
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true
@@ -83,20 +83,28 @@
 --monoslam_input_noise_std=0.03
 --monoslam_measurm_noise_std_pix=0.5
 
---monoslam_estim_var_init_std=0.01
 # camera pos initial std
---monoslam_cam_pos_std_m=0
---monoslam_cam_orient_q_comp_std=0
---monoslam_sal_pnt_first_cam_pos_std=0
+--monoslam_cam_pos_x_std_m=0.05
+--monoslam_cam_pos_y_std_m=0.05
+--monoslam_cam_pos_z_std_m=0.05
+--monoslam_cam_orient_q_comp_std=0.01
+--monoslam_cam_vel_std=0.01
+--monoslam_cam_ang_vel_std=0.01
+--monoslam_sal_pnt_pos_x_std=0.05
+--monoslam_sal_pnt_pos_y_std=0.05
+--monoslam_sal_pnt_pos_z_std=1.5
+--monoslam_sal_pnt_first_cam_pos_std=0.05
 --monoslam_sal_pnt_azimuth_std=0
 --monoslam_sal_pnt_elevation_std=0
 --monoslam_sal_pnt_init_inv_dist=1
 --monoslam_sal_pnt_init_inv_dist_std=1
+--monoslam_force_xyz_sal_pnt_pos_diagonal_uncert=true
 --monoslam_fake_sal_pnt_init_inv_dist=true
+--monoslam_impl_of_set_estim_state_to_gt=2
 --monoslam_sal_pnt_max_undetected_frames_count=12
 
 --monoslam_ellipsoid_cut_thr=0.05
-# 1=all,2=one observation, 3=one component of one observation
+# 1=all, 2=one observation, 3=one component of one observation
 --monoslam_update_impl=1
 --monoslam_max_new_blobs_in_first_frame=-10
 --monoslam_max_new_blobs_per_frame=-1

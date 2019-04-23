@@ -32,6 +32,8 @@ namespace
     constexpr size_t kInputNoiseComps = kVelocComps + kAngVelocComps; // Qk.rows: velocity and angular velocity are updated an each iteration by noise
     constexpr size_t kSalientPointPolarCompsCount = 3; // [theta elevation rho], theta: 1 for azimuth angle, 1 for elevation angle, rho: 1 for distance
     constexpr size_t kRho = 1; // inverse distance
+    constexpr size_t kXyzSalientPointComps = kEucl3;  // [XYZ]=[3x1]
+    constexpr size_t kSphericalSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;  // [FirstCamXYZ theta elevation rho]=[6x1]
 
     /// Specifies the data to store for each salient point.
     enum class SalPntComps
@@ -52,10 +54,10 @@ namespace
 #  define SAL_PNT_REPRES 2
 #endif
 #if SAL_PNT_REPRES == 1
-    constexpr size_t kSalientPointComps = kEucl3;  // Q[3x3]
+    constexpr size_t kSalientPointComps = kXyzSalientPointComps;  // [3x1]
     constexpr SalPntComps kSalPntRepres = SalPntComps::kEucl3D;
 #elif SAL_PNT_REPRES == 2
-    constexpr size_t kSalientPointComps = kEucl3 + kSalientPointPolarCompsCount;  // Q[6x6]
+    constexpr size_t kSalientPointComps = kSphericalSalientPointComps;  // [6x1]
     constexpr SalPntComps kSalPntRepres = SalPntComps::kFirstCamPolarInvDepth;
 #endif
 
@@ -228,6 +230,13 @@ struct RadialDistortionParams
     Scalar k2;
 };
 
+/// Position and orientation of an object in 3D space.
+struct FramePosOrient
+{
+    Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // in world frame
+    Eigen::Matrix<Scalar, kQuat4, 1> orientation_wfc;
+};
+
 struct CameraStateVars
 {
     Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // in world frame
@@ -370,17 +379,28 @@ public:
     // drastically affects performance: it increases uncertainty regions of salient points, hence the search regions, used for salient points correspondence, are increased
     Scalar input_noise_std_ = 1;  // used to init Qk[6,6], uncertainty in camera dynamic model motion
     Scalar measurm_noise_std_pix_ = 1;
+
+    // default camera's uncertainty
+    Scalar cam_pos_x_std_m_ = 0; // in meters
+    Scalar cam_pos_y_std_m_ = 0; // in meters
+    Scalar cam_pos_z_std_m_ = 0; // in meters
+    Scalar cam_orient_q_comp_std_ = 0;
+    Scalar cam_vel_std_ = 0; // in meters
+    Scalar cam_ang_vel_std_ = 0; // in meters
+
+    // default salient point's uncertainty
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
-    Scalar sal_pnt_small_std_ = 0.001;
-    Scalar sal_pnt_pos_std_ = 0;
+    Scalar sal_pnt_pos_x_std_ = 0;
+    Scalar sal_pnt_pos_y_std_ = 0;
+    Scalar sal_pnt_pos_z_std_ = 0;
     Scalar sal_pnt_first_cam_pos_std_ = 0;
     Scalar sal_pnt_azimuth_std_ = 0;
     Scalar sal_pnt_elevation_std_ = 0;
+
+    bool force_xyz_sal_pnt_pos_diagonal_uncert_ = false;
     std::optional<size_t> sal_pnt_max_undetected_frames_count_;  // salient points greater than this value are removed from tracker
-    Scalar cam_pos_std_m_ = 0; // in meters
-    Scalar cam_orient_q_comp_std_ = 0;
-    
+
     // width and height of a patch template of a salient point
     // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
     suriko::Sizei sal_pnt_patch_size_ = { 15, 15 };
@@ -403,6 +423,7 @@ public:
 
     Scalar debug_ellipsoid_cut_thr_ = 0.04; // value 0.05 corresponds to 2sig
     bool fake_sal_pnt_initial_inv_dist_ = false; // true to correctly initialize points depth in virtual environments
+    int set_estim_state_covar_to_gt_impl_ = 2;  // 1=sets diagonal covariance in estimation space, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point
 
     /// There are 3 implementations of incorporating m observed corners (corner=pixel, 2x1 mat).
     /// 1. Stack all corners in one [2m,1] vector. Require inverting one [2m,2m] innovation matrix.
@@ -445,7 +466,7 @@ private:
 public:
     DavisonMonoSlam();
 
-    void SetCamera(const SE3Transform& cam_pos_cfw, Scalar estim_var_init_std);
+    void SetCamera(const SE3Transform& cam_pos_cfw);
     
     void SetInputNoiseStd(Scalar input_noise_std);
 
@@ -513,14 +534,7 @@ public:
 
     static void SetDebugPath(DebugPathEnum debug_path);
 
-    void GetGroundTruthEstimVars(size_t frame_ind, EigenDynVec* dst_estim_vars) const;
-
-    // Resets estimated and update predicted state of the tracker. In virtual mode only.
-    void SetStateToGroundTruth(size_t frame_ind);
-
-    // this method attempts to initialize elements outside the covariance matrix's diagonal,
-    // so that covariance between camera position and the inverse distance to a salient point are correlated
-    void SetStateToGroundTruthInitNonDiagonal(size_t frame_ind);
+    void SetEstimStateAndCovarToGroundTruth(size_t frame_ind);
 
     void DumpTrackerState(std::ostringstream& os) const;
 private:
@@ -530,6 +544,41 @@ private:
 #if defined(SAL_PNT_REPRES_INV_DIST)
         Eigen::Matrix<Scalar, kEucl3, 1> first_cam_sal_pnt_unity_dir; // unity direction from first camera to the salient point in world coordinates
 #endif
+    };
+
+    /// Salient point, defined in spherical coordinates with origin in the specified 'first' camera.
+    /// Axes are aligned with the tracker (world) orientation frame (shown using the '_w' suffix).
+    /// The distance is in the inverse format.
+    struct SphericalSalientPoint
+    {
+        Eigen::Matrix<Scalar, kEucl3, 1> first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
+
+        // polar coordinates of the salient point in the camera where the feature was seen for the first time
+        Scalar azimuth_theta_w = kNan; // theta=azimuth, rotates clockwise around worldOY, zero corresponds to worldOZ direction
+        Scalar elevation_phi_w = kNan; // elevation=latin_phi, rotates clockwise around worldOX, zero corresponds to worldOZ direction
+        Scalar inverse_dist_rho = kNan; // inverse distance (=rho) from the first camera, where the salient point was seen the first time, to this salient point
+    };
+
+    // Some variables which are created when a salient point is projected into the camera.
+    // These values are used to calculate derivatives
+    struct SphericalSalientPointIntermProjVars
+    {
+        //FramePosOrient cam;  // the camera to which a salient point is projected
+
+        //suriko::Point2f corner_pix;  // in the first camera
+
+        Eigen::Matrix<Scalar, kEucl3, 1> hc;  // A.58
+        Eigen::Matrix<Scalar, kEucl3, 1> hw;  // A.59
+        Eigen::Matrix<Scalar, kEucl3, kEucl3> Rwfc;  // 
+    };
+
+    struct SphericalSalientPointWithBuildInfo
+    {
+        SphericalSalientPoint spher_sal_pnt;
+        
+        size_t first_cam_frame_ind;
+
+        SphericalSalientPointIntermProjVars proj_interm_vars;
     };
 
     struct SalientPointStateVars
@@ -546,6 +595,25 @@ private:
         Scalar inverse_dist_rho = kNan; // inverse distance (=rho) from the first camera, where the salient point was seen the first time, to this salient point
 #endif
     };
+
+    static void CopyFrom(SphericalSalientPoint* dst, const SalientPointStateVars& s)
+    {
+        dst->first_cam_pos_w = s.first_cam_pos_w;
+        dst->azimuth_theta_w = s.azimuth_theta_w;
+        dst->elevation_phi_w = s.elevation_phi_w;
+        dst->inverse_dist_rho = s.inverse_dist_rho;
+    }
+
+    /// Spherical salient point can't be transformed into XYZ representation when the point is in infinity.
+    static bool ConvertXyzFromSphericalSalientPoint(const SphericalSalientPoint& sal_pnt_vars, Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean);
+
+    static bool ConvertSphericalFromXyzSalientPoint(const Eigen::Matrix <Scalar, kXyzSalientPointComps, 1>& sal_pnt_pos_w,
+        const SE3Transform& first_cam_tfc,
+        SphericalSalientPoint* spher_sal_pnt);
+
+    static void ConvertMorphableFromSphericalSalientPoints(const std::vector<SphericalSalientPointWithBuildInfo>& sal_pnt_build_infos,
+        SalPntComps sal_pnt_repres,
+        std::vector<SalientPointStateVars>* sal_pnts);
 
     void ResetCamera(Scalar estim_var_init_std, bool init_estim_vars = true);
 
@@ -593,12 +661,27 @@ private:
     void AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_var_ind,
         const CameraStateVars& cam_state, suriko::Point2f corner_pix, std::optional<Scalar> pnt_inv_dist_gt);
     
-    void GetNewSalientPointStateAndCovar(const CameraStateVars& cam_state, suriko::Point2f corner_pix,
-        std::optional<Scalar> pnt_inv_dist_gt,
+    SphericalSalientPoint GetNewSphericalSalientPointState(
+        const CameraStateVars& first_cam_state,
+        suriko::Point2f first_cam_corner_pix,
+        std::optional<Scalar> first_cam_sal_pnt_inv_dist_gt,
+        SphericalSalientPointIntermProjVars* interm_proj_vars) const;
+
+    void GetNewSphericalSalientPointCovar(
+        const CameraStateVars& first_cam_state,
+        suriko::Point2f first_cam_corner_pix,
+        const SphericalSalientPointIntermProjVars& proj_side_effect_vars,
         size_t take_estim_vars_count,
-        Eigen::Matrix<Scalar, kSalientPointComps,1>* sal_pnt_vars,
-        Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>* sal_pnt_to_sal_pnt_covar,
-        Eigen::Matrix<Scalar, kSalientPointComps, Eigen::Dynamic>* sal_pnt_to_other_covar) const;
+        Eigen::Matrix<Scalar, kSphericalSalientPointComps, kSphericalSalientPointComps>* spher_sal_pnt_autocovar,
+        Eigen::Matrix<Scalar, kSphericalSalientPointComps, Eigen::Dynamic>* spher_sal_pnt_to_other_covar) const;
+
+    void GetDefaultXyzSalientPointCovarOrConvertFromSpherical(
+        const SphericalSalientPoint& spher_sal_pnt_vars,
+        size_t take_estim_vars_count,
+        const Eigen::Matrix<Scalar, kSphericalSalientPointComps, kSphericalSalientPointComps>& spher_sal_pnt_autocovar,
+        const Eigen::Matrix<Scalar, kSphericalSalientPointComps, Eigen::Dynamic>& spher_sal_pnt_to_other_covar,
+        Eigen::Matrix<Scalar, kXyzSalientPointComps, kXyzSalientPointComps>* xyz_sal_pnt_autocovar,
+        Eigen::Matrix<Scalar, kXyzSalientPointComps, Eigen::Dynamic>* xyz_sal_pnt_to_other_covar) const;
 
     SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner, 
         Picture patch_template, TemplMatchStats templ_stats,
@@ -617,10 +700,18 @@ private:
     SalientPointStateVars LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
 
     void SaveSalientPointDataToArray(const SalientPointStateVars& sal_pnt_vars, gsl::span<Scalar> dst) const;
+    void SaveSalientPointDataToArray(const SphericalSalientPoint& sal_pnt_vars, gsl::span<Scalar> dst) const;
+    void SaveCameraStateToArray(const CameraStateVars& cam_state, gsl::span<Scalar> dst) const;
+    void SaveEstimVars(const CameraStateVars& cam_state,
+        const std::vector<SalientPointStateVars>& sal_pnts,
+        EigenDynVec* dst_estim_vars);
+
+    void DerivSalPnt_xyz_by_spher(const SphericalSalientPoint& sal_pnt_vars,
+        Eigen::Matrix<Scalar, kXyzSalientPointComps, kSphericalSalientPointComps>* sal_pnt_3_by_6) const;
 
 #if defined(SAL_PNT_REPRES_INV_DIST)
-    void PropagateSalPntPosUncertainty(const SalientPointStateVars& sal_pnt,
-        const Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>& sal_pnt_covar,
+    void PropagateSalPntPosUncertainty(const SphericalSalientPoint& sal_pnt,
+        const Eigen::Matrix<Scalar, kSphericalSalientPointComps, kSphericalSalientPointComps>& sal_pnt_covar,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
 #endif
 
@@ -653,6 +744,7 @@ private:
     std::optional<SalPntRectFacet> ProtrudeSalientPointPatchIntoWorld(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
 
     void PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const;
+    void PixelCoordinateToDirectionInCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* dir_camera) const;
 
     //
 
@@ -686,6 +778,8 @@ private:
 
     // Derivative of distorted observed corner (in pixels) by camera's state variables
     void Deriv_hu_by_hc(const SalPntProjectionIntermidVars& proj_hist, Eigen::Matrix<Scalar, kPixPosComps, kEucl3 >* dhu_by_dhc) const;
+
+    void Deriv_hñ_by_hu(Eigen::Matrix<Scalar, kEucl3, kPixPosComps>* hc_by_hu) const;
 
     void Deriv_R_by_q(const Eigen::Matrix<Scalar, kQuat4, 1>& q,
         Eigen::Matrix<Scalar, 3, 3>* dR_by_dq0,
@@ -749,6 +843,21 @@ private:
 
     RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state) const;
     RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state) const;
+
+    void GetGroundTruthEstimVars(size_t frame_ind,
+        CameraStateVars* cam_state,
+        std::vector<SphericalSalientPointWithBuildInfo>* sal_pnt_build_infos) const;
+
+    void SetCamStateCovarToGroundTruth(EigenDynMat* src_estim_vars_covar) const;
+
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> GetDefaultXyzSalientPointCovar() const;
+
+    // Sets variances for estimated state. Works directly in estimated space. In virtual mode only.
+    void SetEstimStateCovarInEstimSpace(size_t frame_ind);
+
+    // The uncertainty of a salient point is formed in standard way for 'inverse depth' salient point representation.
+    void SetEstimStateCovarLikeInAddNewSalPnt(size_t frame_ind,
+        const std::vector<SphericalSalientPointWithBuildInfo>& sal_pnt_build_infos);
     
     void FixSymmetricMat(EigenDynMat* sym_mat) const;
 

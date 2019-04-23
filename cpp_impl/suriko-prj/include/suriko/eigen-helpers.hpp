@@ -85,8 +85,9 @@ void RemoveRowsAndColsInplace(gsl::span<const size_t> rows_to_remove, gsl::span<
 template <typename _Scalar, int _Rows, int _Cols, int _Options, int _MaxRows, int _MaxCols>
 auto AllFiniteNotMax(const Eigen::Matrix<_Scalar, _Rows, _Cols, _Options, _MaxRows, _MaxCols>& m) -> bool
 {
-    for (size_t i=0; i<m.rows(); ++i)
-        for (size_t j=0; j<m.cols(); ++j)
+    using Ind = decltype(m.rows());
+    for (Ind i=0; i<m.rows(); ++i)
+        for (Ind j=0; j<m.cols(); ++j)
         {
             _Scalar v = m(i, j);
             if (v == std::numeric_limits<_Scalar>::max())

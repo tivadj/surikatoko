@@ -201,7 +201,7 @@ public:
     SE3Transform tracker_origin_from_world_;
     std::optional<size_t> max_new_blobs_per_frame_;
     std::optional<size_t> max_new_blobs_in_first_frame_;
-    std::optional<float> match_blob_prob_ = 1; // [0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched;
+    std::optional<float> match_blob_prob_ = 1.0f; // [0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched;
     std::mt19937 gen_{292};
     std::uniform_real_distribution<float> uniform_distr_{};
 public:
@@ -951,16 +951,22 @@ DEFINE_int32(s5_periods_count, 100, "");
 
 DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
 DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
-DEFINE_double(monoslam_estim_var_init_std, 0.001, "");
-DEFINE_double(monoslam_cam_pos_std_m, 0, "");
+DEFINE_double(monoslam_cam_pos_x_std_m, 0, "");
+DEFINE_double(monoslam_cam_pos_y_std_m, 0, "");
+DEFINE_double(monoslam_cam_pos_z_std_m, 0, "");
 DEFINE_double(monoslam_cam_orient_q_comp_std, 0, "");
+DEFINE_double(monoslam_cam_vel_std, 0, "");
+DEFINE_double(monoslam_cam_ang_vel_std, 0, "");
 DEFINE_double(monoslam_input_noise_std, 0.08, "");
-DEFINE_double(monoslam_sal_pnt_cam_pos_std, 0, "");
+DEFINE_double(monoslam_sal_pnt_pos_x_std, 0, "");
+DEFINE_double(monoslam_sal_pnt_pos_y_std, 0, "");
+DEFINE_double(monoslam_sal_pnt_pos_z_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_first_cam_pos_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_azimuth_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_elevation_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist_std, 1, "");
+DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
 DEFINE_int32(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
 DEFINE_double(monoslam_measurm_noise_std_pix, 1, "");
 DEFINE_int32(monoslam_update_impl, 1, "");
@@ -978,6 +984,7 @@ DEFINE_bool(monoslam_debug_estim_vars_cov, false, "");
 DEFINE_bool(monoslam_debug_predicted_vars_cov, false, "");
 DEFINE_int32(monoslam_debug_max_sal_pnt_count, -1, "[default=-1(none)] number of salient points won't be greater than this value");
 DEFINE_bool(monoslam_fake_sal_pnt_init_inv_dist, false, "");
+DEFINE_int32(monoslam_set_estim_state_covar_to_gt_impl, 2, "1=ignore correlations, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point");
 DEFINE_double(monoslam_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
 DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
 DEFINE_int32(ui_loop_prolong_period_ms, 3000, "");
@@ -1221,6 +1228,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.cam_distort_params_ = cam_distort_params;
     mono_slam.sal_pnt_init_inv_dist_ = FLAGS_monoslam_sal_pnt_init_inv_dist;
     mono_slam.sal_pnt_init_inv_dist_std_ = FLAGS_monoslam_sal_pnt_init_inv_dist_std;
+    mono_slam.force_xyz_sal_pnt_pos_diagonal_uncert_ = FLAGS_monoslam_force_xyz_sal_pnt_pos_diagonal_uncert;
     mono_slam.SetInputNoiseStd(FLAGS_monoslam_input_noise_std);
     mono_slam.measurm_noise_std_pix_ = FLAGS_monoslam_measurm_noise_std_pix;
     mono_slam.sal_pnt_patch_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
@@ -1231,14 +1239,19 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
-        mono_slam.cam_pos_std_m_ = FLAGS_monoslam_cam_pos_std_m;
+        mono_slam.cam_pos_x_std_m_ = FLAGS_monoslam_cam_pos_x_std_m;
+        mono_slam.cam_pos_y_std_m_ = FLAGS_monoslam_cam_pos_y_std_m;
+        mono_slam.cam_pos_z_std_m_ = FLAGS_monoslam_cam_pos_z_std_m;
         mono_slam.cam_orient_q_comp_std_ = FLAGS_monoslam_cam_orient_q_comp_std;
-        mono_slam.sal_pnt_small_std_ = FLAGS_monoslam_estim_var_init_std;
-        mono_slam.sal_pnt_pos_std_ = FLAGS_monoslam_sal_pnt_cam_pos_std;
+        mono_slam.cam_vel_std_ = FLAGS_monoslam_cam_vel_std;
+        mono_slam.cam_ang_vel_std_ = FLAGS_monoslam_cam_ang_vel_std;
+        mono_slam.sal_pnt_pos_x_std_ = FLAGS_monoslam_sal_pnt_pos_x_std;
+        mono_slam.sal_pnt_pos_y_std_ = FLAGS_monoslam_sal_pnt_pos_y_std;
+        mono_slam.sal_pnt_pos_z_std_ = FLAGS_monoslam_sal_pnt_pos_z_std;
         mono_slam.sal_pnt_first_cam_pos_std_ = FLAGS_monoslam_sal_pnt_first_cam_pos_std;
         mono_slam.sal_pnt_azimuth_std_ = FLAGS_monoslam_sal_pnt_azimuth_std;
         mono_slam.sal_pnt_elevation_std_ = FLAGS_monoslam_sal_pnt_elevation_std;
-        mono_slam.SetCamera(SE3Transform::NoTransform(), FLAGS_monoslam_estim_var_init_std);
+        mono_slam.SetCamera(SE3Transform::NoTransform());
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
@@ -1246,7 +1259,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             { (Scalar)FLAGS_camera_look_from_x, (Scalar)FLAGS_camera_look_from_y, (Scalar)FLAGS_camera_look_from_z },
             { (Scalar)FLAGS_camera_look_to_x, (Scalar)FLAGS_camera_look_to_y, (Scalar)FLAGS_camera_look_to_z },
             { (Scalar)FLAGS_camera_up_x, (Scalar)FLAGS_camera_up_y, (Scalar)FLAGS_camera_up_z }));
-        mono_slam.SetCamera(cam_cfw, FLAGS_monoslam_estim_var_init_std);
+        mono_slam.SetCamera(cam_cfw);
     }
 
     mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
@@ -1257,6 +1270,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
         mono_slam.fake_sal_pnt_initial_inv_dist_ = FLAGS_monoslam_fake_sal_pnt_init_inv_dist;
+        mono_slam.set_estim_state_covar_to_gt_impl_ = FLAGS_monoslam_set_estim_state_covar_to_gt_impl;
         mono_slam.gt_cami_from_world_fun_ = [&gt_cam_orient_cfw](size_t frame_ind) -> SE3Transform
         {
             SE3Transform c = gt_cam_orient_cfw[frame_ind];
@@ -1552,11 +1566,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 {
                 case kKeySetToGroundTruth:
                 {
-                    static bool set_gt_impl = true;
-                    if (set_gt_impl)
-                        mono_slam.SetStateToGroundTruthInitNonDiagonal(frame_ind);
-                    else
-                        mono_slam.SetStateToGroundTruth(frame_ind);
+                    mono_slam.SetEstimStateAndCovarToGroundTruth(frame_ind);
                     handler_result.handled = true;
                     handler_result.stop_wait_loop = true;
                     redraw_times++;  // request redrawing the OpenCV viewer
