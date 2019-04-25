@@ -1308,25 +1308,28 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
 
 void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
 {
-    CameraStateVars cam_state;
-    std::vector<SphericalSalientPointWithBuildInfo> sal_pnt_build_infos;
-    GetGroundTruthEstimVars(frame_ind, &cam_state, &sal_pnt_build_infos);
+    if (gt_cami_from_world_fun_ != nullptr)
+    {
+        CameraStateVars cam_state;
+        std::vector<SphericalSalientPointWithBuildInfo> sal_pnt_build_infos;
+        GetGroundTruthEstimVars(frame_ind, &cam_state, &sal_pnt_build_infos);
 
-    std::vector<SalientPointStateVars> sal_pnts;
-    ConvertMorphableFromSphericalSalientPoints(sal_pnt_build_infos, kSalPntRepres, &sal_pnts);
+        std::vector<SalientPointStateVars> sal_pnts;
+        ConvertMorphableFromSphericalSalientPoints(sal_pnt_build_infos, kSalPntRepres, &sal_pnts);
 
-    // estimated variables
-    EigenDynVec gt_measured_estim_vars;
-    gt_measured_estim_vars.resizeLike(estim_vars_);
-    SaveEstimVars(cam_state, sal_pnts, &gt_measured_estim_vars);
+        // estimated variables
+        EigenDynVec gt_measured_estim_vars;
+        gt_measured_estim_vars.resizeLike(estim_vars_);
+        SaveEstimVars(cam_state, sal_pnts, &gt_measured_estim_vars);
 
-    EigenDynVec estim_errs = estim_vars_ - gt_measured_estim_vars;
+        EigenDynVec estim_errs = estim_vars_ - gt_measured_estim_vars;
 
-    // check that optimal estimate and its error are uncorrelated E[x_hat*x_err']=0
-    Scalar est_mul_err = (estim_vars_ * estim_errs.transpose()).norm();
+        // check that optimal estimate and its error are uncorrelated E[x_hat*x_err']=0
+        Scalar est_mul_err = (estim_vars_ * estim_errs.transpose()).norm();
 
-    if (stats_logger_ != nullptr)
-        stats_logger_->CurStats().optimal_estim_mul_err = est_mul_err;
+        if (stats_logger_ != nullptr)
+            stats_logger_->CurStats().optimal_estim_mul_err = est_mul_err;
+    }
 }
 
     void DavisonMonoSlam::MakePredictions()
@@ -1391,7 +1394,7 @@ void DavisonMonoSlam::GetGroundTruthEstimVars(size_t frame_ind,
         // For 3x1 representation of a salient point, the first_cam_frame_ind can be used to construct
         // dummy lobe-shape uncertainties of a salient point.
         // So populate it regardless of the type of used salient point's representation
-        size_t first_cam_frame_ind = sal_pnt.initial_frame_ind_debug_;
+        size_t first_cam_frame_ind = sal_pnt.initial_frame_ind_synthetic_only_;
 
         static size_t overwrite_first_cam_frame_ind = (size_t)-1;
         if (overwrite_first_cam_frame_ind != (size_t)-1)
@@ -1491,13 +1494,14 @@ void DavisonMonoSlam::SetEstimStateCovarInEstimSpace(size_t frame_ind)
     {
         size_t sal_pnt_offset = SalientPointOffset(sal_pnt_ind);
 
-        auto sal_pnt_covar = estim_vars_covar_.block< kSalientPointComps, kSalientPointComps>(sal_pnt_offset, sal_pnt_offset);
         if (kSalPntRepres == SalPntComps::kEucl3D)
         {
-            sal_pnt_covar = GetDefaultXyzSalientPointCovar();
+            auto xyz_sal_pnt_covar = GetDefaultXyzSalientPointCovar();
+            estim_vars_covar_.block<kEucl3, kEucl3>(sal_pnt_offset, sal_pnt_offset) = xyz_sal_pnt_covar;
         }
         else if (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
         {
+            auto sal_pnt_covar = estim_vars_covar_.block<kSphericalSalientPointComps, kSphericalSalientPointComps>(sal_pnt_offset, sal_pnt_offset);
             sal_pnt_covar(0, 0) = sal_pnt_first_cam_pos_variance;
             sal_pnt_covar(1, 1) = sal_pnt_first_cam_pos_variance;
             sal_pnt_covar(2, 2) = sal_pnt_first_cam_pos_variance;
@@ -2053,8 +2057,8 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     sal_pnt.SetTemplCenterPix(corner_pix, sal_pnt_patch_size_);
     sal_pnt.offset_from_top_left_ = suriko::Point2f{ corner_pix.X() - top_left.x, corner_pix.Y() - top_left.y };
     sal_pnt.initial_templ_gray_ = std::move(templ_img.gray);
+    sal_pnt.initial_frame_ind_synthetic_only_ = frame_ind;
 #if defined(SRK_DEBUG)
-    sal_pnt.initial_frame_ind_debug_ = frame_ind;
     sal_pnt.initial_templ_center_pix_debug_ = corner_pix;
     sal_pnt.initial_templ_top_left_pix_debug_ = top_left;
     sal_pnt.initial_templ_bgr_debug = std::move(templ_img.bgr_debug);

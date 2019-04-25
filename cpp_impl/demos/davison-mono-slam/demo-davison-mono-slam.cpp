@@ -879,12 +879,15 @@ void CheckDavisonMonoSlamConfigurationAndDump(const DavisonMonoSlam& mono_slam,
     }
 }
 
-static bool ValidateDirectoryExists(const char *flagname, const std::string &value)
+static bool ValidateDirectoryEmptyOrExists(const char *flagname, const std::string &value)
 {
     auto test_data_path = std::filesystem::absolute(value);
-    if (std::filesystem::is_directory(test_data_path))
+    
+    // allow empty directory in case of active virtual scenario
+    if (test_data_path.empty() ||
+        std::filesystem::is_directory(test_data_path))
         return true;
-    std::cout << "directory " << test_data_path.string() << " doesn't exist" << std::endl;
+    std::cout << "directory [" << test_data_path.string() << "] doesn't exist" << std::endl;
     return false;
 }
 
@@ -892,7 +895,7 @@ static constexpr char* kVirtualSceneCStr = "virtscene";
 static constexpr char* kImageSeqDirCStr = "imageseqdir";
 DEFINE_string(scene_source, kVirtualSceneCStr, "{virtual,imageseqdir}");
 DEFINE_string(scene_imageseq_dir, "", "Path to directory with image files");
-DEFINE_validator(scene_imageseq_dir, &ValidateDirectoryExists);
+DEFINE_validator(scene_imageseq_dir, &ValidateDirectoryEmptyOrExists);
 DEFINE_int32(virtual_scenario, 1, "");
 DEFINE_double(world_xmin, -1.5, "world xmin");
 DEFINE_double(world_xmax, 1.5, "world xmax");
@@ -1042,9 +1045,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     
     if (!check_sal_pnt_representation())
     {
-        LOG(ERROR) << "XYZ [3x1] representation of a salient point is allowed only in virtual scenarios, "
-                   << "because in real-world scenario the depth of a salient point is unknown and can't be initialized. "
-                   << "Set [6x1] representation of a salient point (use c++ flag: SAL_PNT_REPRES=2)";
+        LOG(ERROR)
+            << "XYZ [3x1] representation of a salient point is allowed only in virtual scenarios, "
+            << "because in real-world scenario the depth of a salient point is unknown and can't be initialized."
+            << "Use spherical [6x1] representation of a salient point (use c++ flag: SAL_PNT_REPRES=2).";
+
+        // TODO: how to merge two messages
+        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kEucl3D &&
+            demo_data_source == DemoDataSource::kVirtualScene)
+        {
+            LOG(ERROR) << "Set run-time flag monoslam_fake_sal_pnt_init_inv_dist=true to initialize a salient point's initial distance to ground truth.";
+        }
         return 1;
     }
 

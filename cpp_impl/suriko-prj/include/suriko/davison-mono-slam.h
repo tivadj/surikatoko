@@ -96,9 +96,8 @@ suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei 
 /// Represents the portion of the image, which is the projection of salient image into a camera.
 struct SalPntPatch
 {
-#if defined(SRK_DEBUG)
-    size_t initial_frame_ind_debug_;
-#endif
+    size_t initial_frame_ind_synthetic_only_;  // the frame ind where a salient point was first seen; used only in virtual scenarios
+
     size_t estim_vars_ind; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
     size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
 

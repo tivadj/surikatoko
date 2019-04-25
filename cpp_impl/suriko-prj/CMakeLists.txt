@@ -13,7 +13,7 @@ message(STATUS "PROJECT_SOURCE_DIR=${PROJECT_SOURCE_DIR}") #
 option (SURIKO_DEBUG "Adds extra run-time checks, slightly slowing the run-time speed" OFF)
 set (SURIKO_SCALAR_TYPE_STRING "f64" CACHE STRING "f32 (for c++ float) or f64 (for c++ double)")
 set_property(CACHE SURIKO_SCALAR_TYPE_STRING PROPERTY STRINGS f32 f64)
-set(SURIKO_MONOSLAM_SALIENT_POINT_REPRES FirstCamPolarInvDist CACHE STRING "A represents for salient point, 'XYZ' for 3x1 vector, 'FirstCamPolarInvDist' for 6x1 vector")
+set(SURIKO_MONOSLAM_SALIENT_POINT_REPRES "FirstCamPolarInvDist" CACHE STRING "A represents for salient point, 'XYZ' for 3x1 vector, 'FirstCamPolarInvDist' for 6x1 vector")
 set_property(CACHE SURIKO_MONOSLAM_SALIENT_POINT_REPRES PROPERTY STRINGS XYZ FirstCamPolarInvDist)
 
 #
