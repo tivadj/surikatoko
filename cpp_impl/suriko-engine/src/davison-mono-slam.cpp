@@ -174,7 +174,7 @@ static constexpr Scalar estim_var_init_std = 1;
 
 DavisonMonoSlam::DavisonMonoSlam()
 {
-    SetInputNoiseStd(input_noise_std_);
+    SetProcessNoiseStd(process_noise_std_);
 
     ResetCamera(estim_var_init_std);
 }
@@ -302,15 +302,15 @@ void DavisonMonoSlam::SetCamera(const SE3Transform& cam_pos_cfw)
     estim_vars_covar_(12, 12) = cam_ang_vel_var;
 }
 
-void DavisonMonoSlam::SetInputNoiseStd(Scalar input_noise_std)
+void DavisonMonoSlam::SetProcessNoiseStd(Scalar process_noise_std)
 {
-    input_noise_std_ = input_noise_std;
+    process_noise_std_ = process_noise_std;
     
-    Scalar input_noise_std_variance = suriko::Sqr(input_noise_std);
+    Scalar process_noise_std_variance = suriko::Sqr(process_noise_std);
 
-    input_noise_covar_.setZero();
-    for (int i=0; i < input_noise_covar_.rows(); ++i)
-        input_noise_covar_(i, i) = input_noise_std_variance;
+    process_noise_covar_.setZero();
+    for (int i=0; i < process_noise_covar_.rows(); ++i)
+        process_noise_covar_(i, i) = process_noise_std_variance;
 }
 
 void AzimElevFromEuclidCoords(suriko::Point3 hw, Scalar* azim_theta, Scalar* elev_phi)
@@ -363,17 +363,17 @@ bool DavisonMonoSlam::ConvertSphericalFromXyzSalientPoint(const Eigen::Matrix <S
 void DavisonMonoSlam::ConvertMorphableFromSphericalSalientPoints(
     const std::vector<SphericalSalientPointWithBuildInfo>& sal_pnt_build_infos,
     SalPntComps sal_pnt_repres,
-    std::vector<SalientPointStateVars>* sal_pnts)
+    std::vector<MorphableSalientPoint>* sal_pnts)
 {
     for (const auto& sbi : sal_pnt_build_infos)
     {
-        SalientPointStateVars sp;
-        if (sal_pnt_repres == SalPntComps::kEucl3D)
+        MorphableSalientPoint sp;
+        if (sal_pnt_repres == SalPntComps::kXyz)
         {
             bool op = ConvertXyzFromSphericalSalientPoint(sbi.spher_sal_pnt, &sp.pos_w);
             SRK_ASSERT(op);
         }
-        else if (sal_pnt_repres == SalPntComps::kFirstCamPolarInvDepth)
+        else if (sal_pnt_repres == SalPntComps::kSphericalFirstCamInvDist)
         {
             sp.first_cam_pos_w = sbi.spher_sal_pnt.first_cam_pos_w;
             sp.azimuth_theta_w = sbi.spher_sal_pnt.azimuth_theta_w;
@@ -426,7 +426,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
 
     for (SalPntId sal_pnt_id : GetSalientPoints())
     {
-        const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
+        const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
 
         CheckSalientPoint(src_estim_vars, src_estim_vars_covar, sal_pnt);
     }
@@ -454,7 +454,7 @@ void DavisonMonoSlam::FillRk(size_t obs_sal_pnt_count, EigenDynMat* Rk) const
 
 void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar> cam_state,
     gsl::span<Scalar> new_cam_state,
-    const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state) const
+    const Eigen::Matrix<Scalar, kProcessNoiseComps, 1>* noise_state) const
 {
     Eigen::Map<const Eigen::Matrix<Scalar, kCamStateComps, 1>> cam_state_mat(cam_state.data());
 
@@ -519,8 +519,8 @@ void DavisonMonoSlam::PredictEstimVars(
     Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> F;
     Deriv_cam_state_by_cam_state(&F);
 
-    Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps> G;
-    Deriv_cam_state_by_input_noise(&G);
+    Eigen::Matrix<Scalar, kCamStateComps, kProcessNoiseComps> G;
+    Deriv_cam_state_by_process_noise(&G);
 
     static bool debug_F_G_derivatives = false;
     if (debug_F_G_derivatives)
@@ -530,8 +530,8 @@ void DavisonMonoSlam::PredictEstimVars(
 
         Scalar diff1 = (finite_diff_F - F).norm();
 
-        Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps> finite_diff_G;
-        FiniteDiff_cam_state_by_input_noise(kFiniteDiffEpsDebug, &finite_diff_G);
+        Eigen::Matrix<Scalar, kCamStateComps, kProcessNoiseComps> finite_diff_G;
+        FiniteDiff_cam_state_by_process_noise(kFiniteDiffEpsDebug, &finite_diff_G);
 
         Scalar diff2 = (finite_diff_G - G).norm();
         SRK_ASSERT(true);
@@ -540,7 +540,7 @@ void DavisonMonoSlam::PredictEstimVars(
     // Pvv = F*Pvv*Ft+G*Q*Gt
     Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> Pvv_new =
         F * src_estim_vars_covar.topLeftCorner<kCamStateComps, kCamStateComps>() * F.transpose() +
-        G * input_noise_covar_ * G.transpose();
+        G * process_noise_covar_ * G.transpose();
     
     // Pvm = F*Pvm
     DependsOnOverallPackOrder();
@@ -587,7 +587,7 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
 
         auto remove_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(remove_sal_pnt_ind);
         auto last_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(last_sal_pnt_ind);
-        SalPntPatch& last_sal_pnt = GetSalientPoint(last_sal_pnt_id);
+        TrackedSalientPoint& last_sal_pnt = GetSalientPoint(last_sal_pnt_id);
 
         sal_pnts_as_ids_.erase(remove_sal_pnt_id);
 
@@ -702,9 +702,9 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
     {
         Point2f templ_center = corners_matcher_->GetBlobCoord(blob_id);
-        SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
+        TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
         sal_pnt.track_status = SalPntTrackStatus::Matched;
-        sal_pnt.SetTemplCenterPix(templ_center, sal_pnt_patch_size_);
+        sal_pnt.SetTemplCenterPix(templ_center, sal_pnt_templ_size_);
         latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
 
@@ -751,11 +751,11 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
             }
 
             TemplMatchStats templ_stats{};
-            Picture templ_img = corners_matcher_->GetBlobPatchTemplate(blob_id, image);
+            Picture templ_img = corners_matcher_->GetBlobTemplate(blob_id, image);
             if (!templ_img.gray.empty())
             {
                 // calculate the statistics of this template (mean and variance), used for matching templates
-                auto templ_roi = Recti{ 0, 0, sal_pnt_patch_size_.width, sal_pnt_patch_size_.height };
+                auto templ_roi = Recti{ 0, 0, sal_pnt_templ_size_.width, sal_pnt_templ_size_.height };
                 Scalar templ_mean = GetGrayImageMean(templ_img.gray, templ_roi);
                 Scalar templ_sum_sqr_diff = GetGrayImageSumSqrDiff(templ_img.gray, templ_roi, templ_mean);
 
@@ -784,7 +784,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
         stats_logger_->NotifyEstimatedSalPnts(SalientPointsCount());
     }
 
-    MakePredictions();
+    PredictStateAndCovariance();
 
     if (in_multi_threaded_mode_)
         lk.unlock();
@@ -884,7 +884,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             MarkOrderingOfObservedSalientPoints();
             ++obs_sal_pnt_ind;
 
-            const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
+            const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
             SRK_ASSERT(sal_pnt.IsDetected());
 
             Point2f corner_pix = sal_pnt.templ_center_pix_.value();
@@ -892,7 +892,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 
             // project salient point into current camera
 
-            SalientPointStateVars sal_pnt_vars;
+            MorphableSalientPoint sal_pnt_vars;
             LoadSalientPointDataFromArray(Span(derive_at_pnt).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &sal_pnt_vars);
 
             Eigen::Matrix<Scalar, kPixPosComps, 1> hd = ProjectInternalSalientPoint(cam_state, sal_pnt_vars, nullptr);
@@ -1007,7 +1007,7 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
         Scalar diff_cov_total = 0;
         for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
         {
-            const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
+            const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
             // the point where derivatives are calculated at
             const EigenDynVec& derive_at_pnt = estim_vars_;
@@ -1023,7 +1023,7 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
             const Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>& Pxx =
                 Pprev.topLeftCorner<kCamStateComps, kCamStateComps>(); // camera-camera covariance
 
-            SalientPointStateVars sal_pnt_vars;
+            MorphableSalientPoint sal_pnt_vars;
             LoadSalientPointDataFromArray(Span(derive_at_pnt).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &sal_pnt_vars);
 
             Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps> hd_by_cam_state;
@@ -1134,7 +1134,7 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
 
         for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
         {
-            const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
+            const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
             // get observation corner
             SRK_ASSERT(sal_pnt.IsDetected());
@@ -1163,7 +1163,7 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
                 const Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps>& Pyy =
                     Pprev.block<kSalientPointComps, kSalientPointComps>(off, off); // sal_pnt-sal_pnt covariance
 
-                SalientPointStateVars sal_pnt_vars;
+                MorphableSalientPoint sal_pnt_vars;
                 LoadSalientPointDataFromArray(Span(derive_at_pnt).subspan(off, kSalientPointComps), &sal_pnt_vars);
 
                 Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps> hd_by_cam_state;
@@ -1314,7 +1314,7 @@ void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
         std::vector<SphericalSalientPointWithBuildInfo> sal_pnt_build_infos;
         GetGroundTruthEstimVars(frame_ind, &cam_state, &sal_pnt_build_infos);
 
-        std::vector<SalientPointStateVars> sal_pnts;
+        std::vector<MorphableSalientPoint> sal_pnts;
         ConvertMorphableFromSphericalSalientPoints(sal_pnt_build_infos, kSalPntRepres, &sal_pnts);
 
         // estimated variables
@@ -1332,7 +1332,7 @@ void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
     }
 }
 
-    void DavisonMonoSlam::MakePredictions()
+    void DavisonMonoSlam::PredictStateAndCovariance()
 {
     // make predictions
     PredictEstimVars(estim_vars_, estim_vars_covar_, &predicted_estim_vars_, &predicted_estim_vars_covar_);
@@ -1387,7 +1387,7 @@ void DavisonMonoSlam::GetGroundTruthEstimVars(size_t frame_ind,
     for (size_t sal_pnt_ind = 0; sal_pnt_ind < sal_pnt_count; ++sal_pnt_ind)
     {
         SalPntId sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(sal_pnt_ind);
-        const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
+        const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
 
         // The frame where a salient point was first seen.
         // It is used in 6x1 representation of a salient point.
@@ -1494,12 +1494,12 @@ void DavisonMonoSlam::SetEstimStateCovarInEstimSpace(size_t frame_ind)
     {
         size_t sal_pnt_offset = SalientPointOffset(sal_pnt_ind);
 
-        if (kSalPntRepres == SalPntComps::kEucl3D)
+        if (kSalPntRepres == SalPntComps::kXyz)
         {
             auto xyz_sal_pnt_covar = GetDefaultXyzSalientPointCovar();
             estim_vars_covar_.block<kEucl3, kEucl3>(sal_pnt_offset, sal_pnt_offset) = xyz_sal_pnt_covar;
         }
-        else if (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+        else if (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
         {
             auto sal_pnt_covar = estim_vars_covar_.block<kSphericalSalientPointComps, kSphericalSalientPointComps>(sal_pnt_offset, sal_pnt_offset);
             sal_pnt_covar(0, 0) = sal_pnt_first_cam_pos_variance;
@@ -1557,7 +1557,7 @@ void DavisonMonoSlam::SetEstimStateCovarLikeInAddNewSalPnt(size_t frame_ind,
         GetNewSphericalSalientPointCovar(first_cam_state, suriko::Point2f{ first_cam_corner_pix }, sal_pnt_build_info.proj_interm_vars, take_vars_count, &spher_sal_pnt_autocovar, &spher_sal_pnt_to_other_covar);
 
         SalPntComps sal_pnt_repres = kSalPntRepres;
-        if (sal_pnt_repres == SalPntComps::kEucl3D)
+        if (sal_pnt_repres == SalPntComps::kXyz)
         {
             Eigen::Matrix<Scalar, kXyzSalientPointComps, kXyzSalientPointComps> xyz_sal_pnt_autocovar;
             Eigen::Matrix<Scalar, kXyzSalientPointComps, Eigen::Dynamic> xyz_sal_pnt_to_other_covar;
@@ -1571,7 +1571,7 @@ void DavisonMonoSlam::SetEstimStateCovarLikeInAddNewSalPnt(size_t frame_ind,
 
             estim_vars_covar_.block(take_vars_count, take_vars_count, kXyzSalientPointComps, kXyzSalientPointComps) = xyz_sal_pnt_autocovar;
         }
-        else if (sal_pnt_repres == SalPntComps::kFirstCamPolarInvDepth)
+        else if (sal_pnt_repres == SalPntComps::kSphericalFirstCamInvDist)
         {
             estim_vars_covar_.block(take_vars_count, 0, kSphericalSalientPointComps, take_vars_count) = spher_sal_pnt_to_other_covar;
             estim_vars_covar_.block(0, take_vars_count, take_vars_count, kSphericalSalientPointComps) = spher_sal_pnt_to_other_covar.transpose();
@@ -1587,7 +1587,7 @@ void DavisonMonoSlam::SetEstimStateAndCovarToGroundTruth(size_t frame_ind)
     std::vector<SphericalSalientPointWithBuildInfo> sal_pnt_build_infos;
     GetGroundTruthEstimVars(frame_ind, &cam_state, &sal_pnt_build_infos);
 
-    std::vector<SalientPointStateVars> sal_pnts;
+    std::vector<MorphableSalientPoint> sal_pnts;
     ConvertMorphableFromSphericalSalientPoints(sal_pnt_build_infos, kSalPntRepres, &sal_pnts);
 
     // estimated variables
@@ -1603,7 +1603,7 @@ void DavisonMonoSlam::SetEstimStateAndCovarToGroundTruth(size_t frame_ind)
     else if (set_estim_state_covar_to_gt_impl_ == 2)
         SetEstimStateCovarLikeInAddNewSalPnt(frame_ind, sal_pnt_build_infos);
 
-    MakePredictions();  // recalculate the predictions
+    PredictStateAndCovariance();  // recalculate the predictions
 }
 
 template <typename EigenVec>
@@ -1695,19 +1695,19 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os) const
         os << std::endl;
 
         auto sal_pnt_vars_span = Span(*p_src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps);
-        SalientPointStateVars sal_pnt_vars;
+        MorphableSalientPoint sal_pnt_vars;
         LoadSalientPointDataFromArray(sal_pnt_vars_span, &sal_pnt_vars);
 
-        if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+        if constexpr (kSalPntRepres == SalPntComps::kXyz)
         {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
             os << "SP.pos: ";
             FormatVec(os, sal_pnt_vars.pos_w) << std::endl;
 #endif
         }
-        else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+        else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
         {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
             os << "SP.firstcam: ";
             FormatVec(os, sal_pnt_vars.first_cam_pos_w) << std::endl;
             os << "SP.azim_theta: " << sal_pnt_vars.azimuth_theta_w << std::endl;
@@ -1744,7 +1744,7 @@ void DavisonMonoSlam::ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind)
 #endif
 }
 
-void DavisonMonoSlam::PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const
+void DavisonMonoSlam::BackprojectPixelIntoCameraPlane(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const
 {
     std::array<Scalar, 2> f_pix = cam_intrinsics_.FocalLengthPix();
     Scalar Cx = cam_intrinsics_.principal_point_pix[0];
@@ -1755,20 +1755,6 @@ void DavisonMonoSlam::PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPo
     hc[0] = -(hu[0] - Cx) / f_pix[0];
     hc[1] = -(hu[1] - Cy) / f_pix[1];
     hc[2] = 1;
-}
-
-void DavisonMonoSlam::PixelCoordinateToDirectionInCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* dir_camera) const
-{
-    std::array<Scalar, 2> f_pix = cam_intrinsics_.FocalLengthPix();
-    Scalar Cx = cam_intrinsics_.principal_point_pix[0];
-    Scalar Cy = cam_intrinsics_.principal_point_pix[1];
-
-    // A.58
-    Eigen::Matrix<Scalar, kEucl3, 1>& hc = *dir_camera;;
-    hc[0] = -(hu[0] - Cx) / f_pix[0];
-    hc[1] = -(hu[1] - Cy) / f_pix[1];
-    hc[2] = 1;
-    hc.normalize();  // make unit direction
 }
 
 void DavisonMonoSlam::AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_var_ind,
@@ -1794,7 +1780,7 @@ void DavisonMonoSlam::AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_
     Eigen::Matrix<Scalar, kXyzSalientPointComps, kXyzSalientPointComps> xyz_sal_pnt_autocovar;
     Eigen::Matrix<Scalar, kXyzSalientPointComps, Eigen::Dynamic> xyz_sal_pnt_to_other_covar;
 
-    if (kSalPntRepres == SalPntComps::kEucl3D)
+    if (kSalPntRepres == SalPntComps::kXyz)
     {
         // convert spherical [6x1] to Euclidean XYZ [3x1] format
         bool op = ConvertXyzFromSphericalSalientPoint(spher_sal_pnt, &xyz_sal_pnt_vars);
@@ -1805,7 +1791,7 @@ void DavisonMonoSlam::AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_
             spher_sal_pnt_to_other_covar,
             &xyz_sal_pnt_autocovar, &xyz_sal_pnt_to_other_covar);
     }
-    else if (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
         SaveSalientPointDataToArray(spher_sal_pnt, Span(spher_sal_pnt_vars));
     }
@@ -1813,12 +1799,12 @@ void DavisonMonoSlam::AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_
     // allocate space for estimated variables
     estim_vars_.conservativeResize(vars_count_after);
 
-    if (kSalPntRepres == SalPntComps::kEucl3D)
+    if (kSalPntRepres == SalPntComps::kXyz)
     {
         Eigen::Map<Eigen::Matrix<Scalar, kXyzSalientPointComps, 1>> dst_sal_pnt_vars(&estim_vars_[new_sal_pnt_var_ind]);
         dst_sal_pnt_vars = xyz_sal_pnt_vars;
     }
-    else if (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
         Eigen::Map<Eigen::Matrix<Scalar, kSphericalSalientPointComps, 1>> dst_sal_pnt_vars(&estim_vars_[new_sal_pnt_var_ind]);
         dst_sal_pnt_vars = spher_sal_pnt_vars;
@@ -1831,14 +1817,14 @@ void DavisonMonoSlam::AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_
     // the Eigen's conservative resize uses temporary to resize and copy matrix, slow
     estim_vars_covar_.conservativeResize(vars_count_after, vars_count_after);
 
-    if (kSalPntRepres == SalPntComps::kEucl3D)
+    if (kSalPntRepres == SalPntComps::kXyz)
     {
         estim_vars_covar_.bottomLeftCorner(kXyzSalientPointComps, vars_count_before) = xyz_sal_pnt_to_other_covar;
         estim_vars_covar_.topRightCorner(vars_count_before, kXyzSalientPointComps) = xyz_sal_pnt_to_other_covar.transpose();
 
         estim_vars_covar_.bottomRightCorner(kXyzSalientPointComps, kXyzSalientPointComps) = xyz_sal_pnt_autocovar;
     }
-    else if (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
         estim_vars_covar_.bottomLeftCorner(kSphericalSalientPointComps, vars_count_before) = spher_sal_pnt_to_other_covar;
         estim_vars_covar_.topRightCorner(vars_count_before, kSphericalSalientPointComps) = spher_sal_pnt_to_other_covar.transpose();
@@ -1859,7 +1845,7 @@ DavisonMonoSlam::SphericalSalientPoint DavisonMonoSlam::GetNewSphericalSalientPo
 
     // A.58
     Eigen::Matrix<Scalar, kEucl3, 1> hc;
-    PixelCoordinateToCamera(hu, &hc);
+    BackprojectPixelIntoCameraPlane(hu, &hc);
     interm_proj_vars->hc = hc;
 
     Eigen::Matrix<Scalar, kEucl3, kEucl3> first_cam_Rwfc;
@@ -1874,7 +1860,7 @@ DavisonMonoSlam::SphericalSalientPoint DavisonMonoSlam::GetNewSphericalSalientPo
     //DependsOnSalientPointPackOrder();
 ////    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
 ////    {
-////#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+////#if defined(XYZ_SAL_PNT_REPRES)
 ////        Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos = hw + cam_state.pos_w;
 ////        dst_vars[0] = sal_pnt_pos[0];
 ////        dst_vars[1] = sal_pnt_pos[1];
@@ -1883,7 +1869,7 @@ DavisonMonoSlam::SphericalSalientPoint DavisonMonoSlam::GetNewSphericalSalientPo
 ////    }
 ////    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         sal_pnt_vars.first_cam_pos_w = first_cam_state.pos_w;
 
         AzimElevFromEuclidCoords(suriko::Point3{ hw }, &sal_pnt_vars.azimuth_theta_w, &sal_pnt_vars.elevation_phi_w);
@@ -2049,12 +2035,12 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     suriko::Point2i top_left = TemplateTopLeftInt(corner_pix);
 
     // ID of new salient point
-    sal_pnts_.push_back(std::make_unique<SalPntPatch>());
-    SalPntPatch& sal_pnt = *sal_pnts_.back().get();
+    sal_pnts_.push_back(std::make_unique<TrackedSalientPoint>());
+    TrackedSalientPoint& sal_pnt = *sal_pnts_.back().get();
     sal_pnt.estim_vars_ind = sal_pnt_var_ind;
     sal_pnt.sal_pnt_ind = old_sal_pnts_count;
     sal_pnt.track_status = SalPntTrackStatus::New;
-    sal_pnt.SetTemplCenterPix(corner_pix, sal_pnt_patch_size_);
+    sal_pnt.SetTemplCenterPix(corner_pix, sal_pnt_templ_size_);
     sal_pnt.offset_from_top_left_ = suriko::Point2f{ corner_pix.X() - top_left.x, corner_pix.Y() - top_left.y };
     sal_pnt.initial_templ_gray_ = std::move(templ_img.gray);
     sal_pnt.initial_frame_ind_synthetic_only_ = frame_ind;
@@ -2077,7 +2063,7 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     return sal_pnt_id;
 }
 
-std::optional<suriko::Point2f> DavisonMonoSlam::GetDetectedSalientPatchCenter(SalPntId sal_pnt_id) const
+std::optional<suriko::Point2f> DavisonMonoSlam::GetDetectedSalientTemplCenter(SalPntId sal_pnt_id) const
 {
     const auto& sal_pnt = GetSalientPoint(sal_pnt_id);
     if (!sal_pnt.IsDetected())
@@ -2175,7 +2161,7 @@ void DavisonMonoSlam::Deriv_R_by_q(const Eigen::Matrix<Scalar, kQuat4, 1>& q,
         2 * q[1], 2 * q[2], 2 * q[3];
 }
 
-void DavisonMonoSlam::Deriv_hd_by_camera_state(const SalientPointStateVars& sal_pnt,
+void DavisonMonoSlam::Deriv_hd_by_camera_state(const MorphableSalientPoint& sal_pnt,
     const CameraStateVars& cam_state,
     const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
     const SalPntProjectionIntermidVars& proj_hist,
@@ -2189,13 +2175,13 @@ void DavisonMonoSlam::Deriv_hd_by_camera_state(const SalientPointStateVars& sal_
     Eigen::Matrix<Scalar, kEucl3, kEucl3> Rcw = cam_orient_wfc.transpose();
 
     Eigen::Matrix<Scalar, kEucl3, kEucl3> dhc_by_dr;
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
         dhc_by_dr = -Rcw;  // A.36
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         dhc_by_dr = -sal_pnt.inverse_dist_rho * Rcw;  // A.35
 #endif
     }
@@ -2215,15 +2201,15 @@ void DavisonMonoSlam::Deriv_hd_by_camera_state(const SalientPointStateVars& sal_
     Deriv_R_by_q(q, &dR_by_dq0, &dR_by_dq1, &dR_by_dq2, &dR_by_dq3);
 
     Eigen::Matrix<Scalar, kEucl3, 1> part2;
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
         part2 = sal_pnt.pos_w - cam_state.pos_w;
 #endif
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         part2 = sal_pnt.inverse_dist_rho * (sal_pnt.first_cam_pos_w - cam_state.pos_w) + proj_hist.first_cam_sal_pnt_unity_dir;
 #endif
     }
@@ -2247,7 +2233,7 @@ void DavisonMonoSlam::Deriv_hd_by_camera_state(const SalientPointStateVars& sal_
     hd_by_xc->middleCols<kQuat4>(kEucl3) = dh_by_dqwc;
 }
 
-void DavisonMonoSlam::Deriv_hd_by_sal_pnt(const SalientPointStateVars& sal_pnt,
+void DavisonMonoSlam::Deriv_hd_by_sal_pnt(const MorphableSalientPoint& sal_pnt,
     const CameraStateVars& cam_state,
     const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
     const Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>& hd_by_hu,
@@ -2257,14 +2243,14 @@ void DavisonMonoSlam::Deriv_hd_by_sal_pnt(const SalientPointStateVars& sal_pnt,
     Eigen::Matrix<Scalar, kEucl3, kEucl3> Rcw = cam_orient_wfc.transpose();
 
     Eigen::Matrix<Scalar, kEucl3, kSalientPointComps> dhc_by_dy;
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
         // A.55
         dhc_by_dy = Rcw;
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         Scalar cos_phi = std::cos(sal_pnt.elevation_phi_w);
         Scalar sin_phi = std::sin(sal_pnt.elevation_phi_w);
         Scalar cos_theta = std::cos(sal_pnt.azimuth_theta_w);
@@ -2316,7 +2302,7 @@ void DavisonMonoSlam::Deriv_azim_theta_elev_phi_by_hw(
 }
 
 std::optional<Eigen::Matrix<Scalar, kEucl3, 1>> DavisonMonoSlam::InternalSalientPointToCamera(
-    const SalientPointStateVars& sal_pnt_vars,
+    const MorphableSalientPoint& sal_pnt_vars,
     const CameraStateVars& cam_state,
     bool scaled_by_inv_dist,
     SalPntProjectionIntermidVars *proj_hist) const
@@ -2330,18 +2316,18 @@ std::optional<Eigen::Matrix<Scalar, kEucl3, 1>> DavisonMonoSlam::InternalSalient
     SE3Transform camk_orient_cfw = SE3Inv(camk_wfc);
 
     std::optional<Eigen::Matrix<Scalar, kEucl3, 1>> sal_pnt_cam;
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
         // A.22
         Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_camk_eucl = camk_orient_cfw33 * (sal_pnt_vars.pos_w - cam_state.pos_w);
         auto sal_pnt_in_cam_debug = SE3Apply(camk_orient_cfw, sal_pnt_vars.pos_w);
         sal_pnt_cam = sal_pnt_camk_eucl;
 #endif
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         if (IsClose(0, sal_pnt_vars.inverse_dist_rho) && !scaled_by_inv_dist)
         {
             // the 3D pos is requested, but it can't be realized because it is in infinity
@@ -2377,7 +2363,7 @@ std::optional<Eigen::Matrix<Scalar, kEucl3, 1>> DavisonMonoSlam::InternalSalient
 }
 
 Eigen::Matrix<Scalar, kPixPosComps,1> DavisonMonoSlam::ProjectInternalSalientPoint(const CameraStateVars& cam_state,
-    const SalientPointStateVars& sal_pnt_vars,
+    const MorphableSalientPoint& sal_pnt_vars,
     SalPntProjectionIntermidVars *proj_hist) const
 {
     bool scaled_by_inv_dist = true;  // projection must handle points in infinity
@@ -2566,8 +2552,8 @@ void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(
     const EigenDynVec& derive_at_pnt,
     const CameraStateVars& cam_state,
     const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
-    const SalPntPatch& sal_pnt,
-    const SalientPointStateVars& sal_pnt_vars,
+    const TrackedSalientPoint& sal_pnt,
+    const MorphableSalientPoint& sal_pnt_vars,
     Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam_state,
     Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt,
     Eigen::Matrix<Scalar, kPixPosComps, 1>* hd) const
@@ -2629,9 +2615,9 @@ void DavisonMonoSlam::Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
         MarkOrderingOfObservedSalientPoints();
         ++obs_sal_pnt_ind;
 
-        const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
+        const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
-        SalientPointStateVars sal_pnt_vars;
+        MorphableSalientPoint sal_pnt_vars;
         size_t off = sal_pnt.estim_vars_ind;
         LoadSalientPointDataFromArray(Span(derive_at_pnt).subspan(off, kSalientPointComps), &sal_pnt_vars);
 
@@ -2656,7 +2642,7 @@ void DavisonMonoSlam::Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
 }
 
 void DavisonMonoSlam::FiniteDiff_hd_by_camera_state(const EigenDynVec& derive_at_pnt, 
-    const SalientPointStateVars& sal_pnt,
+    const MorphableSalientPoint& sal_pnt,
     Scalar finite_diff_eps,
     Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_xc) const
 {
@@ -2683,7 +2669,7 @@ void DavisonMonoSlam::FiniteDiff_hd_by_camera_state(const EigenDynVec& derive_at
 }
 
 void DavisonMonoSlam::FiniteDiff_hd_by_sal_pnt_state(const CameraStateVars& cam_state, 
-    const SalPntPatch& sal_pnt,
+    const TrackedSalientPoint& sal_pnt,
     const EigenDynVec& derive_at_pnt,
     Scalar finite_diff_eps,
     Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_y) const
@@ -2695,7 +2681,7 @@ void DavisonMonoSlam::FiniteDiff_hd_by_sal_pnt_state(const CameraStateVars& cam_
         Eigen::Matrix<Scalar, kSalientPointComps, 1> sal_pnt_state = derive_at_pnt.middleRows<kSalientPointComps>(off);
         sal_pnt_state[var_ind] += finite_diff_eps;
 
-        SalientPointStateVars sal_pnt_right;
+        MorphableSalientPoint sal_pnt_right;
         LoadSalientPointDataFromArray(gsl::make_span<const Scalar>(sal_pnt_state.data(), kSalientPointComps), &sal_pnt_right);
 
         Eigen::Matrix<Scalar, kPixPosComps, 1> hd_right = ProjectInternalSalientPoint(cam_state, sal_pnt_right, nullptr);
@@ -2703,7 +2689,7 @@ void DavisonMonoSlam::FiniteDiff_hd_by_sal_pnt_state(const CameraStateVars& cam_
         //
         sal_pnt_state[var_ind] -= 2 * finite_diff_eps;
 
-        SalientPointStateVars sal_pnt_left;
+        MorphableSalientPoint sal_pnt_left;
         LoadSalientPointDataFromArray(gsl::make_span<const Scalar>(sal_pnt_state.data(), kSalientPointComps), &sal_pnt_left);
 
         Eigen::Matrix<Scalar, kPixPosComps, 1> hd_left = ProjectInternalSalientPoint(cam_state, sal_pnt_left, nullptr);
@@ -2798,7 +2784,7 @@ void DavisonMonoSlam::FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> 
     }
 }
 
-void DavisonMonoSlam::Deriv_cam_state_by_input_noise(Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const
+void DavisonMonoSlam::Deriv_cam_state_by_process_noise(Eigen::Matrix<Scalar, kCamStateComps, kProcessNoiseComps>* result) const
 {
     Scalar dT = between_frames_period_;
 
@@ -2818,15 +2804,15 @@ void DavisonMonoSlam::Deriv_cam_state_by_input_noise(Eigen::Matrix<Scalar, kCamS
     SRK_ASSERT(m.allFinite());
 }
 
-void DavisonMonoSlam::FiniteDiff_cam_state_by_input_noise(Scalar finite_diff_eps,
-    Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const
+void DavisonMonoSlam::FiniteDiff_cam_state_by_process_noise(Scalar finite_diff_eps,
+    Eigen::Matrix<Scalar, kCamStateComps, kProcessNoiseComps>* result) const
 {
-    typedef Eigen::Matrix<Scalar, kInputNoiseComps, 1> NoiseVec;
+    typedef Eigen::Matrix<Scalar, kProcessNoiseComps, 1> NoiseVec;
     const NoiseVec noise = NoiseVec::Zero(); // calculate finite differences at zero noise
 
     gsl::span<const Scalar> cam_state_array = gsl::make_span<const Scalar>(estim_vars_.data(), kCamStateComps);
 
-    for (size_t var_ind = 0; var_ind < kInputNoiseComps; ++var_ind)
+    for (size_t var_ind = 0; var_ind < kProcessNoiseComps; ++var_ind)
     {
         // copy state
         NoiseVec mut_state = Eigen::Map<const NoiseVec>(noise.data());
@@ -2908,20 +2894,20 @@ void DavisonMonoSlam::Deriv_q1_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4,
         }
 }
 
-void DavisonMonoSlam::LoadSalientPointDataFromArray(gsl::span<const Scalar> src, SalientPointStateVars* result) const
+void DavisonMonoSlam::LoadSalientPointDataFromArray(gsl::span<const Scalar> src, MorphableSalientPoint* result) const
 {
     DependsOnSalientPointPackOrder();
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
         result->pos_w[0] = src[0];
         result->pos_w[1] = src[1];
         result->pos_w[2] = src[2];
 #endif
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         result->first_cam_pos_w[0] = src[0];
         result->first_cam_pos_w[1] = src[1];
         result->first_cam_pos_w[2] = src[2];
@@ -2932,9 +2918,9 @@ void DavisonMonoSlam::LoadSalientPointDataFromArray(gsl::span<const Scalar> src,
     }
 }
 
-DavisonMonoSlam::SalientPointStateVars DavisonMonoSlam::LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const
+DavisonMonoSlam::MorphableSalientPoint DavisonMonoSlam::LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const
 {
-    DavisonMonoSlam::SalientPointStateVars result;
+    DavisonMonoSlam::MorphableSalientPoint result;
     LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &result);
     return result;
 }
@@ -2949,20 +2935,20 @@ void DavisonMonoSlam::SaveSalientPointDataToArray(const SphericalSalientPoint& s
     dst[5] = sal_pnt_vars.inverse_dist_rho;
 }
 
-void DavisonMonoSlam::SaveSalientPointDataToArray(const SalientPointStateVars& sal_pnt_vars, gsl::span<Scalar> dst) const
+void DavisonMonoSlam::SaveSalientPointDataToArray(const MorphableSalientPoint& sal_pnt_vars, gsl::span<Scalar> dst) const
 {
     DependsOnSalientPointPackOrder();
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
         dst[0] = sal_pnt_vars.pos_w[0];
         dst[1] = sal_pnt_vars.pos_w[1];
         dst[2] = sal_pnt_vars.pos_w[2];
 #endif
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         dst[0] = sal_pnt_vars.first_cam_pos_w[0];
         dst[1] = sal_pnt_vars.first_cam_pos_w[1];
         dst[2] = sal_pnt_vars.first_cam_pos_w[2];
@@ -2999,7 +2985,7 @@ void DavisonMonoSlam::SaveCameraStateToArray(const CameraStateVars& cam_state, g
 }
 
 void DavisonMonoSlam::SaveEstimVars(const CameraStateVars& cam_state,
-    const std::vector<SalientPointStateVars>& sal_pnts,
+    const std::vector<MorphableSalientPoint>& sal_pnts,
     EigenDynVec* dst_estim_vars)
 {
     auto& est = *dst_estim_vars;
@@ -3026,35 +3012,35 @@ size_t DavisonMonoSlam::SalientPointOffset(size_t sal_pnt_ind) const
     return kCamStateComps + sal_pnt_ind * kSalientPointComps;
 }
 
-SalPntPatch& DavisonMonoSlam::GetSalientPoint(SalPntId id)
+TrackedSalientPoint& DavisonMonoSlam::GetSalientPoint(SalPntId id)
 {
     return *id.sal_pnt_internal;
 }
 
-const SalPntPatch& DavisonMonoSlam::GetSalientPoint(SalPntId id) const
+const TrackedSalientPoint& DavisonMonoSlam::GetSalientPoint(SalPntId id) const
 {
     return const_cast<DavisonMonoSlam*>(this)->GetSalientPoint(id);
 }
 
 SalPntId DavisonMonoSlam::GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind) const
 {
-    SalPntPatch *sp = sal_pnts_[sal_pnt_ind].get();
+    TrackedSalientPoint *sp = sal_pnts_[sal_pnt_ind].get();
     return SalPntId{ sp };
 }
 
-std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointPatchIntoWorld(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const
+std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointTemplIntoWorld(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const
 {
     // Let B be a plane through the salient point, orthogonal to direction from camera to this salient point.
-    // Emit four rays from the camera center to four corners of the image patch.
-    // These rays intersect plane B in four 3D points, which is the 3D boundary for the salient point's patch template.
+    // Emit four rays from the camera center to four corners of the image template.
+    // These rays intersect plane B in four 3D points, which is the 3D boundary for the salient point's image template.
 
-    const SalientPointStateVars sal_pnt_vars = LoadSalientPointDataFromSrcEstimVars(src_estim_vars, sal_pnt);
+    const MorphableSalientPoint sal_pnt_vars = LoadSalientPointDataFromSrcEstimVars(src_estim_vars, sal_pnt);
 
-//    // the Euclidean 3D salient point will always have a 3D rectangle patch;
-//    // the 'inverse depth' salient point has no 3D rectangle patch when point is in infinity
+//    // the Euclidean 3D salient point will always have a 3D rectangle template;
+//    // the 'inverse depth' salient point has no 3D rectangle template when point is in infinity
 //    if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
 //    {
-//#if defined(SAL_PNT_REPRES_INV_DIST)
+//#if defined(SPHER_SAL_PNT_REPRES)
 //        if (IsClose(sal_pnt_vars.inverse_dist_rho, 0))
 //            return std::nullopt;
 //#endif
@@ -3079,12 +3065,12 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointPatchIntoWor
     SRK_ASSERT(sal_pnt.IsDetected());
     suriko::Point2i top_left_int = TemplateTopLeftInt(sal_pnt.templ_center_pix_.value());
 
-    // select integer 2D boundary of a template patch on the image.
+    // select integer 2D boundary of a template on the image.
     using RealCorner = Eigen::Matrix<Scalar, 2, 1>;
     auto top_left = RealCorner{ top_left_int.x, top_left_int.y };
     auto bot_right = RealCorner{
-        top_left[0] + sal_pnt_patch_size_.width,
-        top_left[1] + sal_pnt_patch_size_.height
+        top_left[0] + sal_pnt_templ_size_.width,
+        top_left[1] + sal_pnt_templ_size_.height
     };
 
     std::array< RealCorner, 4> corner_dirs;
@@ -3099,7 +3085,7 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointPatchIntoWor
         const RealCorner& corner = corner_dirs[i];
 
         Eigen::Matrix<Scalar, kEucl3, 1> corner_in_camera_dir;
-        PixelCoordinateToCamera(corner, &corner_in_camera_dir);
+        BackprojectPixelIntoCameraPlane(corner, &corner_in_camera_dir);
         corner_in_camera_dir.normalize();
 
         Scalar cos_ang = sal_pnt_dir.dot(corner_in_camera_dir);
@@ -3136,13 +3122,13 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointPatchIntoWor
 
 std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientTemplateIntoWorld(SalPntId sal_pnt_id) const
 {
-    const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
-    // unobserved salient point has no associated patch of image
+    const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
+    // unobserved salient point has no associated template of image
     if (!sal_pnt.IsDetected())
         return std::nullopt;
 
     const auto& src_estim_vars = estim_vars_;
-    return ProtrudeSalientPointPatchIntoWorld(src_estim_vars, sal_pnt);
+    return ProtrudeSalientPointTemplIntoWorld(src_estim_vars, sal_pnt);
 }
 
 void DavisonMonoSlam::LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const
@@ -3281,7 +3267,7 @@ void DavisonMonoSlam::DerivSalPnt_xyz_by_spher(const SphericalSalientPoint& sal_
     SRK_ASSERT(jacob.allFinite());
 }
 
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
 void DavisonMonoSlam::PropagateSalPntPosUncertainty(const SphericalSalientPoint& sal_pnt_vars,
     const Eigen::Matrix<Scalar, kSphericalSalientPointComps, kSphericalSalientPointComps>& sal_pnt_covar,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const
@@ -3304,22 +3290,22 @@ void DavisonMonoSlam::PropagateSalPntPosUncertainty(const SphericalSalientPoint&
 
 void DavisonMonoSlam::GetSalientPointPositionUncertainty(
     const EigenDynMat& src_estim_vars_covar,
-    const SalPntPatch& sal_pnt,
-    const SalientPointStateVars& sal_pnt_vars,
+    const TrackedSalientPoint& sal_pnt,
+    const MorphableSalientPoint& sal_pnt_vars,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const
 {
     Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps> orig_uncert =
         src_estim_vars_covar.block<kSalientPointComps, kSalientPointComps>(sal_pnt.estim_vars_ind, sal_pnt.estim_vars_ind);
 
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
         *sal_pnt_pos_uncert = orig_uncert;
 #endif
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         SphericalSalientPoint spher_sal_pnt;
         CopyFrom(&spher_sal_pnt, sal_pnt_vars);
         // use first order approximation 
@@ -3335,7 +3321,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageTy
     const EigenDynMat* src_estim_vars_covar;
     std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterStage(filter_stage);
     
-    const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
+    const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
     
     return GetSalientPointProjected2DPosWithUncertainty(*src_estim_vars, *src_estim_vars_covar, sal_pnt);
 }
@@ -3343,7 +3329,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageTy
 auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar,
-    const SalPntPatch& sal_pnt) const ->MeanAndCov2D
+    const TrackedSalientPoint& sal_pnt) const ->MeanAndCov2D
 {
     // fun(camera frame, salient point) -> pixel_coord, 13->2
     // collect 13x13 covariance matrix for
@@ -3380,7 +3366,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_orient_wfc;
     RotMatFromQuat(gsl::make_span<const Scalar>(cam_state.orientation_wfc.data(), kQuat4), &cam_orient_wfc);
 
-    SalientPointStateVars sal_pnt_vars;
+    MorphableSalientPoint sal_pnt_vars;
     size_t off = sal_pnt.estim_vars_ind;
     LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(off, kSalientPointComps), &sal_pnt_vars);
 
@@ -3413,7 +3399,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
             CameraStateVars cam_state1;
             LoadCameraStateVarsFromArray(Span(y_mean1, kCamStateComps), &cam_state1);
 
-            SalientPointStateVars sal_pnt_vars1;
+            MorphableSalientPoint sal_pnt_vars1;
             LoadSalientPointDataFromArray(Span(y_mean1).subspan(kRQ, kSalientPointComps), &sal_pnt_vars1);
 
             Eigen::Matrix<Scalar, kPixPosComps, 1> h1 = ProjectInternalSalientPoint(cam_state1, sal_pnt_vars1, nullptr);
@@ -3424,7 +3410,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
             CameraStateVars cam_state2;
             LoadCameraStateVarsFromArray(Span(y_mean2, kCamStateComps), &cam_state2);
 
-            SalientPointStateVars sal_pnt_vars2;
+            MorphableSalientPoint sal_pnt_vars2;
             LoadSalientPointDataFromArray(Span(y_mean2).subspan(kRQ, kSalientPointComps), &sal_pnt_vars2);
 
             Eigen::Matrix<Scalar, kPixPosComps, 1> h2 = ProjectInternalSalientPoint(cam_state2, sal_pnt_vars2, nullptr);
@@ -3453,7 +3439,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
             gsl::span<const Scalar> cam_state_span = Span(in_mat, kCamStateComps);
             LoadCameraStateVarsFromArray(cam_state_span, &cam_state);
 
-            SalientPointStateVars sal_pnt_vars;
+            MorphableSalientPoint sal_pnt_vars;
             LoadSalientPointDataFromArray(Span(in_mat).subspan(kRQ, kSalientPointComps), &sal_pnt_vars);
 
             Eigen::Matrix<Scalar, kPixPosComps, 1> h_distorted = ProjectInternalSalientPoint(cam_state, sal_pnt_vars, nullptr);
@@ -3483,22 +3469,22 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
 bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar,
-    const SalPntPatch& sal_pnt,
+    const TrackedSalientPoint& sal_pnt,
     Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const
 {
-    SalientPointStateVars sal_pnt_vars;
+    MorphableSalientPoint sal_pnt_vars;
     LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &sal_pnt_vars);
 
-    if constexpr (kSalPntRepres == SalPntComps::kEucl3D)
+    if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
         *pos_mean = sal_pnt_vars.pos_w;
 #endif
     }
-    else if constexpr (kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+    else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         Eigen::Matrix<Scalar, kEucl3, 1> m;
         CameraCoordinatesEuclidUnityDirFromPolarAngles(sal_pnt_vars.azimuth_theta_w, sal_pnt_vars.elevation_phi_w, &m[0], &m[1], &m[2]);
 
@@ -3559,7 +3545,7 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
 void DavisonMonoSlam::CheckSalientPoint(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar,
-    const SalPntPatch& sal_pnt) const
+    const TrackedSalientPoint& sal_pnt) const
 {
     Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
     Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
@@ -3597,7 +3583,7 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType 
     const EigenDynMat* src_estim_vars_covar;
     std::tie(src_estim_vars, src_estim_vars_covar) = GetFilterStage(filter_stage);
 
-    const SalPntPatch& sal_pnt = GetSalientPoint(sal_pnt_id);
+    const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
 
     return GetSalientPoint3DPosWithUncertainty(*src_estim_vars, *src_estim_vars_covar, sal_pnt, pos_mean, pos_uncert);
 }
@@ -3664,9 +3650,9 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError(FilterStageType filter_stage) co
     Scalar err_sum = 0;
     for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
     {
-        const SalPntPatch& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
+        const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
-        SalientPointStateVars sal_pnt_vars;
+        MorphableSalientPoint sal_pnt_vars;
         LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &sal_pnt_vars);
 
         Eigen::Matrix<Scalar, kPixPosComps, 1> pix = ProjectInternalSalientPoint(cam_state, sal_pnt_vars, nullptr);
@@ -3682,7 +3668,7 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError(FilterStageType filter_stage) co
 
 suriko::Point2i DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2f& center) const
 {
-    return suriko::TemplateTopLeftInt(center, sal_pnt_patch_size_);
+    return suriko::TemplateTopLeftInt(center, sal_pnt_templ_size_);
 }
 
 Scalar DavisonMonoSlam::ClosestSalientPointTemplateMinDistance() const
@@ -3691,7 +3677,7 @@ Scalar DavisonMonoSlam::ClosestSalientPointTemplateMinDistance() const
         return closest_sal_pnt_templ_min_dist_pix_.value();
 
     // when two salient points touch each other, the distance between them is 2R, R='radius of a template'
-    const Scalar touch_dist = std::sqrt(suriko::Sqr(sal_pnt_patch_size_.width) + suriko::Sqr(sal_pnt_patch_size_.height));
+    const Scalar touch_dist = std::sqrt(suriko::Sqr(sal_pnt_templ_size_.width) + suriko::Sqr(sal_pnt_templ_size_.height));
     return touch_dist;
 }
 

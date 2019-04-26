@@ -117,6 +117,6 @@ if (WITH_PANGOLIN)
     add_definitions(-DSRK_HAS_PANGOLIN)
 endif()
 
-add_subdirectory(suriko-prj)
+add_subdirectory(suriko-engine)
 add_subdirectory(suriko-test)
 add_subdirectory(demos)

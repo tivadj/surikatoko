@@ -43,7 +43,7 @@ auto EllipsePntPolarToEuclid(Scalar semi_major, Scalar semi_minor, Scalar theta)
     return p;
 }
 
-SrkColor GetSalientPointColor(const SalPntPatch& sal_pnt)
+SrkColor GetSalientPointColor(const TrackedSalientPoint& sal_pnt)
 {
     SrkColor new_sal_pnt_color{ 0, 255, 0 }; // green
     SrkColor matched_sal_pnt_color{ 255, 0, 0 }; // red
@@ -410,14 +410,14 @@ void RenderSalientTemplate(const DavisonMonoSlam* mono_slam, DavisonMonoSlam::Sa
     if (!rect.has_value())
         return;
 
-    const SalPntPatch& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
+    const TrackedSalientPoint& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
 
     bool in_virtual_mode = sal_pnt.initial_templ_gray_.empty();
     if (in_virtual_mode)
     {
-        // in virtual mode render just an outline of the patch
+        // in virtual mode render just an outline of the template
 
-        // iterate vertices in such an order, that the front of patch will face the camera
+        // iterate vertices in such an order, that the front of template will face the camera
         static constexpr std::array<size_t, 4> rect_inds = {
             SalPntRectFacet::kTopRightInd,
             SalPntRectFacet::kTopLeftInd,
@@ -435,10 +435,10 @@ void RenderSalientTemplate(const DavisonMonoSlam* mono_slam, DavisonMonoSlam::Sa
     }
     else
     {
-        // render an image of rectangular patch, associated with salient point
+        // render an image of rectangular template, associated with salient point
         // NOTE: glTexImage2D requires a texture size to be 2^N
-        const GLsizei tex_width = static_cast<GLsizei>(CeilPow2N(mono_slam->sal_pnt_patch_size_.width));
-        const GLsizei tex_height = static_cast<GLsizei>(CeilPow2N(mono_slam->sal_pnt_patch_size_.height));
+        const GLsizei tex_width = static_cast<GLsizei>(CeilPow2N(mono_slam->sal_pnt_templ_size_.width));
+        const GLsizei tex_height = static_cast<GLsizei>(CeilPow2N(mono_slam->sal_pnt_templ_size_.height));
 
         glEnable(GL_TEXTURE_2D);
 
@@ -449,23 +449,23 @@ void RenderSalientTemplate(const DavisonMonoSlam* mono_slam, DavisonMonoSlam::Sa
         GLenum src_texture_format = GL_BGR;
         static cv::Mat tex_bgr(tex_height, tex_width, CV_8UC3);
 
-        // put patch into the bottom-left corner of the texture
-        cv::Rect patch_bounds{ 0, tex_height - mono_slam->sal_pnt_patch_size_.height, mono_slam->sal_pnt_patch_size_.width, mono_slam->sal_pnt_patch_size_.height };
-        cv::Mat patch_submat{ tex_bgr, patch_bounds };
+        // put template into the bottom-left corner of the texture
+        cv::Rect templ_bounds{ 0, tex_height - mono_slam->sal_pnt_templ_size_.height, mono_slam->sal_pnt_templ_size_.width, mono_slam->sal_pnt_templ_size_.height };
+        cv::Mat templ_submat{ tex_bgr, templ_bounds };
 
-        bool patch_constructed = false;
+        bool templ_constructed = false;
 #if defined(SRK_DEBUG)
-        // visualize colored patches if available as it simplifies recognition of a scene
-        // NOTE: need a copy of the patch because later it is flipped
+        // visualize colored templates if available as it simplifies recognition of a scene
+        // NOTE: need a copy of the template because later it is flipped
         if (!sal_pnt.initial_templ_bgr_debug.empty())
         {
-            sal_pnt.initial_templ_bgr_debug.copyTo(patch_submat);
-            patch_constructed = true;
+            sal_pnt.initial_templ_bgr_debug.copyTo(templ_submat);
+            templ_constructed = true;
         }
 #endif
-        if (!patch_constructed)
+        if (!templ_constructed)
         {
-            cv::cvtColor(sal_pnt.initial_templ_gray_, patch_submat, CV_GRAY2BGR);
+            cv::cvtColor(sal_pnt.initial_templ_gray_, templ_submat, CV_GRAY2BGR);
         }
 
         // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture
@@ -487,9 +487,9 @@ void RenderSalientTemplate(const DavisonMonoSlam* mono_slam, DavisonMonoSlam::Sa
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);  // do not mix texture color with background
 
-        // patch is in the bottom-left corner of the texture
-        GLfloat tex_max_x = static_cast<GLfloat>(mono_slam->sal_pnt_patch_size_.width) / tex_width;
-        GLfloat tex_max_y = static_cast<GLfloat>(mono_slam->sal_pnt_patch_size_.height) / tex_height;
+        // template is in the bottom-left corner of the texture
+        GLfloat tex_max_x = static_cast<GLfloat>(mono_slam->sal_pnt_templ_size_.width) / tex_width;
+        GLfloat tex_max_y = static_cast<GLfloat>(mono_slam->sal_pnt_templ_size_.height) / tex_height;
 
         using PointIndAndTexCoord = std::tuple<size_t, std::array <GLfloat, 2>>;
         std::array< PointIndAndTexCoord, 4> vertex_and_tex_coords = {
@@ -524,7 +524,7 @@ void RenderMap(const DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
 {
     for (DavisonMonoSlam::SalPntId sal_pnt_id : mono_slam->GetSalientPoints())
     {
-        const SalPntPatch& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
+        const TrackedSalientPoint& sal_pnt = mono_slam->GetSalientPoint(sal_pnt_id);
 
         SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
         glColor3fv(GLColorRgb(sal_pnt_color).data());
@@ -1062,7 +1062,7 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam,
 void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
     cv::Mat* out_image_bgr) const
 {
-    const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
+    const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
     SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
     cv::Scalar sal_pnt_color_bgr = OcvColorBgr(sal_pnt_color);
 

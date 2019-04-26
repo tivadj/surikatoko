@@ -161,7 +161,7 @@ private:
 public:
     FragmentMap(size_t fragment_id_offset = 1000'000);
 
-    SalientPointFragment& AddSalientPointPatch(const std::optional<suriko::Point3> &coord, size_t* salient_point_id = nullptr);
+    SalientPointFragment& AddSalientPointTempl(const std::optional<suriko::Point3> &coord, size_t* salient_point_id = nullptr);
 
     void SetSalientPoint(size_t point_track_id, const suriko::Point3 &coord);
     void SetSalientPointNew(size_t fragment_id, const std::optional<suriko::Point3> &coord, std::optional<size_t> syntheticVirtualPointId);

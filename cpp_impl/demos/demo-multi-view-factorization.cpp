@@ -423,7 +423,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
                 z += (*x3D_noise_dis)(gen);
             }
 
-            SalientPointFragment& frag = entire_map.AddSalientPointPatch(Point3(x, y, z));
+            SalientPointFragment& frag = entire_map.AddSalientPointTempl(Point3(x, y, z));
             frag.synthetic_virtual_point_id = next_virtual_point_id++;
         }
     }
@@ -574,7 +574,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
                 {
                     // add new salient points
                     size_t salient_point_id = 0;
-                    SalientPointFragment& new_frag = mvf.map_.AddSalientPointPatch(fragment.coord, &salient_point_id);
+                    SalientPointFragment& new_frag = mvf.map_.AddSalientPointTempl(fragment.coord, &salient_point_id);
                     new_frag.synthetic_virtual_point_id = fragment.synthetic_virtual_point_id; // force id of subset fragment to be identical to fragment id from entire map
 
                     new_points_per_frame_count += 1;

@@ -22,7 +22,7 @@ struct SrkColor
     std::array<unsigned char, 3> rgb_;
 };
 
-SrkColor GetSalientPointColor(const SalPntPatch& sal_pnt);
+SrkColor GetSalientPointColor(const TrackedSalientPoint& sal_pnt);
 
 #if defined(SRK_HAS_PANGOLIN)
 

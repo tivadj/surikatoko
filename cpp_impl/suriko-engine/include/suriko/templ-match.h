@@ -18,7 +18,7 @@ struct CorrelationCoeffData
 Scalar GetGrayImageMean(const cv::Mat& gray_image, suriko::Recti roi);
 
 /// Computes sqr(X-mean(X)).
-Scalar GetGrayImageSumSqrDiff(const cv::Mat& gray_image, suriko::Recti roi, Scalar patch_mean);
+Scalar GetGrayImageSumSqrDiff(const cv::Mat& gray_image, suriko::Recti roi, Scalar roi_mean);
 
 CorrelationCoeffData CalcCorrCoeffComponents(const suriko::Picture& pic,
     suriko::Recti pic_roi,

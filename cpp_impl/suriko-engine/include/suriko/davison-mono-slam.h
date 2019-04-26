@@ -29,7 +29,7 @@ namespace
 
     // [x q v w], x: 3 for position, q: 4 for quaternion orientation, v: 3 for velocity, w: 3 for angular velocity
     constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
-    constexpr size_t kInputNoiseComps = kVelocComps + kAngVelocComps; // Qk.rows: velocity and angular velocity are updated an each iteration by noise
+    constexpr size_t kProcessNoiseComps = kVelocComps + kAngVelocComps; // Qk.rows: velocity and angular velocity are updated an each iteration by noise
     constexpr size_t kSalientPointPolarCompsCount = 3; // [theta elevation rho], theta: 1 for azimuth angle, 1 for elevation angle, rho: 1 for distance
     constexpr size_t kRho = 1; // inverse distance
     constexpr size_t kXyzSalientPointComps = kEucl3;  // [XYZ]=[3x1]
@@ -38,27 +38,29 @@ namespace
     /// Specifies the data to store for each salient point.
     enum class SalPntComps
     {
-        kEucl3D,                // [3x1] [X Y Z] the Euclidean point case
-        kFirstCamPolarInvDepth  // [6x1] [x y z azim elev rho] inverse depth case
+        kXyz,                      // [3x1] [X Y Z] the Euclidean point case
+        kSphericalFirstCamInvDist  // [6x1] [x y z azim elev rho] inverse depth case
     };
 
 // The flags to specify the representation of a salient point is for debugging 
 // (to demarcate the code which depends on a particular representation).
 // Salient point = Euclid 3D
-#define SAL_PNT_REPRES_EUCLID_XYZ
+#define XYZ_SAL_PNT_REPRES
 // Salient point = azimuth - elevation - inverse distance
-#define SAL_PNT_REPRES_INV_DIST
+#define SPHER_SAL_PNT_REPRES
 
 // or set compiler flag eg: SAL_PNT_REPRES=1
 #ifndef SAL_PNT_REPRES
 #  define SAL_PNT_REPRES 2
 #endif
 #if SAL_PNT_REPRES == 1
+    // XYZ salient point
     constexpr size_t kSalientPointComps = kXyzSalientPointComps;  // [3x1]
     constexpr SalPntComps kSalPntRepres = SalPntComps::kEucl3D;
 #elif SAL_PNT_REPRES == 2
+    // spherical salient point with first camera position and inverse distance
     constexpr size_t kSalientPointComps = kSphericalSalientPointComps;  // [6x1]
-    constexpr SalPntComps kSalPntRepres = SalPntComps::kFirstCamPolarInvDepth;
+    constexpr SalPntComps kSalPntRepres = SalPntComps::kSphericalFirstCamInvDist;
 #endif
 
     // the index of a camera frame to choose for the origin of tracker
@@ -94,7 +96,7 @@ struct TemplMatchStats
 suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei templ_size);
 
 /// Represents the portion of the image, which is the projection of salient image into a camera.
-struct SalPntPatch
+struct TrackedSalientPoint
 {
     size_t initial_frame_ind_synthetic_only_;  // the frame ind where a salient point was first seen; used only in virtual scenarios
 
@@ -118,7 +120,7 @@ struct SalPntPatch
     suriko::Point2f prev_detection_templ_center_pix_debug_ = suriko::Point2f{-1, -1};  // in pixels
 #endif
 
-    // As the patch of the image, related to this salient point, doesn't change during tracking,
+    // As the template of the image, related to this salient point, doesn't change during tracking,
     // we may cache some related statistics.
     TemplMatchStats templ_stats;
 
@@ -160,12 +162,12 @@ struct SalPntId
 {
     union
     {
-        SalPntPatch* sal_pnt_internal;
+        TrackedSalientPoint* sal_pnt_internal;
         ptrdiff_t sal_pnt_as_bits_internal;
     };
 
     SalPntId() = default;
-    constexpr SalPntId(SalPntPatch* sal_pnt) : sal_pnt_internal(sal_pnt) {}
+    constexpr SalPntId(TrackedSalientPoint* sal_pnt) : sal_pnt_internal(sal_pnt) {}
     constexpr bool HasId() const { return sal_pnt_internal != nullptr; }
     auto static constexpr Null() { return SalPntId{ nullptr }; }
 };
@@ -200,7 +202,7 @@ public:
 
     virtual suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
     
-    virtual Picture GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const Picture& image) {
+    virtual Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image) {
         return Picture{};
     }
 
@@ -366,17 +368,17 @@ private:
     EigenDynVec predicted_estim_vars_; // x[13+N*6]
     EigenDynMat predicted_estim_vars_covar_; // P[13+N*6, 13+N*6]
 
-    std::vector<std::unique_ptr<SalPntPatch>> sal_pnts_; // the set of tracked salient points
+    std::vector<std::unique_ptr<TrackedSalientPoint>> sal_pnts_; // the set of tracked salient points
     std::set<SalPntId> sal_pnts_as_ids_; // the set ids of tracked salient points
     std::set<SalPntId> latest_frame_sal_pnts_; // contains subset of salient points which were tracked in the latest frame
 
-    Eigen::Matrix<Scalar, kInputNoiseComps, kInputNoiseComps> input_noise_covar_; // Qk[6,6] input noise covariance matrix
+    Eigen::Matrix<Scalar, kProcessNoiseComps, kProcessNoiseComps> process_noise_covar_; // Qk[6,6] process noise covariance matrix
 public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
 
     // drastically affects performance: it increases uncertainty regions of salient points, hence the search regions, used for salient points correspondence, are increased
-    Scalar input_noise_std_ = 1;  // used to init Qk[6,6], uncertainty in camera dynamic model motion
+    Scalar process_noise_std_ = 1;  // used to init Qk[6,6], uncertainty in camera dynamic model motion
     Scalar measurm_noise_std_pix_ = 1;
 
     // default camera's uncertainty
@@ -400,9 +402,9 @@ public:
     bool force_xyz_sal_pnt_pos_diagonal_uncert_ = false;
     std::optional<size_t> sal_pnt_max_undetected_frames_count_;  // salient points greater than this value are removed from tracker
 
-    // width and height of a patch template of a salient point
-    // Davison used patches of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
-    suriko::Sizei sal_pnt_patch_size_ = { 15, 15 };
+    // width and height of an image template of a salient point
+    // Davison used templates of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
+    suriko::Sizei sal_pnt_templ_size_ = { 15, 15 };
 
     // this allow to register a new salient point only if the distance (between the centers of templates)
     // to the closest salient point is greater than this value;
@@ -467,7 +469,7 @@ public:
 
     void SetCamera(const SE3Transform& cam_pos_cfw);
     
-    void SetInputNoiseStd(Scalar input_noise_std);
+    void SetProcessNoiseStd(Scalar process_noise_std);
 
     void ProcessFrame(size_t frame_ind, const Picture& image);
 
@@ -487,7 +489,7 @@ public:
 
     void GetCameraEstimatedVarsUncertainty(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* cam_covar) const;
 
-    std::optional<suriko::Point2f> GetDetectedSalientPatchCenter(SalPntId sal_pnt_id) const;
+    std::optional<suriko::Point2f> GetDetectedSalientTemplCenter(SalPntId sal_pnt_id) const;
 
     bool GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
@@ -508,8 +510,8 @@ public:
 
     const std::set<SalPntId>& GetSalientPoints() const;
 
-    SalPntPatch& GetSalientPoint(SalPntId id);
-    const SalPntPatch& GetSalientPoint(SalPntId id) const;
+    TrackedSalientPoint& GetSalientPoint(SalPntId id);
+    const TrackedSalientPoint& GetSalientPoint(SalPntId id) const;
     
     SalPntId GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind) const;
 
@@ -540,7 +542,7 @@ private:
     struct SalPntProjectionIntermidVars
     {
         Eigen::Matrix<Scalar, kEucl3, 1> hc; // euclidean position of salient point in camera coordinates
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         Eigen::Matrix<Scalar, kEucl3, 1> first_cam_sal_pnt_unity_dir; // unity direction from first camera to the salient point in world coordinates
 #endif
     };
@@ -580,12 +582,13 @@ private:
         SphericalSalientPointIntermProjVars proj_interm_vars;
     };
 
-    struct SalientPointStateVars
+    /// The union of all  possible representations of a salient point
+    struct MorphableSalientPoint
     {
-#if defined(SAL_PNT_REPRES_EUCLID_XYZ)
+#if defined(XYZ_SAL_PNT_REPRES)
         Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // the salient point's position
 #endif
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
         Eigen::Matrix<Scalar, kEucl3, 1> first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
         
         // polar coordinates of the salient point in the camera where the feature was seen for the first time
@@ -595,7 +598,7 @@ private:
 #endif
     };
 
-    static void CopyFrom(SphericalSalientPoint* dst, const SalientPointStateVars& s)
+    static void CopyFrom(SphericalSalientPoint* dst, const MorphableSalientPoint& s)
     {
         dst->first_cam_pos_w = s.first_cam_pos_w;
         dst->azimuth_theta_w = s.azimuth_theta_w;
@@ -612,7 +615,7 @@ private:
 
     static void ConvertMorphableFromSphericalSalientPoints(const std::vector<SphericalSalientPointWithBuildInfo>& sal_pnt_build_infos,
         SalPntComps sal_pnt_repres,
-        std::vector<SalientPointStateVars>* sal_pnts);
+        std::vector<MorphableSalientPoint>* sal_pnts);
 
     void ResetCamera(Scalar estim_var_init_std, bool init_estim_vars = true);
 
@@ -639,7 +642,7 @@ private:
     void FillRk2x2(Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* Rk) const;
 
     void PredictCameraMotionByKinematicModel(gsl::span<const Scalar> cam_state, gsl::span<Scalar> new_cam_state,
-        const Eigen::Matrix<Scalar, kInputNoiseComps, 1>* noise_state = nullptr) const;
+        const Eigen::Matrix<Scalar, kProcessNoiseComps, 1>* noise_state = nullptr) const;
     void PredictEstimVars(
         const EigenDynVec& src_estim_vars, const EigenDynMat& src_estim_vars_covar,
         EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const;
@@ -652,9 +655,9 @@ private:
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
     void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
     void OnEstimVarsChanged(size_t frame_ind);
-    void MakePredictions();
+    void PredictStateAndCovariance();
 
-    // Updates the centers of detected patches.
+    // Updates the centers of detected template.
     void ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind);
 
     void AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_var_ind,
@@ -683,7 +686,7 @@ private:
         Eigen::Matrix<Scalar, kXyzSalientPointComps, Eigen::Dynamic>* xyz_sal_pnt_to_other_covar) const;
 
     SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner, 
-        Picture patch_template, TemplMatchStats templ_stats,
+        Picture templ_img, TemplMatchStats templ_stats,
         std::optional<Scalar> pnt_inv_dist_gt);
 
     gsl::span<Scalar> EstimVarsCamPosW();
@@ -695,20 +698,20 @@ private:
 
     void LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const;
 
-    void LoadSalientPointDataFromArray(gsl::span<const Scalar> src, SalientPointStateVars* result) const;
-    SalientPointStateVars LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
+    void LoadSalientPointDataFromArray(gsl::span<const Scalar> src, MorphableSalientPoint* result) const;
+    MorphableSalientPoint LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const;
 
-    void SaveSalientPointDataToArray(const SalientPointStateVars& sal_pnt_vars, gsl::span<Scalar> dst) const;
+    void SaveSalientPointDataToArray(const MorphableSalientPoint& sal_pnt_vars, gsl::span<Scalar> dst) const;
     void SaveSalientPointDataToArray(const SphericalSalientPoint& sal_pnt_vars, gsl::span<Scalar> dst) const;
     void SaveCameraStateToArray(const CameraStateVars& cam_state, gsl::span<Scalar> dst) const;
     void SaveEstimVars(const CameraStateVars& cam_state,
-        const std::vector<SalientPointStateVars>& sal_pnts,
+        const std::vector<MorphableSalientPoint>& sal_pnts,
         EigenDynVec* dst_estim_vars);
 
     void DerivSalPnt_xyz_by_spher(const SphericalSalientPoint& sal_pnt_vars,
         Eigen::Matrix<Scalar, kXyzSalientPointComps, kSphericalSalientPointComps>* sal_pnt_3_by_6) const;
 
-#if defined(SAL_PNT_REPRES_INV_DIST)
+#if defined(SPHER_SAL_PNT_REPRES)
     void PropagateSalPntPosUncertainty(const SphericalSalientPoint& sal_pnt,
         const Eigen::Matrix<Scalar, kSphericalSalientPointComps, kSphericalSalientPointComps>& sal_pnt_covar,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
@@ -716,21 +719,21 @@ private:
 
     void GetSalientPointPositionUncertainty(
         const EigenDynMat& src_estim_vars_covar,
-        const SalPntPatch& sal_pnt,
-        const SalientPointStateVars& sal_pnt_vars,
+        const TrackedSalientPoint& sal_pnt,
+        const MorphableSalientPoint& sal_pnt_vars,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
 
     /// NOTE: The resultant 2D uncertainty does depend on the uncertainty of the camera frame in which the salient point is projected.
     auto GetSalientPointProjected2DPosWithUncertainty(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar,
-        const SalPntPatch& sal_pnt) const->MeanAndCov2D;
+        const TrackedSalientPoint& sal_pnt) const->MeanAndCov2D;
 
     /// NOTE: The resultant uncertainty doesn't respect uncertainty of the current camera frame.
     bool GetSalientPoint3DPosWithUncertainty(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar,
-        const SalPntPatch& sal_pnt,
+        const TrackedSalientPoint& sal_pnt,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
@@ -738,12 +741,11 @@ private:
     void CheckSalientPoint(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar, 
-        const SalPntPatch& sal_pnt) const;
+        const TrackedSalientPoint& sal_pnt) const;
 
-    std::optional<SalPntRectFacet> ProtrudeSalientPointPatchIntoWorld(const EigenDynVec& src_estim_vars, const SalPntPatch& sal_pnt) const;
+    std::optional<SalPntRectFacet> ProtrudeSalientPointTemplIntoWorld(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const;
 
-    void PixelCoordinateToCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const;
-    void PixelCoordinateToDirectionInCamera(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* dir_camera) const;
+    void BackprojectPixelIntoCameraPlane(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const;
 
     //
 
@@ -752,16 +754,16 @@ private:
     void FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> cam_state, Scalar finite_diff_eps,
         Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* result) const;
 
-    void Deriv_cam_state_by_input_noise(Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const;
+    void Deriv_cam_state_by_process_noise(Eigen::Matrix<Scalar, kCamStateComps, kProcessNoiseComps>* result) const;
 
-    void FiniteDiff_cam_state_by_input_noise(Scalar finite_diff_eps,
-        Eigen::Matrix<Scalar, kCamStateComps, kInputNoiseComps>* result) const;
+    void FiniteDiff_cam_state_by_process_noise(Scalar finite_diff_eps,
+        Eigen::Matrix<Scalar, kCamStateComps, kProcessNoiseComps>* result) const;
 
     void Deriv_hd_by_cam_state_and_sal_pnt(
         const EigenDynVec& derive_at_pnt,
         const CameraStateVars& cam_state, const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
-        const SalPntPatch& sal_pnt,
-        const SalientPointStateVars& sal_pnt_vars,
+        const TrackedSalientPoint& sal_pnt,
+        const MorphableSalientPoint& sal_pnt_vars,
         Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam_state,
         Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt,
         Eigen::Matrix<Scalar, kPixPosComps, 1>* hd = nullptr) const;
@@ -787,7 +789,7 @@ private:
         Eigen::Matrix<Scalar, 3, 3>* dR_by_dq3) const;
 
     // Derivative of distorted observed corner (in pixels) by camera's state variables (13 vars).
-    void Deriv_hd_by_camera_state(const SalientPointStateVars& sal_pnt,
+    void Deriv_hd_by_camera_state(const MorphableSalientPoint& sal_pnt,
         const CameraStateVars& cam_state,
         const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
         const SalPntProjectionIntermidVars& proj_hist,
@@ -796,7 +798,7 @@ private:
         Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_xc) const;
 
     // Derivative of distorted observed corner (in pixels) by salient point's variables (6 vars).
-    void Deriv_hd_by_sal_pnt(const SalientPointStateVars& sal_pnt,
+    void Deriv_hd_by_sal_pnt(const MorphableSalientPoint& sal_pnt,
         const CameraStateVars& cam_state,
         const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
         const Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>& hd_by_dhu,
@@ -809,12 +811,12 @@ private:
         Eigen::Matrix<Scalar, 1, kEucl3>* elev_phi_by_hw) const;
 
     void FiniteDiff_hd_by_camera_state(const EigenDynVec& derive_at_pnt,
-        const SalientPointStateVars& sal_pnt,
+        const MorphableSalientPoint& sal_pnt,
         Scalar finite_diff_eps,
         Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_xc) const;
     
     void FiniteDiff_hd_by_sal_pnt_state(const CameraStateVars& cam_state, 
-        const SalPntPatch& sal_pnt,
+        const TrackedSalientPoint& sal_pnt,
         const EigenDynVec& derive_at_pnt,
         Scalar finite_diff_eps,
         Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_y) const;
@@ -833,12 +835,12 @@ private:
         SalPntProjectionIntermidVars *proj_hist) const;
 
     std::optional<Eigen::Matrix<Scalar, kEucl3, 1>> InternalSalientPointToCamera(
-        const SalientPointStateVars& sal_pnt_vars,
+        const MorphableSalientPoint& sal_pnt_vars,
         const CameraStateVars& cam_state,
         bool scaled_by_inv_dist,
         SalPntProjectionIntermidVars *proj_hist) const;
 
-    Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraStateVars& cam_state, const SalientPointStateVars& sal_pnt_vars, SalPntProjectionIntermidVars *proj_hist) const;
+    Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraStateVars& cam_state, const MorphableSalientPoint& sal_pnt_vars, SalPntProjectionIntermidVars *proj_hist) const;
 
     RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state) const;
     RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state) const;

@@ -158,7 +158,7 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
                     z += (*x3D_noise_dis)(*gen);
                 }
 
-                SalientPointFragment& frag = entire_map->AddSalientPointPatch(Point3(x, y, z));
+                SalientPointFragment& frag = entire_map->AddSalientPointTempl(Point3(x, y, z));
                 frag.synthetic_virtual_point_id = next_virtual_point_id++;
             }
         }
@@ -366,7 +366,7 @@ public:
 
 #if defined(SRK_HAS_OPENCV)
 
-class ImagePatchCornersMatcher : public CornersMatcherBase
+class ImageTemplCornersMatcher : public CornersMatcherBase
 {
     bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
     cv::Ptr<cv::ORB> detector_;
@@ -380,7 +380,7 @@ public:
     std::optional<suriko::Sizei> min_search_rect_size_;
     std::optional<Scalar> min_templ_corr_coeff_;
 public:
-    ImagePatchCornersMatcher(DavisonMonoSlam* mono_slam)
+    ImageTemplCornersMatcher(DavisonMonoSlam* mono_slam)
         :mono_slam_(mono_slam)
     {
         int nfeatures = 50;
@@ -399,7 +399,7 @@ public:
 #endif
     };
 
-    TemplateMatchResult MatchSalientPointTemplCenterInRect(const SalPntPatch& sal_pnt, const Picture& pic, Recti search_rect)
+    TemplateMatchResult MatchSalientPointTemplCenterInRect(const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
     {
         Point2i search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
         const int search_radius_left = search_rect.width / 2;
@@ -436,8 +436,8 @@ public:
             Point2i pic_roi_top_left = mono_slam_->TemplateTopLeftInt(suriko::Point2f{ search_center.x, search_center.y });
 
             auto pic_roi = suriko::Recti{ pic_roi_top_left.x, pic_roi_top_left.y,
-                mono_slam_->sal_pnt_patch_size_.width,
-                mono_slam_->sal_pnt_patch_size_.height
+                mono_slam_->sal_pnt_templ_size_.width,
+                mono_slam_->sal_pnt_templ_size_.height
             };
             
             std::optional<Scalar> corr_coeff_opt = CalcCorrCoeff(pic, pic_roi, templ_gray, templ_mean, templ_sqrt_sum_sqr_diff);
@@ -547,7 +547,7 @@ public:
         return corner_bounds_i;
     }
 
-    std::optional<suriko::Point2f> MatchSalientPatch(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic,
+    std::optional<suriko::Point2f> MatchSalientTempl(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic,
         Scalar ellisoid_cut_thr)
     {
         Recti search_rect_unbounded = PredictSalientPointSearchRect(mono_slam, sal_pnt_id, ellisoid_cut_thr);
@@ -557,8 +557,8 @@ public:
 
         Recti image_bounds = { 0, 0, pic.gray.cols, pic.gray.rows };
         
-        int radx = mono_slam.sal_pnt_patch_size_.width / 2;
-        int rady = mono_slam.sal_pnt_patch_size_.height / 2;
+        int radx = mono_slam.sal_pnt_templ_size_.width / 2;
+        int rady = mono_slam.sal_pnt_templ_size_.height / 2;
         Recti image_sensitive_portion = DeflateRect(image_bounds, radx, rady, radx, rady);
         
         std::optional<Recti> search_rect_opt = IntersectRects(search_rect_unbounded, image_sensitive_portion);
@@ -569,10 +569,10 @@ public:
 
         static bool debug_template_bounds = false;
         if (debug_template_bounds)
-            LOG(INFO) << "patch_bnds=[" << search_rect.x << "," << search_rect.y << "," << search_rect.width << "," << search_rect.height
+            LOG(INFO) << "templ_bnds=[" << search_rect.x << "," << search_rect.y << "," << search_rect.width << "," << search_rect.height
                 << " (" << search_rect.x + search_rect.width/2 <<"," << search_rect.y + search_rect.height/2 << ")";
 
-        const SalPntPatch& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
+        const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
         TemplateMatchResult match_result = MatchSalientPointTemplCenterInRect(sal_pnt, pic, search_rect);
         if (!match_result.success)
@@ -590,12 +590,12 @@ public:
             cv::Rect search_rect_cv{ search_rect.x, search_rect.y, search_rect.width, search_rect.height };
             cv::rectangle(image_with_match_bgr, search_rect_cv, cv::Scalar::all(255));
 
-            // patch bounds in new frame
+            // template bounds in new frame
             suriko::Point2i new_top_left = mono_slam.TemplateTopLeftInt(match_result.center);
-            cv::Rect patch_rect{
+            cv::Rect templ_rect{
                 new_top_left.x, new_top_left.y,
-                mono_slam.sal_pnt_patch_size_.width, mono_slam.sal_pnt_patch_size_.height };
-            cv::rectangle(image_with_match_bgr, patch_rect, cv::Scalar(172,172,0));
+                mono_slam.sal_pnt_templ_size_.width, mono_slam.sal_pnt_templ_size_.height };
+            cv::rectangle(image_with_match_bgr, templ_rect, cv::Scalar(172,172,0));
 
             if (show_image_fun_ != nullptr)
                 show_image_fun_("Match.search_rect", image_with_match_bgr);
@@ -637,9 +637,9 @@ public:
     {
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
-            const SalPntPatch& sal_pnt = mono_slam_->GetSalientPoint(sal_pnt_id);
+            const TrackedSalientPoint& sal_pnt = mono_slam_->GetSalientPoint(sal_pnt_id);
 
-            std::optional<suriko::Point2f> match_pnt_center = MatchSalientPatch(*mono_slam_, sal_pnt_id, image, ellisoid_cut_thr_);
+            std::optional<suriko::Point2f> match_pnt_center = MatchSalientTempl(*mono_slam_, sal_pnt_id, image, ellisoid_cut_thr_);
             bool is_lost = !match_pnt_center.has_value();
             if (is_lost)
                 continue;
@@ -703,7 +703,7 @@ public:
                 bool has_close_blob = false;
                 for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
                 {
-                    std::optional<suriko::Point2f> exist_pix_opt = mono_slam_->GetDetectedSalientPatchCenter(sal_pnt_id);
+                    std::optional<suriko::Point2f> exist_pix_opt = mono_slam_->GetDetectedSalientTemplCenter(sal_pnt_id);
                     suriko::Point2f exist_pix = exist_pix_opt.value();
                     Scalar dist = (Scalar)std::sqrt(suriko::Sqr(cand.pt.x - exist_pix[0]) + suriko::Sqr(cand.pt.y - exist_pix[1]));
                     if (dist < exclude_radius)
@@ -759,31 +759,31 @@ public:
         return suriko::Point2f{ kp.pt.x, kp.pt.y };
     }
 
-    Picture GetBlobPatchTemplate(CornersMatcherBlobId blob_id, const Picture& image) override
+    Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image) override
     {
         const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
 
-        int rad_x_int = mono_slam_->sal_pnt_patch_size_.width / 2;
-        int rad_y_int = mono_slam_->sal_pnt_patch_size_.height / 2;
+        int rad_x_int = mono_slam_->sal_pnt_templ_size_.width / 2;
+        int rad_y_int = mono_slam_->sal_pnt_templ_size_.height / 2;
 
         int center_x = (int)kp.pt.x;
         int center_y = (int)kp.pt.y;
-        cv::Rect patch_bounds{ center_x - rad_x_int, center_y - rad_y_int, mono_slam_->sal_pnt_patch_size_.width, mono_slam_->sal_pnt_patch_size_.height };
+        cv::Rect templ_bounds{ center_x - rad_x_int, center_y - rad_y_int, mono_slam_->sal_pnt_templ_size_.width, mono_slam_->sal_pnt_templ_size_.height };
 
-        cv::Mat patch_gray;
-        image.gray(patch_bounds).copyTo(patch_gray);
-        SRK_ASSERT(patch_gray.rows == mono_slam_->sal_pnt_patch_size_.height);
-        SRK_ASSERT(patch_gray.cols == mono_slam_->sal_pnt_patch_size_.width);
+        cv::Mat templ_gray;
+        image.gray(templ_bounds).copyTo(templ_gray);
+        SRK_ASSERT(templ_gray.rows == mono_slam_->sal_pnt_templ_size_.height);
+        SRK_ASSERT(templ_gray.cols == mono_slam_->sal_pnt_templ_size_.width);
 
-        Picture patch_template{};
-        patch_template.gray = patch_gray;
+        Picture templ{};
+        templ.gray = templ_gray;
 
 #if defined(SRK_DEBUG)
-        cv::Mat patch;
-        image.bgr_debug(patch_bounds).copyTo(patch);
-        patch_template.bgr_debug = patch;
+        cv::Mat templ_mat;
+        image.bgr_debug(templ_bounds).copyTo(templ_mat);
+        templ.bgr_debug = templ_mat;
 #endif
-        return patch_template;
+        return templ;
     }
 
     void SetSuppressObservations(bool value) { suppress_observations_ = value; }
@@ -871,7 +871,7 @@ void CheckDavisonMonoSlamConfigurationAndDump(const DavisonMonoSlam& mono_slam,
     std::optional<Scalar> between_frames_max_cam_shift = GetMaxCamShift(gt_cam_orient_cfw);
     if (between_frames_max_cam_shift.has_value())
     {
-        auto max_expected_cam_shift = mono_slam.input_noise_std_ * 3;
+        auto max_expected_cam_shift = mono_slam.process_noise_std_ * 3;
         if (between_frames_max_cam_shift.value() > max_expected_cam_shift)
             LOG(INFO)
                 << "Note: max_cam_shift=" << between_frames_max_cam_shift.value()
@@ -960,7 +960,7 @@ DEFINE_double(monoslam_cam_pos_z_std_m, 0, "");
 DEFINE_double(monoslam_cam_orient_q_comp_std, 0, "");
 DEFINE_double(monoslam_cam_vel_std, 0, "");
 DEFINE_double(monoslam_cam_ang_vel_std, 0, "");
-DEFINE_double(monoslam_input_noise_std, 0.08, "");
+DEFINE_double(monoslam_process_noise_std, 0.08, "");
 DEFINE_double(monoslam_sal_pnt_pos_x_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_pos_y_std, 0, "");
 DEFINE_double(monoslam_sal_pnt_pos_z_std, 0, "");
@@ -976,12 +976,12 @@ DEFINE_int32(monoslam_update_impl, 1, "");
 DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
 DEFINE_int32(monoslam_max_new_blobs_per_frame, 1, "");
 DEFINE_double(monoslam_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
-DEFINE_int32(monoslam_templ_width, 15, "width of patch template");
+DEFINE_int32(monoslam_templ_width, 15, "width of template");
 DEFINE_int32(monoslam_templ_min_search_rect_width, 7, "the min width of a rectangle when searching for tempplate in the next frame");
 DEFINE_int32(monoslam_templ_min_search_rect_height, 7, "");
 DEFINE_double(monoslam_templ_min_corr_coeff, -1, "");
-DEFINE_double(monoslam_templ_min_dist_pix, 0, "");
-DEFINE_bool(monoslam_stop_on_sal_pnt_moved_too_far, false, "width of patch template");
+DEFINE_double(monoslam_templ_closest_templ_min_dist_pix, 0, "");
+DEFINE_bool(monoslam_stop_on_sal_pnt_moved_too_far, false, "width of template");
 DEFINE_bool(monoslam_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(monoslam_debug_estim_vars_cov, false, "");
 DEFINE_bool(monoslam_debug_predicted_vars_cov, false, "");
@@ -1031,11 +1031,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     auto check_sal_pnt_representation = [&]() -> bool
     {
         // 6x1 salient point's representation is generic and works everywhere
-        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kFirstCamPolarInvDepth)
+        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
             return true;
 
         // 3x1 Euclidean representation of a salient point is allowed only in virtual scenarios with turned on fake initialization of inverse depth.
-        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kEucl3D)
+        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kXyz)
         {
             if (demo_data_source == DemoDataSource::kVirtualScene && FLAGS_monoslam_fake_sal_pnt_init_inv_dist)
                 return true;
@@ -1051,7 +1051,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             << "Use spherical [6x1] representation of a salient point (use c++ flag: SAL_PNT_REPRES=2).";
 
         // TODO: how to merge two messages
-        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kEucl3D &&
+        if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kXyz &&
             demo_data_source == DemoDataSource::kVirtualScene)
         {
             LOG(ERROR) << "Set run-time flag monoslam_fake_sal_pnt_init_inv_dist=true to initialize a salient point's initial distance to ground truth.";
@@ -1240,11 +1240,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.sal_pnt_init_inv_dist_ = FLAGS_monoslam_sal_pnt_init_inv_dist;
     mono_slam.sal_pnt_init_inv_dist_std_ = FLAGS_monoslam_sal_pnt_init_inv_dist_std;
     mono_slam.force_xyz_sal_pnt_pos_diagonal_uncert_ = FLAGS_monoslam_force_xyz_sal_pnt_pos_diagonal_uncert;
-    mono_slam.SetInputNoiseStd(FLAGS_monoslam_input_noise_std);
+    mono_slam.SetProcessNoiseStd(FLAGS_monoslam_process_noise_std);
     mono_slam.measurm_noise_std_pix_ = FLAGS_monoslam_measurm_noise_std_pix;
-    mono_slam.sal_pnt_patch_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
-    if (FLAGS_monoslam_templ_min_dist_pix > 0)
-        mono_slam.closest_sal_pnt_templ_min_dist_pix_ = FLAGS_monoslam_templ_min_dist_pix;
+    mono_slam.sal_pnt_templ_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
+    if (FLAGS_monoslam_templ_closest_templ_min_dist_pix > 0)
+        mono_slam.closest_sal_pnt_templ_min_dist_pix_ = FLAGS_monoslam_templ_closest_templ_min_dist_pix;
     if (FLAGS_monoslam_sal_pnt_max_undetected_frames_count > 0)
         mono_slam.sal_pnt_max_undetected_frames_count_ = FLAGS_monoslam_sal_pnt_max_undetected_frames_count;
 
@@ -1318,7 +1318,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         };
     }
     mono_slam.PredictEstimVarsHelper();
-    LOG(INFO) << "mono_slam_input_noise_std=" << FLAGS_monoslam_input_noise_std;
+    LOG(INFO) << "mono_slam_process_noise_std=" << FLAGS_monoslam_process_noise_std;
     LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << FLAGS_monoslam_measurm_noise_std_pix;
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
@@ -1340,7 +1340,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
-        auto corners_matcher = std::make_unique<ImagePatchCornersMatcher>(&mono_slam);
+        auto corners_matcher = std::make_unique<ImageTemplCornersMatcher>(&mono_slam);
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_stop_on_sal_pnt_moved_too_far;
         corners_matcher->ellisoid_cut_thr_ = FLAGS_monoslam_ellipsoid_cut_thr;
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };

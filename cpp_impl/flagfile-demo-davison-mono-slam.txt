@@ -112,7 +112,7 @@
 --monoslam_fix_estim_vars_covar_symmetry=true
 --monoslam_templ_width=17
 --monoslam_templ_min_corr_coeff=0.65
---monoslam_templ_min_dist_pix=35
+--monoslam_templ_closest_templ_min_dist_pix=35
 --monoslam_stop_on_sal_pnt_moved_too_far=false
 --monoslam_debug_estim_vars_cov=true
 --monoslam_debug_predicted_vars_cov=true
