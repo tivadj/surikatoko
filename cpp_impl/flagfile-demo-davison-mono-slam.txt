@@ -12,12 +12,10 @@
 
 # input = sequence of images
 #--scene_imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM/
---scene_imageseq_dir=E:/distrib/cv/SceneLib/testseqmonoslam/TestSeqMonoSLAM_Decimated/
-
 
 # Controller
 --ctrl_multi_threaded_mode=false
---ctrl_wait_after_each_frame=true
+--ctrl_wait_after_each_frame=false
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true

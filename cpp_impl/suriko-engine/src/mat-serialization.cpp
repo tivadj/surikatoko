@@ -4,6 +4,7 @@
 #include <iostream>
 #include <fstream> // std::ifstream
 #include <sstream> // std::stringstream
+#include <string.h> // strtok
 #include "suriko/mat-serialization.h"
 
 namespace suriko

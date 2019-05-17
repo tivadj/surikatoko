@@ -17,6 +17,9 @@
 namespace suriko {
 namespace
 {
+}
+namespace
+{
     constexpr Scalar kNan = std::numeric_limits<Scalar>::quiet_NaN();
     constexpr size_t kEucl3 = 3; // x: 3 for position
     constexpr size_t kQuat4 = 4; // q: 4 for quaternion orientation
@@ -53,18 +56,31 @@ namespace
 #ifndef SAL_PNT_REPRES
 #  define SAL_PNT_REPRES 2
 #endif
+
+    namespace intern
+    {
 #if SAL_PNT_REPRES == 1
-    // XYZ salient point
-    constexpr size_t kSalientPointComps = kXyzSalientPointComps;  // [3x1]
-    constexpr SalPntComps kSalPntRepres = SalPntComps::kEucl3D;
+        // XYZ salient point
+        constexpr size_t kSalientPointComps = kXyzSalientPointComps;  // [3x1]
+        constexpr SalPntComps kSalPntRepres = SalPntComps::kEucl3D;
 #elif SAL_PNT_REPRES == 2
-    // spherical salient point with first camera position and inverse distance
-    constexpr size_t kSalientPointComps = kSphericalSalientPointComps;  // [6x1]
-    constexpr SalPntComps kSalPntRepres = SalPntComps::kSphericalFirstCamInvDist;
+        // spherical salient point with first camera position and inverse distance
+        constexpr size_t kSalientPointComps = kSphericalSalientPointComps;  // [6x1]
+        constexpr SalPntComps kSalPntRepres = SalPntComps::kSphericalFirstCamInvDist;
 #endif
+    }
 
     // the index of a camera frame to choose for the origin of tracker
     constexpr size_t kTrackerOriginCamInd = 0;
+
+    struct DavisonMonoSlamConstants
+    {
+        static constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
+    };
+    namespace intern
+    {
+        constexpr size_t kCamStateComps = kEucl3 + kQuat4 + kVelocComps + kAngVelocComps; // 13
+    };
 
     void DependsOnOverallPackOrder() {}
     void DependsOnCameraPosPackOrder() {}
@@ -285,6 +301,8 @@ struct SalPntRectFacet
 /// Represents a state of the tracker.
 struct DavisonMonoSlamTrackerInternalsSlice
 {
+    static constexpr auto kCamStateComps = intern::kCamStateComps;
+
     std::chrono::duration<double> frame_processing_dur; // frame processing duration
     Eigen::Matrix<Scalar, 3, 1> cam_pos_w;
     Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
@@ -336,9 +354,9 @@ public:
 class DavisonMonoSlam
 {
 public:
-    static constexpr size_t kCamStateComps = kCamStateComps;
-    static constexpr size_t kSalientPointComps = kSalientPointComps;
-    static constexpr SalPntComps kSalPntRepres = kSalPntRepres;
+    static constexpr auto kCamStateComps = intern::kCamStateComps;
+    static constexpr size_t kSalientPointComps = intern::kSalientPointComps;
+    static constexpr SalPntComps kSalPntRepres = intern::kSalPntRepres;
     static constexpr Scalar kFiniteDiffEpsDebug = (Scalar)1e-5; // used for debugging derivatives
 
     using EigenDynMat = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
@@ -357,7 +375,7 @@ public:
     //    return static_cast<DebugPathEnum>(static_cast<int>(a) | static_cast<int>(b));
     //}
 
-    using SalPntId = SalPntId;
+    using SalPntId = suriko::SalPntId;
 private:
     static DebugPathEnum s_debug_path_;
 
@@ -780,7 +798,7 @@ private:
     // Derivative of distorted observed corner (in pixels) by camera's state variables
     void Deriv_hu_by_hc(const SalPntProjectionIntermidVars& proj_hist, Eigen::Matrix<Scalar, kPixPosComps, kEucl3 >* dhu_by_dhc) const;
 
-    void Deriv_hñ_by_hu(Eigen::Matrix<Scalar, kEucl3, kPixPosComps>* hc_by_hu) const;
+    void Deriv_hc_by_hu(Eigen::Matrix<Scalar, kEucl3, kPixPosComps>* hc_by_hu) const;
 
     void Deriv_R_by_q(const Eigen::Matrix<Scalar, kQuat4, 1>& q,
         Eigen::Matrix<Scalar, 3, 3>* dR_by_dq0,

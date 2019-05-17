@@ -36,25 +36,12 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_NEGATORS_DEPRECATION_WARNING") # suppress warning: std::not1() is deprecated
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING") # suppress warning: STL4015: The std::iterator class template (used as a base class to provide typedefs) is deprecated in C++17
 elseif(UNIX)
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17") # tested on clang
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+
+    # ask GCC to don't use PIC (position-independent code) to fix
+    # linker error: relocation R_X86_64_32 against `.rodata' can not be used when making a PIE object; recompile with -fPIC
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -no-pie")
 endif()
-
-
-
-# TODO: why libstc++?
-#set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libstdc++")
-#set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
-#set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --verbose")
-
-#if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-#    # require at least clang 3.2
-#    if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 3.9)
-#        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1z")
-#    else()
-#        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
-#    endif()
-#endif()
-#set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 find_package(Eigen3 REQUIRED NO_MODULE)
 if (TARGET Eigen3::Eigen)
@@ -104,7 +91,8 @@ find_package(GTest REQUIRED)
 message(STATUS "GTEST_INCLUDE_DIRS=${GTEST_INCLUDE_DIRS}")
 
 if (WITH_OPENCV)
-    find_package(OpenCV REQUIRED core highgui)
+    # features2d for cv::ORB
+    find_package(OpenCV REQUIRED core imgcodecs imgproc highgui features2d)
     message(STATUS "OpenCV_INCLUDE_DIRS=${OpenCV_INCLUDE_DIRS}")
     message(STATUS "OpenCV_LIBS=${OpenCV_LIBS}")
     add_definitions(-DSRK_HAS_OPENCV)

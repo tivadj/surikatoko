@@ -2123,7 +2123,7 @@ void DavisonMonoSlam::Deriv_hu_by_hc(const SalPntProjectionIntermidVars& proj_hi
     m(1, 2) = f_pix[1] * hcy / (hcz * hcz);
 }
 
-void DavisonMonoSlam::Deriv_hñ_by_hu(Eigen::Matrix<Scalar, kEucl3, kPixPosComps>* hc_by_hu) const
+void DavisonMonoSlam::Deriv_hc_by_hu(Eigen::Matrix<Scalar, kEucl3, kPixPosComps>* hc_by_hu) const
 {
     auto& m = *hc_by_hu;
     // A.79

@@ -1,6 +1,5 @@
 #include <vector>
 #include <cmath>
-#include <corecrt_math_defines.h>
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <Eigen/Dense>

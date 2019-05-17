@@ -13,7 +13,7 @@ add_executable(suriko-test
 target_compile_definitions(suriko-test PRIVATE GTEST_HAS_TR1_TUPLE=0 GTEST_HAS_STD_TUPLE_=1)
 
 if (MSVC)
-    target_compile_definitions(suriko-engine PRIVATE _USE_MATH_DEFINES) # allow M_PI in "cmath.h"
+    target_compile_definitions(suriko-test PRIVATE _USE_MATH_DEFINES) # allow M_PI in "cmath.h"
 endif()
 
 target_link_libraries(suriko-test Eigen3::Eigen)

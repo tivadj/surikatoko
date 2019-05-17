@@ -4,7 +4,6 @@
 #include <Eigen/Dense>
 #include "suriko/obs-geom.h"
 #include "suriko/rt-config.h"
-#include <corecrt_math_defines.h>
 
 namespace suriko_test
 {

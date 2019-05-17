@@ -16,6 +16,10 @@ set_property(CACHE SURIKO_SCALAR_TYPE_STRING PROPERTY STRINGS f32 f64)
 set(SURIKO_MONOSLAM_SALIENT_POINT_REPRES "SphericalFirstCamInvDist" CACHE STRING "A represents for salient point, 'XYZ' for 3x1 vector, 'SphericalFirstCamInvDist' for 6x1 vector")
 set_property(CACHE SURIKO_MONOSLAM_SALIENT_POINT_REPRES PROPERTY STRINGS XYZ SphericalFirstCamInvDist)
 
+message(STATUS "SURIKO_DEBUG=${SURIKO_DEBUG}") #
+message(STATUS "SURIKO_SCALAR_TYPE_STRING=${SURIKO_SCALAR_TYPE_STRING}") #
+message(STATUS "SURIKO_MONOSLAM_SALIENT_POINT_REPRES=${SURIKO_MONOSLAM_SALIENT_POINT_REPRES}") #
+
 #
 set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.h
@@ -84,6 +88,7 @@ configure_file(
   "${PROJECT_BINARY_DIR}/rt-config-autogen.h"
   )
 
+#set_target_properties(suriko-engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(suriko-engine PUBLIC SAL_PNT_REPRES=${sal_pnt_repres_id})
 target_include_directories(suriko-engine PUBLIC "${PROJECT_BINARY_DIR}")
 

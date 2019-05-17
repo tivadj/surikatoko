@@ -5,7 +5,6 @@
 #include <utility>
 #include <cassert>
 #include <cmath>
-#include <corecrt_math_defines.h>
 #include <tuple>
 #include <random>
 #include <Eigen/Dense>

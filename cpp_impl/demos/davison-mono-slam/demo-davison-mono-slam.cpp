@@ -8,7 +8,6 @@
 #include <utility>
 #include <cassert>
 #include <cmath>
-#include <corecrt_math_defines.h>
 #include <random>
 #include <tuple>
 #include <chrono>
@@ -32,7 +31,8 @@
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/core/core.hpp> // cv::Mat
-#include <opencv2/imgproc.hpp> // cv::circle
+#include <opencv2/imgcodecs.hpp> // cv::imread
+#include <opencv2/imgproc.hpp> // cv::circle, cv::cvtColor
 #include <opencv2/highgui.hpp> // cv::imshow
 #include <opencv2/features2d.hpp> // cv::ORB
 #endif
@@ -879,23 +879,18 @@ void CheckDavisonMonoSlamConfigurationAndDump(const DavisonMonoSlam& mono_slam,
     }
 }
 
-static bool ValidateDirectoryEmptyOrExists(const char *flagname, const std::string &value)
+bool ValidateDirectoryEmptyOrExists(const std::string &value)
 {
-    auto test_data_path = std::filesystem::absolute(value);
+    const std::filesystem::path test_data_path = std::filesystem::absolute(value);
     
-    // allow empty directory in case of active virtual scenario
-    if (test_data_path.empty() ||
-        std::filesystem::is_directory(test_data_path))
-        return true;
-    std::cout << "directory [" << test_data_path.string() << "] doesn't exist" << std::endl;
-    return false;
+    // allow empty directory in case of virtual scenario
+    return std::filesystem::is_directory(test_data_path);
 }
 
-static constexpr char* kVirtualSceneCStr = "virtscene";
-static constexpr char* kImageSeqDirCStr = "imageseqdir";
+static constexpr auto kVirtualSceneCStr = "virtscene";
+static constexpr auto kImageSeqDirCStr = "imageseqdir";
 DEFINE_string(scene_source, kVirtualSceneCStr, "{virtual,imageseqdir}");
 DEFINE_string(scene_imageseq_dir, "", "Path to directory with image files");
-DEFINE_validator(scene_imageseq_dir, &ValidateDirectoryEmptyOrExists);
 DEFINE_int32(virtual_scenario, 1, "");
 DEFINE_double(world_xmin, -1.5, "world xmin");
 DEFINE_double(world_xmax, 1.5, "world xmax");
@@ -1057,6 +1052,15 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             LOG(ERROR) << "Set run-time flag monoslam_fake_sal_pnt_init_inv_dist=true to initialize a salient point's initial distance to ground truth.";
         }
         return 1;
+    }
+
+    if (demo_data_source == DemoDataSource::kImageSeqDir)
+    {
+        // validate directory only if it is the source of images for demo
+        if (!ValidateDirectoryEmptyOrExists(FLAGS_scene_imageseq_dir)) {
+            LOG(ERROR) << "directory [" << FLAGS_scene_imageseq_dir << "] doesn't exist";
+            return 2;
+        }
     }
 
     //

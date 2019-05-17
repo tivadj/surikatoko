@@ -73,4 +73,6 @@ target_link_libraries(demo-davison-mono-slam ${OpenCV_LIBS})
 target_include_directories(demo-davison-mono-slam PRIVATE ${Pangolin_INCLUDE_DIRS})
 target_link_libraries(demo-davison-mono-slam ${Pangolin_LIBRARIES})
 
-
+if(UNIX)
+    target_link_libraries(demo-davison-mono-slam stdc++fs) # gcc 8.3 required this to use std::filesystem
+endif()

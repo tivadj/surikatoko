@@ -1,7 +1,15 @@
+Requires:
+C++17 due to usage of std::filesystem
+
+Tested on:
+Windows, VS2017 v141
+Ubuntu, GCC 8.3
+
 Run C++ demos:
 ```
 demo-circle-grid.exe --logtostderr -v 4
 demo-dino.exe --logtostderr -v 4 --testdata ../../../../testdata
+demo-davison-mono-slam --flagfile=flagfile-demo-davison-mono-slam.txt
 ```
 Davison's MonoSlam implementation.
 

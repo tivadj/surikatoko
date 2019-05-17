@@ -1,4 +1,3 @@
-#pragma once
 #include <gsl/span>
 #include <Eigen/Dense>
 #include <glog/logging.h>
