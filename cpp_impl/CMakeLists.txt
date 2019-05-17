@@ -20,10 +20,11 @@ message(STATUS "CMAKE_CXX_COMPILER_VERSION=${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "CMAKE_LIBRARY_PATH=${CMAKE_LIBRARY_PATH}")
 
 #
-#option(WITH_OPENCV "Enables visualization of images" ON)
 # At the momoent, the picture object is implemented as OpenCV Mat structure. It allows easy visual debugging. For now, OpenCV is mandatory.
-set (WITH_OPENCV ON)
-option(WITH_PANGOLIN "Enables visualization of 3D scene" OFF)
+#option(suriko_with_opencv "Enables visualization of images" ON)
+set(suriko_with_opencv ON)
+option(suriko_with_pangolin "Enables visualization of 3D scene" OFF)
+option(suriko_build_tests "Include unit tests" OFF)
 
 # C++14 is required (because of std::make_unique)
 # C++17 is required (because of [[noreturn]])
@@ -86,11 +87,7 @@ find_package(glog REQUIRED)
 get_target_property(glog_incl_dirs glog::glog INTERFACE_INCLUDE_DIRECTORIES)
 message(STATUS "glog::glog.INTERFACE_INCLUDE_DIRECTORIES=${glog_incl_dirs}")
 
-#enable_testing()
-find_package(GTest REQUIRED)
-message(STATUS "GTEST_INCLUDE_DIRS=${GTEST_INCLUDE_DIRS}")
-
-if (WITH_OPENCV)
+if (suriko_with_opencv)
     # features2d for cv::ORB
     find_package(OpenCV REQUIRED core imgcodecs imgproc highgui features2d)
     message(STATUS "OpenCV_INCLUDE_DIRS=${OpenCV_INCLUDE_DIRS}")
@@ -98,13 +95,22 @@ if (WITH_OPENCV)
     add_definitions(-DSRK_HAS_OPENCV)
 endif()
 
-if (WITH_PANGOLIN)
+if (suriko_with_pangolin)
     find_package(Pangolin REQUIRED)
     message(STATUS "Pangolin_INCLUDE_DIRS=${Pangolin_INCLUDE_DIRS}")
     message(STATUS "Pangolin_LIBRARIES=${Pangolin_LIBRARIES}")
     add_definitions(-DSRK_HAS_PANGOLIN)
 endif()
 
+if (suriko_build_tests)
+    #enable_testing()
+    find_package(GTest REQUIRED)
+    message(STATUS "GTEST_INCLUDE_DIRS=${GTEST_INCLUDE_DIRS}")
+endif()
+
+#
 add_subdirectory(suriko-engine)
-add_subdirectory(suriko-test)
 add_subdirectory(demos)
+if (suriko_build_tests)
+    add_subdirectory(suriko-test)
+endif()
