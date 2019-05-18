@@ -1471,7 +1471,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             }
 
             cv::Mat image_gray;
-            cv::cvtColor(image_bgr, image_gray, CV_BGR2GRAY);
+            cv::cvtColor(image_bgr, image_gray, cv::COLOR_BGR2GRAY);
 
             image.gray = image_gray;
 #if defined(SRK_DEBUG)

@@ -11,7 +11,7 @@ void CopyBgr(const Picture& image, cv::Mat* out_image_bgr)
 #if defined(SRK_DEBUG)
     image.bgr_debug.copyTo(*out_image_bgr);
 #else
-    cv::cvtColor(image.gray, *out_image_bgr, CV_GRAY2BGR);
+    cv::cvtColor(image.gray, *out_image_bgr, cv::COLOR_GRAY2BGR);
 #endif
 }
 }

@@ -465,7 +465,7 @@ void RenderSalientTemplate(const DavisonMonoSlam* mono_slam, DavisonMonoSlam::Sa
 #endif
         if (!templ_constructed)
         {
-            cv::cvtColor(sal_pnt.initial_templ_gray_, templ_submat, CV_GRAY2BGR);
+            cv::cvtColor(sal_pnt.initial_templ_gray_, templ_submat, cv::COLOR_GRAY2BGR);
         }
 
         // cv::Mat must be prepared to be used as texture in OpenGL, see https://stackoverflow.com/questions/16809833/opencv-image-loading-for-opengl-texture
