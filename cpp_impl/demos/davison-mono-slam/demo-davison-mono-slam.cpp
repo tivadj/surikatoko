@@ -204,6 +204,8 @@ public:
     std::optional<float> match_blob_prob_ = 1.0f; // [0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched;
     std::mt19937 gen_{292};
     std::uniform_real_distribution<float> uniform_distr_{};
+    std::normal_distribution<float> templ_center_detection_noise_distr_{};
+    float templ_center_detection_noise_std_ = 0;  // 0=no noise; added to blob's center to mimic measurement noise of a filter
 public:
     DemoCornersMatcher(const DavisonMonoSlam* mono_slam, const std::vector<SE3Transform>& gt_cam_orient_cfw, FragmentMap& entire_map,
         const suriko::Sizei& img_size)
@@ -238,13 +240,30 @@ public:
 
             suriko::Point3 pnt_camera = SE3Apply(cami_from_tracker, pnt_tracker);
             suriko::Point2f pnt_pix = mono_slam_->ProjectCameraPoint(pnt_camera);
-            Scalar pix_x = pnt_pix[0];
-            Scalar pix_y = pnt_pix[1];
+
+            Scalar pix_x = pnt_pix.X();
+            Scalar pix_y = pnt_pix.Y();
             bool hit_wnd =
                 pix_x >= 0 && pix_x < (Scalar)img_size_.width &&
                 pix_y >= 0 && pix_y < (Scalar)img_size_.height;
             if (!hit_wnd)
                 continue;
+
+            // set position on the center of the pixel
+            constexpr auto PixCenter = Scalar{ 0.5 };
+            pnt_pix = suriko::Point2f { pnt_pix.X() + PixCenter, pnt_pix.Y() + PixCenter };
+
+            if (templ_center_detection_noise_std_ > 0)
+            {
+                gen_.seed(frame_ind ^ frag_id);  // make noise unique for given salient point in given frame
+                const float center_noise_x = templ_center_detection_noise_distr_(gen_);
+                const float center_noise_y = templ_center_detection_noise_distr_(gen_);
+
+                constexpr auto Pad = Scalar{ 1e-6 }; // keep int(coord) of a pixel inside the picture
+                auto in_img_x = std::clamp<Scalar>(pnt_pix.X() + center_noise_x, 0, img_size_.width - Pad);
+                auto in_img_y = std::clamp<Scalar>(pnt_pix.Y() + center_noise_y, 0, img_size_.height - Pad);
+                pnt_pix = suriko::Point2f{ in_img_x, in_img_y };
+            }
 
             DavisonMonoSlam::SalPntId sal_pnt_id = DemoGetSalPntId(fragment);
 
@@ -352,6 +371,13 @@ public:
     suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) override
     {
         return detected_blobs_[blob_id.Ind].Coord;
+    }
+
+    void SetTemplCenterDetectionNoiseStd(float value)
+    {
+        templ_center_detection_noise_std_ = value;
+        if (value > 0)
+            templ_center_detection_noise_distr_ = std::normal_distribution<float>{ 0, value };
     }
     
     std::optional<Scalar> GetSalientPointGroundTruthInvDepth(CornersMatcherBlobId blob_id) override
@@ -756,7 +782,8 @@ public:
     suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) override
     {
         const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
-        return suriko::Point2f{ kp.pt.x, kp.pt.y };
+        constexpr auto PixCenter = Scalar{ 0.5 }; // set position on the center of the pixel
+        return suriko::Point2f{ kp.pt.x + PixCenter, kp.pt.y + PixCenter };
     }
 
     Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image) override
@@ -902,8 +929,8 @@ DEFINE_double(world_z_ascent, 0, "z_real=gridz+cos(z_ascent)");
 DEFINE_double(world_cell_size_x, 0.5, "cell size x");
 DEFINE_double(world_cell_size_y, 0.5, "cell size y");
 DEFINE_double(world_cell_size_z, 0.5, "cell size z");
-DEFINE_double(world_noise_R_std, 0.005, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
-DEFINE_double(world_noise_x3D_std, 0.005, "Standard deviation of noise distribution for salient points, 0=no noise (eg: 0.1)");
+DEFINE_double(world_noise_R_std, 0.0, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
+DEFINE_double(world_noise_x3D_std, 0.0, "Standard deviation of noise distribution for salient points, 0=no noise (eg: 0.1)");
 DEFINE_double(viewer_eye_offset_x, 4, "");
 DEFINE_double(viewer_eye_offset_y, -2.5, "");
 DEFINE_double(viewer_eye_offset_z, 7, "");
@@ -975,6 +1002,7 @@ DEFINE_int32(monoslam_templ_width, 15, "width of template");
 DEFINE_int32(monoslam_templ_min_search_rect_width, 7, "the min width of a rectangle when searching for tempplate in the next frame");
 DEFINE_int32(monoslam_templ_min_search_rect_height, 7, "");
 DEFINE_double(monoslam_templ_min_corr_coeff, -1, "");
+DEFINE_double(monoslam_virtual_templ_center_detection_noise_std_pix, 0, "std of measurement noise(=sqrt(R), 0=no noise");
 DEFINE_double(monoslam_templ_closest_templ_min_dist_pix, 0, "");
 DEFINE_bool(monoslam_stop_on_sal_pnt_moved_too_far, false, "width of template");
 DEFINE_bool(monoslam_fix_estim_vars_covar_symmetry, true, "");
@@ -1321,16 +1349,19 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             return p;
         };
     }
+
     mono_slam.PredictEstimVarsHelper();
     LOG(INFO) << "mono_slam_process_noise_std=" << FLAGS_monoslam_process_noise_std;
     LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << FLAGS_monoslam_measurm_noise_std_pix;
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
     LOG(INFO) << "mono_slam_templ_min_dist=" << mono_slam.ClosestSalientPointTemplateMinDistance();
+    LOG(INFO) << "mono_slam_virtual_templ_center_detection_noise_std_pix=" << FLAGS_monoslam_virtual_templ_center_detection_noise_std_pix;
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
         auto corners_matcher = std::make_unique<DemoCornersMatcher>(&mono_slam, gt_cam_orient_cfw, entire_map, cam_intrinsics.image_size);
+        corners_matcher->SetTemplCenterDetectionNoiseStd(static_cast<float>(FLAGS_monoslam_virtual_templ_center_detection_noise_std_pix));
         corners_matcher->tracker_origin_from_world_ = tracker_origin_from_world;
 
         if (FLAGS_monoslam_max_new_blobs_in_first_frame > 0)
@@ -1479,9 +1510,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #endif
         }
 
-        auto& corners_matcher = mono_slam.CornersMatcher();
-        corners_matcher.AnalyzeFrame(frame_ind, image);
-
         std::optional<std::chrono::duration<double>> frame_process_time; // time it took to process current frame by tracker
 
         // process the frame
@@ -1542,6 +1570,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                         }
                     };
 
+                    auto& corners_matcher = mono_slam.CornersMatcher();
                     auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&corners_matcher);
                     if (a_corners_matcher != nullptr)
                     {

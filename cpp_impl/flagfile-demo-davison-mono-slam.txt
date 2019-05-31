@@ -77,9 +77,11 @@
 --camera_up_y=1
 --camera_up_z=0
 
+# {w:0.1,v:0.5}, {w:0.2,v:1}
 # for TestSeqMonoSLAM: 0.1
---monoslam_input_noise_std=0.03
+--monoslam_process_noise_std=0.03
 --monoslam_measurm_noise_std_pix=0.5
+--monoslam_virtual_templ_center_detection_noise_std_pix=0.2
 
 # camera pos initial std
 --monoslam_cam_pos_x_std_m=0.05
