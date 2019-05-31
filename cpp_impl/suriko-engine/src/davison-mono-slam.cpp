@@ -940,9 +940,21 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 #if defined(SRK_DEBUG)
             EigenDynMat K_S_Kt = cache.K_S * Knew.transpose();
 #endif
+            // note: this may produce tiny negative values on diagonal
             estim_vars_covar_.noalias() -= cache.K_S * Knew.transpose();
         }
 
+        // zeroize tiny negative numbers on diagonal of error covariance (may appear when subtracting tiny numbers)
+        auto estim_err_diag = estim_vars_covar_.diagonal().array();
+        if (kSurikoDebug)
+        {
+            Eigen::Index min_index = -1;
+            Scalar min_value = estim_err_diag.minCoeff(&min_index);
+            SRK_ASSERT(min_value > -0.1, "Got big negative numbers on diagonal of error covariance");
+        }
+        estim_err_diag = estim_err_diag.max(0);
+
+        //
         NormalizeCameraOrientationQuaternionAndCovariances(&estim_vars_, &estim_vars_covar_);
 
         if (fix_estim_vars_covar_symmetry_)
