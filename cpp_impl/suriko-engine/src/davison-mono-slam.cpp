@@ -116,26 +116,14 @@ std::optional<Eigen::Matrix<Scalar, 3, 3>> GetRepresentiveSalientPointUncertaint
     return sal_pnt_uncert;
 }
 
-void DavisonMonoSlamInternalsLogger::FinishFrameStats()
+void DavisonMonoSlamInternalsLogger::RecordFrameFinishTime()
 {
-    // the first operation is to stop a timer to reduce overhead of logger
     frame_finish_time_point_ = std::chrono::high_resolution_clock::now();
     cur_stats_.frame_processing_dur = frame_finish_time_point_ - frame_start_time_point_;
-    cur_stats_.cur_reproj_err_meas = mono_slam_->CurrentFrameReprojError(FilterStageType::Estimated);
-    cur_stats_.cur_reproj_err_pred = mono_slam_->CurrentFrameReprojError(FilterStageType::Predicted);
+}
 
-    //
-    CameraStateVars cam_state = mono_slam_->GetCameraEstimatedVars();
-
-    constexpr auto kCam = DavisonMonoSlam::kCamStateComps;
-    Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
-    mono_slam_->GetCameraEstimatedVarsUncertainty(&cam_state_covar);
-
-    cur_stats_.cam_pos_w = cam_state.pos_w;
-    cur_stats_.cam_pos_uncert = cam_state_covar.topLeftCorner<3, 3>();
-    cur_stats_.cam_state_uncert = cam_state_covar;
-    cur_stats_.sal_pnts_uncert_median = GetRepresentiveSalientPointUncertainty(mono_slam_);
-    
+void DavisonMonoSlamInternalsLogger::PushCurFrameStats()
+{
     hist_.state_samples.push_back(cur_stats_);
 }
 
@@ -423,6 +411,12 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     LoadCameraStateVarsFromArray(Span(src_estim_vars, kCamStateComps), &cam_state_vars);
     Scalar q_norm = cam_state_vars.orientation_wfc.norm();
     SRK_ASSERT(IsClose(1, q_norm, AbsTol(0.001))) << "Camera orientation quaternion must be normalized";
+
+    // check there are nonnegative numbers on diagonal of error covariance matrix
+    Eigen::Index min_index = -1;
+    auto state_err_covar_diag = src_estim_vars_covar.diagonal().eval();
+    Scalar min_value = state_err_covar_diag.minCoeff(&min_index);
+    SRK_ASSERT(min_value >= 0) << "Error covariance has nonnegative numbers on diagonal";
 
     for (SalPntId sal_pnt_id : GetSalientPoints())
     {
@@ -797,7 +791,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 
     ProcessFrameOnExit_UpdateSalientPoint(frame_ind);
 
-    if (stats_logger_ != nullptr) stats_logger_->FinishFrameStats();
+    FinishFrameStats(frame_ind);
 }
 
 /// Only portion of the salient points is observed in each frame. Thus index of a salient point in the estimated variables vector is different from 
@@ -852,6 +846,12 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         auto& innov_var = cache.innov_var;
         innov_var.noalias() = cache.H_P * Hk.transpose(); // [2m,2m]
         innov_var.noalias() += Rk;
+
+        if (stats_logger_ != nullptr)
+        {
+            auto diag = innov_var.diagonal().array().eval();
+            stats_logger_->CurStats().meas_residual_std = diag.sqrt();
+        }
         
         //EigenDynMat innov_var_inv = innov_var.inverse();
         auto& innov_var_inv = cache.innov_var_inv;
@@ -899,20 +899,29 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             projected_sal_pnts.middleRows<kPixPosComps>(obs_sal_pnt_ind * kPixPosComps) = hd;
         }
 
+        if (stats_logger_ != nullptr)
+        {
+            auto residual = (zk - projected_sal_pnts).eval();
+            stats_logger_->CurStats().meas_residual = residual;
+        }
+
         // Xnew=Xold+K(z-obs)
         // update estimated variables
-#if defined(SRK_DEBUG)
-        auto zk_projected_sal_pnts_delta = (zk - projected_sal_pnts).eval();
-        EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
-        Eigen::Map<Eigen::Matrix<Scalar, kQuat4, 1>> cam_quat(estim_vars_delta.data() + kEucl3);
-        Scalar cam_quat_len = cam_quat.norm();
-        bool change = cam_quat_len > 0.1;
-        if (change)
-            VLOG(5) << "estim_vars cam_q_len=" << cam_quat_len;
-        estim_vars_.noalias() += estim_vars_delta;
-#else
-        estim_vars_.noalias() += Knew * (zk - projected_sal_pnts);
-#endif
+        if (kSurikoDebug)
+        {
+            EigenDynVec estim_vars_delta = Knew * (zk - projected_sal_pnts);
+            Eigen::Map<Eigen::Matrix<Scalar, kQuat4, 1>> cam_quat(estim_vars_delta.data() + kEucl3);
+            Scalar cam_quat_len = cam_quat.norm();
+            bool change = cam_quat_len > 0.1;
+            if (change)
+                VLOG(5) << "estim_vars cam_q_len=" << cam_quat_len;
+            estim_vars_.noalias() += estim_vars_delta;
+        }
+        else
+        {
+            estim_vars_.noalias() += Knew * (zk - projected_sal_pnts);
+        }
+
         // update covariance matrix
         //estim_vars_covar_.noalias() = (ident - Knew * Hk) * Pprev; // way1
         //estim_vars_covar_.noalias() = Pprev - Knew * innov_var * Knew.transpose(); // way2, 10% faster than way1
@@ -950,7 +959,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         {
             Eigen::Index min_index = -1;
             Scalar min_value = estim_err_diag.minCoeff(&min_index);
-            SRK_ASSERT(min_value > -0.1, "Got big negative numbers on diagonal of error covariance");
+            SRK_ASSERT(min_value > -0.1) << "Got big negative numbers on diagonal of error covariance";
         }
         estim_err_diag = estim_err_diag.max(0);
 
@@ -1320,31 +1329,65 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
 
 void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
 {
+}
+
+void DavisonMonoSlam::FinishFrameStats(size_t frame_ind)
+{
+    if (stats_logger_ == nullptr) return;
+
+    // the first operation is to stop a timer to reduce overhead of logger
+    stats_logger_->RecordFrameFinishTime();
+
+    auto& cur_stats = stats_logger_->CurStats();
+    
+    constexpr Scalar kNanInJson = -1;  // nan is not represented in json
+    cur_stats.cur_reproj_err_meas = CurrentFrameReprojError(FilterStageType::Estimated).value_or(kNanInJson);
+    cur_stats.cur_reproj_err_pred = CurrentFrameReprojError(FilterStageType::Predicted).value_or(kNanInJson);
+
+    //
+    CameraStateVars cam_state = GetCameraEstimatedVars();
+
+    constexpr auto kCam = DavisonMonoSlam::kCamStateComps;
+    Eigen::Matrix<Scalar, kCam, kCam> cam_state_covar;
+    GetCameraEstimatedVarsUncertainty(&cam_state_covar);
+
+    cur_stats.cam_state = estim_vars_.topRows<kCamStateComps>();
+    cur_stats.cam_state_gt = estim_vars_covar_.topLeftCorner<kCamStateComps, kCamStateComps>().diagonal().array().sqrt();
+
+    cur_stats.sal_pnts_uncert_median = GetRepresentiveSalientPointUncertainty(this);
+
+    cur_stats.estim_err_std = estim_vars_covar_.diagonal().array().sqrt();
+    SRK_ASSERT(AllFiniteNotMax(cur_stats.estim_err_std));
+
+    // estimation error is available only when ground truth is available
     if (gt_cami_from_world_fun_ != nullptr)
     {
-        CameraStateVars cam_state;
-        std::vector<SphericalSalientPointWithBuildInfo> sal_pnt_build_infos;
-        GetGroundTruthEstimVars(frame_ind, &cam_state, &sal_pnt_build_infos);
+        CameraStateVars gt_cam_state;
+        std::vector<SphericalSalientPointWithBuildInfo> gt_sal_pnt_build_infos;
+        GetGroundTruthEstimVars(frame_ind, &gt_cam_state, &gt_sal_pnt_build_infos);
 
-        std::vector<MorphableSalientPoint> sal_pnts;
-        ConvertMorphableFromSphericalSalientPoints(sal_pnt_build_infos, kSalPntRepres, &sal_pnts);
+        std::vector<MorphableSalientPoint> gt_sal_pnts;
+        ConvertMorphableFromSphericalSalientPoints(gt_sal_pnt_build_infos, kSalPntRepres, &gt_sal_pnts);
 
         // estimated variables
         EigenDynVec gt_measured_estim_vars;
         gt_measured_estim_vars.resizeLike(estim_vars_);
-        SaveEstimVars(cam_state, sal_pnts, &gt_measured_estim_vars);
+        SaveEstimVars(gt_cam_state, gt_sal_pnts, &gt_measured_estim_vars);
+
+        cur_stats.cam_state_gt = gt_measured_estim_vars.topRows<kCamStateComps>();
 
         EigenDynVec estim_errs = estim_vars_ - gt_measured_estim_vars;
+        cur_stats.estim_err = estim_errs;
 
         // check that optimal estimate and its error are uncorrelated E[x_hat*x_err']=0
         Scalar est_mul_err = (estim_vars_ * estim_errs.transpose()).norm();
-
-        if (stats_logger_ != nullptr)
-            stats_logger_->CurStats().optimal_estim_mul_err = est_mul_err;
+        cur_stats.optimal_estim_mul_err = est_mul_err;
     }
+
+    stats_logger_->PushCurFrameStats();
 }
 
-    void DavisonMonoSlam::PredictStateAndCovariance()
+void DavisonMonoSlam::PredictStateAndCovariance()
 {
     // make predictions
     PredictEstimVars(estim_vars_, estim_vars_covar_, &predicted_estim_vars_, &predicted_estim_vars_covar_);
@@ -3651,8 +3694,10 @@ DavisonMonoSlamInternalsLogger* DavisonMonoSlam::StatsLogger() const
     return stats_logger_.get();
 }
 
-Scalar DavisonMonoSlam::CurrentFrameReprojError(FilterStageType filter_stage) const
+std::optional<Scalar> DavisonMonoSlam::CurrentFrameReprojError(FilterStageType filter_stage) const
 {
+    if (latest_frame_sal_pnts_.empty()) return std::nullopt;
+
     // specify state the reprojection error is based on
     const auto& src_estim_vars = filter_stage == FilterStageType::Estimated ? estim_vars_ : predicted_estim_vars_;
 
@@ -3671,11 +3716,11 @@ Scalar DavisonMonoSlam::CurrentFrameReprojError(FilterStageType filter_stage) co
 
         SRK_ASSERT(sal_pnt.IsDetected());
         suriko::Point2f corner_pix = sal_pnt.templ_center_pix_.value();
-        Scalar err_one = (corner_pix.Mat() - pix).norm();
+        Scalar err_one = (corner_pix.Mat() - pix).squaredNorm();
         err_sum += err_one;
     }
 
-    return err_sum;
+    return err_sum / latest_frame_sal_pnts_.size();
 }
 
 suriko::Point2i DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2f& center) const

@@ -62,7 +62,7 @@ namespace
 #if SAL_PNT_REPRES == 1
         // XYZ salient point
         constexpr size_t kSalientPointComps = kXyzSalientPointComps;  // [3x1]
-        constexpr SalPntComps kSalPntRepres = SalPntComps::kEucl3D;
+        constexpr SalPntComps kSalPntRepres = SalPntComps::kXyz;
 #elif SAL_PNT_REPRES == 2
         // spherical salient point with first camera position and inverse distance
         constexpr size_t kSalientPointComps = kSphericalSalientPointComps;  // [6x1]
@@ -304,10 +304,6 @@ struct DavisonMonoSlamTrackerInternalsSlice
     static constexpr auto kCamStateComps = intern::kCamStateComps;
 
     std::chrono::duration<double> frame_processing_dur; // frame processing duration
-    Eigen::Matrix<Scalar, 3, 1> cam_pos_w;
-    Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
-    Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps> cam_state_uncert;
-    std::optional<Eigen::Matrix<Scalar, 3, 3>> sal_pnts_uncert_median; // median of uncertainty of all salient points; null if there are 0 salient points
     Scalar cur_reproj_err_meas = -1;  // measured
     Scalar cur_reproj_err_pred = -1;  // predicted
     Scalar optimal_estim_mul_err = -1; // product of optimal estimate and its error, should be zero (optimal estimate and its error are uncorrelated E[x_hat*x_err']=0)
@@ -315,6 +311,17 @@ struct DavisonMonoSlamTrackerInternalsSlice
     size_t new_sal_pnts; // number of new salient points allocated in current frame
     size_t common_sal_pnts; // number of same salient points in the previous and current frame
     size_t deleted_sal_pnts; // number of deleted salient points in current frame
+
+    std::optional<Eigen::Matrix<Scalar, Eigen::Dynamic, 1>> estim_err; // =x_estimated-x_ground_truth, available only in virtual mode
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> estim_err_std;
+
+    Eigen::Matrix<Scalar, kCamStateComps, 1> cam_state;
+    std::optional<Eigen::Matrix<Scalar, kCamStateComps, 1>> cam_state_gt; // available only in virtual mode
+
+    std::optional<Eigen::Matrix<Scalar, 3, 3>> sal_pnts_uncert_median; // median of uncertainty of all salient points; null if there are 0 salient points
+
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> meas_residual;  // =obs-project(estimate)=z-h(x_hat)
+    Eigen::Matrix<Scalar, Eigen::Dynamic, 1> meas_residual_std;
 };
 
 /// Represents the history of the tracker processing a sequence of frames.
@@ -340,7 +347,8 @@ public:
     virtual ~DavisonMonoSlamInternalsLogger() = default;
 
     virtual void StartNewFrameStats();
-    virtual void FinishFrameStats();
+    virtual void RecordFrameFinishTime();
+    virtual void PushCurFrameStats();
     virtual void NotifyNewComDelSalPnts(size_t new_count, size_t common_count, size_t deleted_count);
     virtual void NotifyEstimatedSalPnts(size_t estimated_sal_pnts_count);
     DavisonMonoSlamTrackerInternalsSlice& CurStats() { return cur_stats_; }
@@ -378,7 +386,6 @@ public:
     using SalPntId = suriko::SalPntId;
 private:
     static DebugPathEnum s_debug_path_;
-
     EigenDynVec estim_vars_; // x[13+N*6], camera position plus all salient points
     EigenDynMat estim_vars_covar_; // P[13+N*6, 13+N*6], state's covariance matrix
 
@@ -522,7 +529,7 @@ public:
 
     RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr) const;
 
-    Scalar CurrentFrameReprojError(FilterStageType filter_stage = FilterStageType::Predicted) const;
+    std::optional<Scalar> CurrentFrameReprojError(FilterStageType filter_stage = FilterStageType::Predicted) const;
 
     size_t SalientPointsCount() const;
 
@@ -673,6 +680,7 @@ private:
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
     void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
     void OnEstimVarsChanged(size_t frame_ind);
+    void FinishFrameStats(size_t frame_ind);
     void PredictStateAndCovariance();
 
     // Updates the centers of detected template.

@@ -852,10 +852,16 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const DavisonMonoSl
         cv::write(fs, "OptimalEstimMulErr", static_cast<float>(item.optimal_estim_mul_err));
         cv::write(fs, "FrameProcessingDur", item.frame_processing_dur.count()); // seconds
 
-        Eigen::Map<const Eigen::Matrix<Scalar, 9, 1>> cam_pos_uncert(item.cam_pos_uncert.data());
-        fs << "CamPosUnc_s" <<"[:";
-        WriteMatElements(fs, cam_pos_uncert);
+        fs << "CamState" <<"[:";
+        WriteMatElements(fs, item.cam_state);
         fs << "]";
+
+        if (item.cam_state_gt.has_value())
+        {
+            fs << "CamStateGT" << "[:";
+            WriteMatElements(fs, item.cam_state_gt.value());
+            fs << "]";
+        }
 
         if (item.sal_pnts_uncert_median.has_value())
         {
@@ -863,6 +869,27 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const DavisonMonoSl
             WriteMatElements(fs, item.sal_pnts_uncert_median.value());
             fs << "]";
         }
+
+        // estimation error is available only when ground truth is available
+        if (item.estim_err.has_value())
+        {
+            fs << "EstimErr" << "[:";
+            WriteMatElements(fs, item.estim_err.value());
+            fs << "]";
+        }
+
+        // std of estimated state
+        fs << "EstimErrStd" << "[:";
+        WriteMatElements(fs, item.estim_err_std);
+        fs << "]";
+
+        // residuals
+        fs << "MeasResidual" << "[:";
+        WriteMatElements(fs, item.meas_residual);
+        fs << "]";
+        fs << "MeasResidualStd" << "[:";
+        WriteMatElements(fs, item.meas_residual_std);
+        fs << "]";
 
         fs << "}";
     }
