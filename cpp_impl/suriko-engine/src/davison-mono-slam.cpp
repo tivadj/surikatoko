@@ -391,7 +391,7 @@ void DavisonMonoSlam::CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azim
 template <typename EigenMat>
 void CheckUncertCovMat(const EigenMat& pos_uncert)
 {
-    constexpr Scalar ellipse_cut_thr = 0.05;
+    constexpr Scalar ellipse_cut_thr = 0.05f;
 
     Eigen::Matrix<Scalar, kEucl3, 1> pnt_pos{ 0, 0, 0 };
 
@@ -410,7 +410,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     CameraStateVars cam_state_vars;
     LoadCameraStateVarsFromArray(Span(src_estim_vars, kCamStateComps), &cam_state_vars);
     Scalar q_norm = cam_state_vars.orientation_wfc.norm();
-    SRK_ASSERT(IsClose(1, q_norm, AbsTol(0.001))) << "Camera orientation quaternion must be normalized";
+    SRK_ASSERT(IsCloseAbs(1, q_norm, 0.001)) << "Camera orientation quaternion must be normalized";
 
     // check there are nonnegative numbers on diagonal of error covariance matrix
     Eigen::Index min_index = -1;
@@ -486,7 +486,7 @@ void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar
     QuatMult(cam_orient_quat, cam_orient_delta_quat, &new_cam_orient_quat_tmp);
 
     Scalar q_len_normed = new_cam_orient_quat_tmp.norm();
-    SRK_ASSERT(IsClose(1, q_len_normed, AbsTol(0.001))) << "quaternion must have unity length";
+    SRK_ASSERT(IsCloseAbs(1, q_len_normed, 0.001)) << "quaternion must have unity length";
 
     new_cam_orient_quat = new_cam_orient_quat_tmp;
 
@@ -2924,13 +2924,13 @@ void DavisonMonoSlam::Deriv_q1_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4,
         return;
     }
 
-    Scalar c = std::cos(0.5*len_w*deltaT);
-    Scalar s = std::sin(0.5*len_w*deltaT);
+    Scalar c = std::cos(0.5f*len_w*deltaT);
+    Scalar s = std::sin(0.5f*len_w*deltaT);
 
     // top row
     for (size_t i = 0; i < kAngVelocComps; ++i)
     {
-        q1_by_wk(0, i) = -0.5*deltaT*w[i] / len_w * s;
+        q1_by_wk(0, i) = -0.5f*deltaT*w[i] / len_w * s;
     }
 
     // next 3 rows
@@ -2940,11 +2940,11 @@ void DavisonMonoSlam::Deriv_q1_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4,
             if (i == j) // on 'diagonal'
             {
                 Scalar rat = w[i] / len_w;
-                q1_by_wk(1 + i, i) = 0.5*deltaT*rat*rat*c + (1 / len_w)*s*(1 - rat * rat);
+                q1_by_wk(1 + i, i) = 0.5f*deltaT*rat*rat*c + (1 / len_w)*s*(1 - rat * rat);
             }
             else // off 'diagonal'
             {
-                q1_by_wk(1 + i, j) = w[i] * w[j] / (len_w*len_w)*(0.5*deltaT*c - (1 / len_w)*s);
+                q1_by_wk(1 + i, j) = w[i] * w[j] / (len_w*len_w)*(0.5f*deltaT*c - (1 / len_w)*s);
             }
         }
 }
@@ -3734,7 +3734,9 @@ Scalar DavisonMonoSlam::ClosestSalientPointTemplateMinDistance() const
         return closest_sal_pnt_templ_min_dist_pix_.value();
 
     // when two salient points touch each other, the distance between them is 2R, R='radius of a template'
-    const Scalar touch_dist = std::sqrt(suriko::Sqr(sal_pnt_templ_size_.width) + suriko::Sqr(sal_pnt_templ_size_.height));
+    const Scalar touch_dist = std::sqrt(
+        suriko::Sqr(static_cast<Scalar>(sal_pnt_templ_size_.width)) + 
+        suriko::Sqr(static_cast<Scalar>(sal_pnt_templ_size_.height)));
     return touch_dist;
 }
 

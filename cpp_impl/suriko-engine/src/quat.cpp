@@ -22,40 +22,40 @@ auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::spa
         Scalar sum = 1 + R(0, 0) + R(1, 1) + R(2, 2);
         SRK_ASSERT(sum >= 0);
         Scalar root = std::sqrt(sum);
-        quat[0] = 0.5 * root;
-        quat[1] = 0.5 * (R(2, 1) - R(1, 2)) / root;
-        quat[2] = 0.5 * (R(0, 2) - R(2, 0)) / root;
-        quat[3] = 0.5 * (R(1, 0) - R(0, 1)) / root;
+        quat[0] = 0.5f * root;
+        quat[1] = 0.5f * (R(2, 1) - R(1, 2)) / root;
+        quat[2] = 0.5f * (R(0, 2) - R(2, 0)) / root;
+        quat[3] = 0.5f * (R(1, 0) - R(0, 1)) / root;
     }
     else if (R(1, 1) <= -R(2, 2) && R(0, 0) >= R(1, 1) && R(0, 0) >= R(2, 2))
     {
         Scalar sum = 1 + R(0, 0) - R(1, 1) - R(2, 2);
         SRK_ASSERT(sum >= 0);
         Scalar root = std::sqrt(sum);
-        quat[0] = 0.5 * (R(2, 1) - R(1, 2)) / root;
-        quat[1] = 0.5 * root;
-        quat[2] = 0.5 * (R(1, 0) + R(0, 1)) / root;
-        quat[3] = 0.5 * (R(2, 0) + R(0, 2)) / root;
+        quat[0] = 0.5f * (R(2, 1) - R(1, 2)) / root;
+        quat[1] = 0.5f * root;
+        quat[2] = 0.5f * (R(1, 0) + R(0, 1)) / root;
+        quat[3] = 0.5f * (R(2, 0) + R(0, 2)) / root;
     }
     else if (R(1, 1) >= R(2, 2) && R(0, 0) <= R(1, 1) && R(0, 0) <= -R(2, 2))
     {
         Scalar sum = 1 - R(0, 0) + R(1, 1) - R(2, 2);
         SRK_ASSERT(sum >= 0);
         Scalar root = std::sqrt(sum);
-        quat[0] = 0.5 * (R(0, 2) - R(2, 0)) / root;
-        quat[1] = 0.5 * (R(1, 0) + R(0, 1)) / root;
-        quat[2] = 0.5 * root;
-        quat[3] = 0.5 * (R(2, 1) + R(1, 2)) / root;
+        quat[0] = 0.5f * (R(0, 2) - R(2, 0)) / root;
+        quat[1] = 0.5f * (R(1, 0) + R(0, 1)) / root;
+        quat[2] = 0.5f * root;
+        quat[3] = 0.5f * (R(2, 1) + R(1, 2)) / root;
     }
     else if (R(1, 1) <= R(2, 2) && R(0, 0) <= -R(1, 1) && R(0, 0) <= -R(2, 2))
     {
         Scalar sum = 1 - R(0, 0) - R(1, 1) + R(2, 2);
         SRK_ASSERT(sum >= 0);
         Scalar root = std::sqrt(sum);
-        quat[0] = 0.5 * (R(1, 0) - R(0, 1)) / root;
-        quat[1] = 0.5 * (R(2, 0) + R(0, 2)) / root;
-        quat[2] = 0.5 * (R(2, 1) + R(1, 2)) / root;
-        quat[3] = 0.5 * root;
+        quat[0] = 0.5f * (R(1, 0) - R(0, 1)) / root;
+        quat[1] = 0.5f * (R(2, 0) + R(0, 2)) / root;
+        quat[2] = 0.5f * (R(2, 1) + R(1, 2)) / root;
+        quat[3] = 0.5f * root;
     }
     else
         AssertFalse();

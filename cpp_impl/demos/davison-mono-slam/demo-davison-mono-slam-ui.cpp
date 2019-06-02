@@ -239,7 +239,7 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
     for (size_t i = 0; i < dots_per_ellipse; ++i)
     {
         // draw in the plane of largest-2nd-largest eigenvectors
-        Scalar theta = i * (2 * M_PI) / dots_per_ellipse;
+        Scalar theta = i * (2 * Pi<Scalar>()) / dots_per_ellipse;
         suriko::Point2f eucl = EllipsePntPolarToEuclid(sorted_semi_axes[Largest].second, sorted_semi_axes[Middle].second, theta);
 
         // ellipse OX is on largest, ellipse OY on the 2nd-largest
@@ -263,8 +263,8 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
         std::array<Scalar, 4> thick_stroke_angs = {
             -ang_delta,
             ang_delta,
-            M_PI - ang_delta,
-            M_PI + ang_delta
+            Pi<Scalar>() - ang_delta,
+            Pi<Scalar>() + ang_delta
         };
         glBegin(GL_LINES);
         for (Scalar ang : thick_stroke_angs)
@@ -326,7 +326,7 @@ bool RenderUncertaintyEllipsoidBySampling(const Eigen::Matrix<Scalar, 3, 1>& cam
         ray[2] = distr(gen);
 
         // cross ellipsoid with ray
-        Scalar b1 = -std::log(suriko::Sqr(ellipsoid_cut_thr)*suriko::Pow3(2 * M_PI)*uncert_det);
+        Scalar b1 = -std::log(suriko::Sqr(ellipsoid_cut_thr)*suriko::Pow3(2 * Pi<Scalar>())*uncert_det);
         Eigen::Matrix<Scalar, 1, 1> b2 = ray.transpose() * uncert_inv * ray;
         Scalar t2 = b1 / b2[0];
         //SRK_ASSERT(t2 >= 0) << "invalid covariance matrix";
@@ -978,14 +978,15 @@ std::shared_ptr<SceneVisualizationPangolinGui> SceneVisualizationPangolinGui::Ne
 
 void SceneVisualizationPangolinGui::SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, Scalar back_dist)
 {
-    pangolin::OpenGlMatrix model_view_col_major;
-
-    Eigen::Map< Eigen::Matrix<Scalar, 4, 4, Eigen::ColMajor>> eigen_mat(static_cast<Scalar*>(model_view_col_major.m));
-    eigen_mat =
+    Eigen::Matrix<Scalar, 4, 4, Eigen::ColMajor> model_view =
         internals::SE3Mat(Eigen::Matrix<Scalar, 3, 1>{0, 0, back_dist}) *
         internals::SE3Mat(tracker_origin_from_world.R, tracker_origin_from_world.T);
 
-    internals::ConvertAxesHartleyZissermanToOpenGL(gsl::make_span(model_view_col_major.m));
+    auto model_view_span = gsl::make_span(model_view.data(), model_view.size());
+    internals::ConvertAxesHartleyZissermanToOpenGL(model_view_span);
+
+    pangolin::OpenGlMatrix model_view_col_major;
+    std::copy_n(model_view.data(), model_view.size(), model_view_col_major.m);
 
     view_state_3d_->SetModelViewMatrix(model_view_col_major);
 }
@@ -1040,7 +1041,7 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam,
     std::optional<cv::Point> pnt_int_prev;
     for (size_t i = 0; i <= dots_per_ellipse; ++i)
     {
-        Scalar theta = i * (2 * M_PI) / dots_per_ellipse;
+        Scalar theta = i * (2 * Pi<Scalar>()) / dots_per_ellipse;
         suriko::Point2f eucl = EllipsePntPolarToEuclid(ellipse_pix.semi_axes[0], ellipse_pix.semi_axes[1], theta);
 
         Eigen::Matrix<Scalar, 2, 1> ws = eucl.Mat();

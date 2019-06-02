@@ -376,7 +376,7 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
         << " ReprojError=" << (op ? err : (Scalar)-1);
     
     // do bundle adjustment on diverged model
-    Scalar max_reproj_err = 1e-3;
+    Scalar max_reproj_err = 1e-3f;
     if (op && err > max_reproj_err)
     {
         // bundle adjustment may modify all 3D points and camera orientations
@@ -453,7 +453,7 @@ bool MultiViewIterativeFactorizer::ReprojError(Scalar f0,
             suriko::Point3 x_img_h = suriko::Point3((*pK) * x3D_cam.Mat());
             // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
 
-            bool zero_z = IsClose((Scalar)0, x_img_h[2], 1e-5);
+            bool zero_z = IsCloseAbs(0, x_img_h[2], 1e-5);
             if (zero_z)
                 continue;
 

@@ -447,7 +447,7 @@ public:
     std::function<std::optional<SE3Transform>(SE3Transform tracker_from_world, size_t frame_ind)> gt_cami_from_tracker_new_;  // gets ground truth camera frame in coordinates of a given tracker
     std::function<Dir3DAndDistance(SE3Transform tracker_from_world, SE3Transform camera_from_tracker, SalPntId sal_pnt_id)> gt_sal_pnt_in_camera_fun_;  // gets ground truth 3D position of salient point in coordinates of tracker
 
-    Scalar debug_ellipsoid_cut_thr_ = 0.04; // value 0.05 corresponds to 2sig
+    Scalar debug_ellipsoid_cut_thr_ = 0.04f; // value 0.05 corresponds to 2sig
     bool fake_sal_pnt_initial_inv_dist_ = false; // true to correctly initialize points depth in virtual environments
     int set_estim_state_covar_to_gt_impl_ = 2;  // 1=sets diagonal covariance in estimation space, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point
 

@@ -15,7 +15,7 @@ class GaussRandomVar
     std::normal_distribution<> dist_;
     EigenDynVec rand_basis_;
 public:
-    GaussRandomVar(const EigenDynMat& covar, Eigen::VectorXd const& mean)
+    GaussRandomVar(const EigenDynMat& covar, const EigenDynVec& mean)
         : mean_(mean)
     {
         rand_basis_.resize(mean.size(), Eigen::NoChange);
@@ -40,7 +40,7 @@ private:
     void RandomizeBasis(std::mt19937* gen)
     {
         for (EigenDynVec::Index i = 0; i < rand_basis_.size(); ++i)
-            rand_basis_[i] = dist_(*gen);
+            rand_basis_[i] = static_cast<Scalar>(dist_(*gen));
     }
 };
 
@@ -68,8 +68,8 @@ void CalcCovarMat(const std::vector <Eigen::Matrix<_Scalar, Dim, 1>>& samples, E
                 xy_mean(row, col) += s[row] * s[col];
             }
     }
-    samples_mean *= (1.0 / samples.size());
-    xy_mean *= (1.0 / samples.size());
+    samples_mean *= (1.0f / samples.size());
+    xy_mean *= (1.0f / samples.size());
 
     //
     covar_mat->setZero();

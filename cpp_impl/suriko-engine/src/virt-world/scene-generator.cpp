@@ -45,7 +45,7 @@ void GenerateCircleCameraShots(const suriko::Point3& circle_center, Scalar circl
         Scalar look_down_ang = std::atan2(center_to_cam_pos[2], Eigen::Matrix<Scalar, 3, 1>(center_to_cam_pos[0], center_to_cam_pos[1], 0).norm());
 
         // +pi/2 to direct not y-forward and z-up but z-forward and y-bottom
-        cam_from_world = SE3Mat(RotMat(1, 0, 0, look_down_ang + (Scalar)(M_PI / 2))) * cam_from_world;
+        cam_from_world = SE3Mat(RotMat(1, 0, 0, look_down_ang + Pi<Scalar>() / 2)) * cam_from_world;
         SE3Transform RT(cam_from_world.topLeftCorner(3, 3), cam_from_world.topRightCorner(3, 1));
 
         // now camera is directed x-right, y-bottom, z-forward
@@ -113,7 +113,7 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     int max_shots = periods_count * shots_per_period;
     for (int shot_ind = 0; shot_ind < max_shots; ++shot_ind)
     {
-        auto w = 2.0 * M_PI / shots_per_period * shot_ind;
+        auto w = 2 * Pi<Scalar>() / shots_per_period * shot_ind;
 
         auto right_deviation = std::sin(w) * max_deviation;
 
@@ -147,7 +147,7 @@ void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
     int max_shots = periods_count * shots_per_period;
     for (int shot_ind = 0; shot_ind < max_shots; ++shot_ind)
     {
-        auto w = 2.0 * M_PI / shots_per_period * shot_ind;
+        auto w = 2 * Pi<Scalar>() / shots_per_period * shot_ind;
 
         auto cur_ang = init_ang + std::sin(w) * half_fov;
 

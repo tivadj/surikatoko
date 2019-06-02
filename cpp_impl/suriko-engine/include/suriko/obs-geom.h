@@ -17,8 +17,8 @@ public:
 
     template <typename F0, typename F1>
     Point2f(const F0 &x, const F1 &y) {
-        mat_(0) = x;
-        mat_(1) = y;
+        mat_(0) = static_cast<Scalar>(x);
+        mat_(1) = static_cast<Scalar>(y);
     }
 
     const Eigen::Matrix<Scalar,2,1>& Mat() const { return mat_; };

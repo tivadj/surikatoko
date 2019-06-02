@@ -431,8 +431,8 @@ bool IsIdentity(const Eigen::Matrix<Scalar, 3, 3>& M, Scalar rtol, Scalar atol, 
 
 template <size_t N>
 bool IsOrthogonal(const Eigen::Matrix<Scalar,N,N>& R, std::string* msg) {
-    Scalar rtol = 1.0e-3;
-    Scalar atol = 1.0e-3;
+    Scalar rtol = 1.0e-3f;
+    Scalar atol = 1.0e-3f;
     auto rt_r = (R.transpose() * R).eval();
     bool is_ident = rt_r.isIdentity(atol);
     if (!is_ident)
@@ -458,9 +458,9 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,3,3>& R, std::string* msg) {
 
     Scalar rdet = R.determinant();
 
-    Scalar rtol = 1.0e-3;
-    Scalar atol = 1.0e-3;
-    bool det_one = IsClose(1, rdet, rtol, atol);
+    Scalar rtol = 1.0e-3f;
+    Scalar atol = 1.0e-3f;
+    bool det_one = IsClose(1.0f, rdet, rtol, atol);
     if (!det_one)
     {
         if (msg != nullptr)
@@ -481,8 +481,8 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,2,2>& R, std::string* msg) {
 
     Scalar rdet = R.determinant();
 
-    Scalar rtol = 1.0e-3;
-    Scalar atol = 1.0e-3;
+    Scalar rtol = 1.0e-3f;
+    Scalar atol = 1.0e-3f;
     bool det_one = IsClose(1, rdet, rtol, atol);
     if (!det_one)
     {
@@ -557,11 +557,11 @@ auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Mat
         bool ok = IsSpecialOrthogonal(rot_mat, &msg);
         CHECK(ok) << msg;
     }
-    Scalar cos_ang = (Scalar)(0.5*(rot_mat.trace() - 1));
+    Scalar cos_ang = 0.5f*(rot_mat.trace() - 1);
     cos_ang = std::clamp<Scalar>(cos_ang, -1, 1); // the cosine may be slightly off due to rounding errors
 
-    Scalar sin_ang = (Scalar)std::sqrt(1.0 - cos_ang * cos_ang);
-    Scalar atol = 1e-3;
+    Scalar sin_ang = std::sqrt(1.0f - cos_ang * cos_ang);
+    Scalar atol = 1e-3f;
     if (IsClose(0, sin_ang, 0, atol))
         return false;
 
@@ -569,7 +569,7 @@ auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Mat
     udir[0] = rot_mat(2, 1) - rot_mat(1, 2);
     udir[1] = rot_mat(0, 2) - rot_mat(2, 0);
     udir[2] = rot_mat(1, 0) - rot_mat(0, 1);
-    udir *= (Scalar)0.5 / sin_ang;
+    udir *= 0.5f / sin_ang;
 
     // direction vector is already close to unity, but due to rounding errors it diverges
     // TODO: check where the rounding error appears
@@ -744,7 +744,7 @@ Scalar GetUncertaintyEllipsoidProbabilityCutValue(
     static bool test_det = true;
     if (test_det && check_det)
         SRK_ASSERT(uncert_det >= 0);
-    Scalar max_prob = 1 / std::sqrt(suriko::Pow3(2 * M_PI) * uncert_det);
+    Scalar max_prob = 1 / std::sqrt(suriko::Pow3(2 * Pi<Scalar>()) * uncert_det);
     Scalar cut_value = portion_of_max_prob * max_prob;
     return cut_value;
 }
@@ -758,7 +758,7 @@ Scalar GetUncertaintyEllipsoidProbabilityCutValueNew(
     static bool test_det = true;
     if (test_det && check_det)
         SRK_ASSERT(uncert_det >= 0);
-    Scalar max_prob = 1 / std::sqrt(std::pow(2 * M_PI, Dim) * uncert_det);
+    Scalar max_prob = 1 / std::sqrt(std::pow(2 * Pi<Scalar>(), Scalar{ Dim }) * uncert_det);
     Scalar cut_value = portion_of_max_prob * max_prob;
     return cut_value;
 }
@@ -774,7 +774,7 @@ void PickPointOnEllipsoid(
     Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(cam_pos_uncert, ellipsoid_cut_thr);
 
     // cross ellipsoid with ray
-    Scalar b1 = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
+    Scalar b1 = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * Pi<Scalar>())*uncert_det);
     Eigen::Matrix<Scalar, 1, 1> b2 = ray.transpose() * uncert_inv * ray;
     Scalar t2 = b1 / b2[0];
     SRK_ASSERT(t2 >= 0) << "invalid covariance matrix";
@@ -877,15 +877,15 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
 {
     // check symmetry
     Scalar sym_diff = (cov - cov.transpose()).norm();
-    SRK_ASSERT(IsClose(0, sym_diff, AbsTol(0.001)));
+    SRK_ASSERT(IsCloseAbs(0, sym_diff, 0.001f));
 
     Scalar uncert_det = cov.determinant();
     bool check_det = false;
     Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(cov, ellipsoid_cut_thr, check_det);
 
     // right side of the ellipse equation: (x-mu)A(x-mu)=right_side
-    Scalar right_side_old = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * M_PI)*uncert_det);
-    Scalar right_side = 7.814;
+    Scalar right_side_old = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * Pi<Scalar>())*uncert_det);
+    Scalar right_side = 7.814f;
 
     //
     // A=V*D*inv(V)
@@ -938,7 +938,7 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
         Eigen::Matrix<Scalar, 3, 1> left_col = R.middleCols<1>(0);
         Eigen::Matrix<Scalar, 3, 1> right_col = left_col.cross(R.middleCols<1>(1));
         Scalar should_zero = (right_col - R.middleCols<1>(2)).norm();
-        SRK_ASSERT(IsClose(0, should_zero));
+        SRK_ASSERT(IsCloseAbs(0, should_zero, 0.001));
     }
 
     // order semi-axes from max to min
@@ -971,15 +971,15 @@ void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
 
     // check symmetry
     Scalar sym_diff = (cov - cov.transpose()).norm();
-    SRK_ASSERT(IsClose(0, sym_diff, AbsTol(0.001)));
+    SRK_ASSERT(IsCloseAbs(0, sym_diff, 0.001));
 
     Scalar uncert_det = cov.determinant();
     bool check_det = false;
     Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValueNew<kDim>(cov, ellipsoid_cut_thr, check_det);
 
     // right side of the ellipse equation: (x-mu)A(x-mu)=right_side
-    Scalar right_side_old = -std::log(suriko::Sqr(cut_value)*std::pow(2 * M_PI, kDim)*uncert_det);
-    Scalar right_side = 5.991;
+    Scalar right_side_old = -std::log(suriko::Sqr(cut_value) * std::pow(2 * Pi<Scalar>(), Scalar{ kDim }) * uncert_det);
+    Scalar right_side = 5.991f;
 
     //
     // A=V*D*inv(V)
@@ -1079,7 +1079,7 @@ bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw,
         auto mid_col = R.middleCols<1>(1).eval();
         Eigen::Matrix<Scalar, 3, 1> new_left = mid_col.cross(R.rightCols<1>());
         Scalar should_zero = (new_left - (-R.leftCols<1>())).norm();
-        SRK_ASSERT(IsClose(0, should_zero, AbsTol(0.1)));
+        SRK_ASSERT(IsCloseAbs(0, should_zero, 0.1));
         R.leftCols<1>() = -R.leftCols<1>();
     }
     bool is_spec_ortho = IsSpecialOrthogonal(R);

@@ -133,7 +133,7 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
     std::normal_distribution<Scalar>* x3D_noise_dis, FragmentMap* entire_map)
 {
     size_t next_virtual_point_id = 6000'000 + 1;
-    constexpr Scalar inclusive_gap = 1e-8; // small value to make iteration inclusive
+    constexpr Scalar inclusive_gap = 1e-8f; // small value to make iteration inclusive
 
 
     Scalar xmid = (wb.x_min + wb.x_max) / 2;
@@ -147,7 +147,7 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
                 Scalar x = grid_x;
                 Scalar y = grid_y;
 
-                Scalar z_perc = std::cos((x - xmid) / xlen * M_PI);
+                Scalar z_perc = std::cos((x - xmid) / xlen * Pi<Scalar>());
                 Scalar z = grid_z + z_perc * z_ascent;
 
                 // jit x and y so the points can be distinguished during movement
@@ -255,11 +255,11 @@ public:
 
             if (templ_center_detection_noise_std_ > 0)
             {
-                gen_.seed(frame_ind ^ frag_id);  // make noise unique for given salient point in given frame
+                gen_.seed(static_cast<unsigned int>(frame_ind ^ frag_id));  // make noise unique for given salient point in given frame
                 const float center_noise_x = templ_center_detection_noise_distr_(gen_);
                 const float center_noise_y = templ_center_detection_noise_distr_(gen_);
 
-                constexpr auto Pad = Scalar{ 1e-6 }; // keep int(coord) of a pixel inside the picture
+                constexpr auto Pad = 1e-6f; // keep int(coord) of a pixel inside the picture
                 auto in_img_x = std::clamp<Scalar>(pnt_pix.X() + center_noise_x, 0, img_size_.width - Pad);
                 auto in_img_y = std::clamp<Scalar>(pnt_pix.Y() + center_noise_y, 0, img_size_.height - Pad);
                 pnt_pix = suriko::Point2f{ in_img_x, in_img_y };
@@ -445,7 +445,7 @@ public:
         
         // choose template-candidate with the maximum correlation coefficient
         // TODO: do we need to handle the case of multiple equal corr coefs? (eg when all pixels of a cadidate are equal)
-        auto max_corr_coeff = Scalar{ -1 - 0.001 };
+        Scalar max_corr_coeff = -1 - 0.001f;
         PosAndErr best_match_info;
         int match_templ_call_order = 0;  // specify the order of calls to template match routine
 
@@ -1132,13 +1132,17 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         bool corrupt_cam_orient_with_noise = FLAGS_world_noise_R_std > 0;
 
         WorldBounds wb{};
-        wb.x_min = FLAGS_world_xmin;
-        wb.x_max = FLAGS_world_xmax;
-        wb.y_min = FLAGS_world_ymin;
-        wb.y_max = FLAGS_world_ymax;
-        wb.z_min = FLAGS_world_zmin;
-        wb.z_max = FLAGS_world_zmax;
-        std::array<Scalar, 3> cell_size = { FLAGS_world_cell_size_x, FLAGS_world_cell_size_y, FLAGS_world_cell_size_z };
+        wb.x_min = static_cast<Scalar>(FLAGS_world_xmin);
+        wb.x_max = static_cast<Scalar>(FLAGS_world_xmax);
+        wb.y_min = static_cast<Scalar>(FLAGS_world_ymin);
+        wb.y_max = static_cast<Scalar>(FLAGS_world_ymax);
+        wb.z_min = static_cast<Scalar>(FLAGS_world_zmin);
+        wb.z_max = static_cast<Scalar>(FLAGS_world_zmax);
+        std::array<Scalar, 3> cell_size = {
+            static_cast<Scalar>(FLAGS_world_cell_size_x), 
+            static_cast<Scalar>(FLAGS_world_cell_size_y),
+            static_cast<Scalar>(FLAGS_world_cell_size_z)
+        };
 
         std::random_device rd;  //Will be used to obtain a seed for the random number engine
         std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
@@ -1146,23 +1150,23 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         std::unique_ptr<std::normal_distribution<Scalar>> x3D_noise_dis;
         if (corrupt_salient_points_with_noise)
-            x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0, FLAGS_world_noise_x3D_std);
+            x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0.0f, static_cast<Scalar>(FLAGS_world_noise_x3D_std));
 
         //
         entire_map.SetFragmentIdOffsetInternal(1000'000);
-        GenerateWorldPoints(wb, cell_size, FLAGS_world_z_ascent, corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
+        GenerateWorldPoints(wb, cell_size, static_cast<Scalar>(FLAGS_world_z_ascent), corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
         LOG(INFO) << "points_count=" << entire_map.SalientPointsCount();
 
         suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
         suriko::Point3 viewer_center_offset(FLAGS_viewer_center_offset_x, FLAGS_viewer_center_offset_y, FLAGS_viewer_center_offset_z);
-        Eigen::Matrix<Scalar, 3, 1> up(FLAGS_viewer_up_x, FLAGS_viewer_up_y, FLAGS_viewer_up_z);
+        Eigen::Matrix<Scalar, 3, 1> up(static_cast<Scalar>(FLAGS_viewer_up_x), static_cast<Scalar>(FLAGS_viewer_up_y), static_cast<Scalar>(FLAGS_viewer_up_z));
 
         if (FLAGS_virtual_scenario == 1)
             GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y,
                 viewer_eye_offset, viewer_center_offset, up, &gt_cam_orient_cfw);
         else if (FLAGS_virtual_scenario == 2)
             GenerateCameraShotsRightAndLeft(wb, viewer_eye_offset, viewer_center_offset, up,
-                FLAGS_s2_max_deviation,
+                static_cast<Scalar>(FLAGS_s2_max_deviation),
                 FLAGS_s2_num_steps,
                 &gt_cam_orient_cfw);
         else if (FLAGS_virtual_scenario == 3)
@@ -1170,7 +1174,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             auto viewer_eye = viewer_eye_offset;
             auto center = viewer_center_offset;
             GenerateCameraShotsOscilateRightAndLeft(wb, viewer_eye, center, up,
-                FLAGS_s3_max_deviation,
+                static_cast<Scalar>(FLAGS_s3_max_deviation),
                 FLAGS_s3_periods_count,
                 FLAGS_s3_shots_per_period,
                 FLAGS_s3_const_view_dir,
@@ -1195,8 +1199,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         {
             auto viewer_eye = viewer_eye_offset;
             GenerateCameraShotsRotateLeftAndRight(wb, viewer_eye, up,
-                FLAGS_s5_min_ang,
-                FLAGS_s5_max_ang,
+                static_cast<Scalar>(FLAGS_s5_min_ang),
+                static_cast<Scalar>(FLAGS_s5_max_ang),
                 FLAGS_s5_periods_count,
                 FLAGS_s5_shots_per_period,
                 &gt_cam_orient_cfw);
@@ -1207,7 +1211,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         if (corrupt_cam_orient_with_noise)
         {
-            std::normal_distribution<Scalar> cam_orient_noise_dis(0, FLAGS_world_noise_R_std);
+            std::normal_distribution<Scalar> cam_orient_noise_dis(0, static_cast<Scalar>(FLAGS_world_noise_R_std));
             for (SE3Transform& cam_orient : gt_cam_orient_cfw)
             {
                 Eigen::Matrix<Scalar, 3, 1> dir;
@@ -1235,7 +1239,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     LOG(INFO) << "frames_count=" << frames_count;
 
     // focal_len_pix = focal_len_mm / pixel_size_mm
-    std::array<Scalar, 2> foc_len_pix = { FLAGS_camera_focal_length_pix_x, FLAGS_camera_focal_length_pix_y };
+    std::array<Scalar, 2> foc_len_pix = {
+        static_cast<Scalar>(FLAGS_camera_focal_length_pix_x), 
+        static_cast<Scalar>(FLAGS_camera_focal_length_pix_y) };
 
     // assume dy=PixelSizeMm[1]=some constant
     const Scalar pix_size_y = 0.001f;
@@ -1268,7 +1274,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     //
     DavisonMonoSlam2DDrawer drawer;
     drawer.dots_per_uncert_ellipse_ = FLAGS_ui_dots_per_uncert_ellipse;
-    drawer.ellipse_cut_thr_ = FLAGS_monoslam_ellipsoid_cut_thr;
+    drawer.ellipse_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
 
     // the origin of a tracker (sometimes cam0)
     SE3Transform tracker_origin_from_world;
@@ -1296,31 +1302,31 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.between_frames_period_ = 1;
     mono_slam.cam_intrinsics_ = cam_intrinsics;
     mono_slam.cam_distort_params_ = cam_distort_params;
-    mono_slam.sal_pnt_init_inv_dist_ = FLAGS_monoslam_sal_pnt_init_inv_dist;
-    mono_slam.sal_pnt_init_inv_dist_std_ = FLAGS_monoslam_sal_pnt_init_inv_dist_std;
+    mono_slam.sal_pnt_init_inv_dist_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_init_inv_dist);
+    mono_slam.sal_pnt_init_inv_dist_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_init_inv_dist_std);
     mono_slam.force_xyz_sal_pnt_pos_diagonal_uncert_ = FLAGS_monoslam_force_xyz_sal_pnt_pos_diagonal_uncert;
-    mono_slam.SetProcessNoiseStd(FLAGS_monoslam_process_noise_std);
-    mono_slam.measurm_noise_std_pix_ = FLAGS_monoslam_measurm_noise_std_pix;
+    mono_slam.SetProcessNoiseStd(static_cast<Scalar>(FLAGS_monoslam_process_noise_std));
+    mono_slam.measurm_noise_std_pix_ = static_cast<Scalar>(FLAGS_monoslam_measurm_noise_std_pix);
     mono_slam.sal_pnt_templ_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
     if (FLAGS_monoslam_templ_closest_templ_min_dist_pix > 0)
-        mono_slam.closest_sal_pnt_templ_min_dist_pix_ = FLAGS_monoslam_templ_closest_templ_min_dist_pix;
+        mono_slam.closest_sal_pnt_templ_min_dist_pix_ = static_cast<Scalar>(FLAGS_monoslam_templ_closest_templ_min_dist_pix);
     if (FLAGS_monoslam_sal_pnt_max_undetected_frames_count > 0)
         mono_slam.sal_pnt_max_undetected_frames_count_ = FLAGS_monoslam_sal_pnt_max_undetected_frames_count;
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
-        mono_slam.cam_pos_x_std_m_ = FLAGS_monoslam_cam_pos_x_std_m;
-        mono_slam.cam_pos_y_std_m_ = FLAGS_monoslam_cam_pos_y_std_m;
-        mono_slam.cam_pos_z_std_m_ = FLAGS_monoslam_cam_pos_z_std_m;
-        mono_slam.cam_orient_q_comp_std_ = FLAGS_monoslam_cam_orient_q_comp_std;
-        mono_slam.cam_vel_std_ = FLAGS_monoslam_cam_vel_std;
-        mono_slam.cam_ang_vel_std_ = FLAGS_monoslam_cam_ang_vel_std;
-        mono_slam.sal_pnt_pos_x_std_ = FLAGS_monoslam_sal_pnt_pos_x_std;
-        mono_slam.sal_pnt_pos_y_std_ = FLAGS_monoslam_sal_pnt_pos_y_std;
-        mono_slam.sal_pnt_pos_z_std_ = FLAGS_monoslam_sal_pnt_pos_z_std;
-        mono_slam.sal_pnt_first_cam_pos_std_ = FLAGS_monoslam_sal_pnt_first_cam_pos_std;
-        mono_slam.sal_pnt_azimuth_std_ = FLAGS_monoslam_sal_pnt_azimuth_std;
-        mono_slam.sal_pnt_elevation_std_ = FLAGS_monoslam_sal_pnt_elevation_std;
+        mono_slam.cam_pos_x_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_x_std_m);
+        mono_slam.cam_pos_y_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_y_std_m);
+        mono_slam.cam_pos_z_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_z_std_m);
+        mono_slam.cam_orient_q_comp_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_orient_q_comp_std);
+        mono_slam.cam_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_vel_std);
+        mono_slam.cam_ang_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_ang_vel_std);
+        mono_slam.sal_pnt_pos_x_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_x_std);
+        mono_slam.sal_pnt_pos_y_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_y_std);
+        mono_slam.sal_pnt_pos_z_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_z_std);
+        mono_slam.sal_pnt_first_cam_pos_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_first_cam_pos_std);
+        mono_slam.sal_pnt_azimuth_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_azimuth_std);
+        mono_slam.sal_pnt_elevation_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_elevation_std);
         mono_slam.SetCamera(SE3Transform::NoTransform());
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
@@ -1334,7 +1340,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_monoslam_fix_estim_vars_covar_symmetry;
-    mono_slam.debug_ellipsoid_cut_thr_ = FLAGS_monoslam_ellipsoid_cut_thr;
+    mono_slam.debug_ellipsoid_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
     if (FLAGS_monoslam_debug_max_sal_pnt_count != -1)
         mono_slam.debug_max_sal_pnt_coun_ = FLAGS_monoslam_debug_max_sal_pnt_count;
     if (demo_data_source == DemoDataSource::kVirtualScene)
@@ -1404,10 +1410,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     {
         auto corners_matcher = std::make_unique<ImageTemplCornersMatcher>(&mono_slam);
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_stop_on_sal_pnt_moved_too_far;
-        corners_matcher->ellisoid_cut_thr_ = FLAGS_monoslam_ellipsoid_cut_thr;
+        corners_matcher->ellisoid_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };
         if (FLAGS_monoslam_templ_min_corr_coeff > -1)
-            corners_matcher->min_templ_corr_coeff_ = FLAGS_monoslam_templ_min_corr_coeff;
+            corners_matcher->min_templ_corr_coeff_ = static_cast<Scalar>(FLAGS_monoslam_templ_min_corr_coeff);
         corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, cv::Mat* out_image_bgr)
         {
             drawer.DrawEstimatedSalientPoint(mono_slam, sal_pnt_id, out_image_bgr);
@@ -1439,7 +1445,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     ui_params.wait_for_user_input_after_each_frame = FLAGS_ctrl_wait_after_each_frame;
     ui_params.mono_slam = &mono_slam;
     ui_params.tracker_origin_from_world = tracker_origin_from_world;
-    ui_params.ellipsoid_cut_thr = FLAGS_monoslam_ellipsoid_cut_thr;
+    ui_params.ellipsoid_cut_thr = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
     ui_params.cam_orient_cfw_history = &cam_orient_cfw_history;
     ui_params.get_observable_frame_ind_fun = [&observable_frame_ind]() { return observable_frame_ind; };
     ui_params.worker_chat = worker_chat;

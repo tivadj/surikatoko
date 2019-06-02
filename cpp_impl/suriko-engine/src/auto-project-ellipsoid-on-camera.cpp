@@ -322,10 +322,10 @@ r11 * r33*t1 + r23 * r31*t2 - r21 * r33*t2))) /
     auto& m = *M;
     // above the diagonal
     m(0, 0) = coef_d0d0;
-    m(0, 1) = coef_d0d1 * 0.5;
-    m(0, 2) = coef_d0d2 * 0.5;
+    m(0, 1) = coef_d0d1 * 0.5f;
+    m(0, 2) = coef_d0d2 * 0.5f;
     m(1, 1) = coef_d1d1;
-    m(1, 2) = coef_d1d2 * 0.5;
+    m(1, 2) = coef_d1d2 * 0.5f;
     m(2, 2) = coef_d2d2;
     m.triangularView<Eigen::StrictlyLower>() = m.triangularView<Eigen::StrictlyUpper>().transpose();
 }

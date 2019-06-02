@@ -155,8 +155,8 @@ SE3Transform SceneNormalizer::NormalizeRT(const SE3Transform& camk_from_world, c
         auto back_rt = RevertRT(result, cam0_from_world, world_scale);
         Scalar diffR = (Rkw - back_rt.R).norm();
         Scalar diffT = (Tkw - back_rt.T).norm();
-        SRK_ASSERT(IsClose(0.0f, diffR, AbsRelTol<Scalar>(1e-3f, 1e-3f))) << "Error in normalization or reverting of R, diffR=" << diffR;
-        SRK_ASSERT(IsClose(0.0f, diffT, AbsRelTol<Scalar>(1e-3f, 1e-3f))) << "Error in normalization or reverting of T, diffT=" << diffT;
+        SRK_ASSERT(IsClose(0.0f, diffR, 1e-3f, 1e-3f)) << "Error in normalization or reverting of R, diffR=" << diffR;
+        SRK_ASSERT(IsClose(0.0f, diffT, 1e-3f, 1e-3f)) << "Error in normalization or reverting of T, diffT=" << diffT;
     }
     return result;
 }
@@ -193,7 +193,7 @@ suriko::Point3 SceneNormalizer::NormalizeOrRevertPoint(const suriko::Point3& x3D
     {
         auto back_pnt = NormalizeOrRevertPoint(result, inverse_orient_cam0, world_scale, Opposite(action), false);
         Scalar diff = (back_pnt.Mat() - x3D.Mat()).norm();
-        SRK_ASSERT(IsClose(0.0f, diff, AbsRelTol<Scalar>(1e-3f, 1e-3f))) << "Error in normalization or reverting, diff=" <<diff;
+        SRK_ASSERT(IsClose(0.0f, diff, 1e-3f, 1e-3f)) << "Error in normalization or reverting, diff=" <<diff;
     }
     return result;
 }
@@ -687,7 +687,7 @@ bool BundleAdjustmentKanatani::ComputeInplace(Scalar f0, FragmentMap& map,
         Scalar rtol = 1.0e-5f;
         Scalar  atol = 1.0e-3f;
         err_value_after_normalization = ReprojError(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_);
-        SRK_ASSERT(IsClose(err_value_before_normalization, err_value_after_normalization, AbsRelTol<Scalar>(atol, rtol))) << "Reprojection error must not change during normalization, err before="
+        SRK_ASSERT(IsClose(err_value_before_normalization, err_value_after_normalization, rtol, atol)) << "Reprojection error must not change during normalization, err before="
             << err_value_before_normalization <<", after=" << err_value_after_normalization;
     }
 
