@@ -360,16 +360,18 @@ void PickPointOnEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& ray,
     Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid);
 
-void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
-    Scalar ellipsoid_cut_thr,
-    RotatedEllipsoid3D* result);
+[[nodiscard]]
+std::tuple<bool,RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
+    Scalar ellipsoid_cut_thr);
 
-void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
+[[nodiscard]]
+bool Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
     Scalar ellipsoid_cut_thr,
     Eigen::Matrix<Scalar, 2, 1>* semi_axes,
     Eigen::Matrix<Scalar, 2, 2>* world_from_ellipse);
 
-RotatedEllipse2D Get2DRotatedEllipseFromCovMat(
+[[nodiscard]]
+std::tuple<bool,RotatedEllipse2D> Get2DRotatedEllipseFromCovMat(
     const Eigen::Matrix<Scalar, 2, 2>& cov,
     const Eigen::Matrix<Scalar, 2, 1>& mean,
     Scalar ellipsoid_cut_thr);

@@ -291,8 +291,10 @@ void RenderPosUncertaintyMatAsEllipsoid(
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
-    RotatedEllipsoid3D rot_ellipsoid;
-    GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pos, ellipsoid_cut_thr, &rot_ellipsoid);
+    auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pos, ellipsoid_cut_thr);
+    if (!op)
+        return;
+    static_assert(std::is_same_v<decltype(rot_ellipsoid), RotatedEllipsoid3D>);
 
     // draw projection of ellipsoid
     RenderEllipsoid(rot_ellipsoid, dots_per_ellipse);
@@ -1077,7 +1079,11 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
         MarkUsedTrackerStateToVisualize();
         MeanAndCov2D corner = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Estimated, sal_pnt_id);
 
-        RotatedEllipse2D corner_ellipse = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
+        auto [op, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
+        if (!op)
+            return;
+        
+        static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
 
         DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, nullptr, out_image_bgr);
     }
@@ -1089,8 +1095,10 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
         if (!op)
             return;
 
-        RotatedEllipsoid3D rot_ellipsoid;
-        GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellipse_cut_thr_, &rot_ellipsoid);
+        auto [op_ellip, rot_ellipsoid ]= GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellipse_cut_thr_);
+        if (!op_ellip)
+            return;
+        static_assert(std::is_same_v<decltype(rot_ellipsoid), RotatedEllipsoid3D>);
 
         MarkUsedTrackerStateToVisualize();
         CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();

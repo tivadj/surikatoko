@@ -540,6 +540,8 @@ public:
     
     SalPntId GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_ind) const;
 
+    void CheckSalientPointsConsistency() const;
+
     suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center) const;
 
     // New salient points should be farther away from other salient points in the picture by this distance.
@@ -648,6 +650,9 @@ private:
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar) const;
 
+    void RemoveSalientPointsWithNonextractableUncertEllipsoid(EigenDynVec* src_estim_vars,
+        EigenDynMat* src_estim_vars_covar);
+
     auto GetFilterStage(FilterStageType filter_stage) -> std::tuple<EigenDynVec*, EigenDynMat*>;
     auto GetFilterStage(FilterStageType filter_stage) const -> std::tuple<const EigenDynVec*, const EigenDynMat*>;
 
@@ -679,6 +684,7 @@ private:
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind);
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
     void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
+    void EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar);
     void OnEstimVarsChanged(size_t frame_ind);
     void FinishFrameStats(size_t frame_ind);
     void PredictStateAndCovariance();
@@ -743,11 +749,12 @@ private:
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
 #endif
 
-    void GetSalientPointPositionUncertainty(
+    bool GetSalientPointPositionUncertainty(
         const EigenDynMat& src_estim_vars_covar,
         const TrackedSalientPoint& sal_pnt,
         const MorphableSalientPoint& sal_pnt_vars,
-        Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const;
+        bool can_throw,
+        Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_covar) const;
 
     /// NOTE: The resultant 2D uncertainty does depend on the uncertainty of the camera frame in which the salient point is projected.
     auto GetSalientPointProjected2DPosWithUncertainty(
@@ -760,14 +767,16 @@ private:
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar,
         const TrackedSalientPoint& sal_pnt,
+        bool can_throw,
         Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     /// Ensures that given salient point can be correctly handled (rendering, position prediction etc).
-    void CheckSalientPoint(
+    bool CheckSalientPoint(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar, 
-        const TrackedSalientPoint& sal_pnt) const;
+        const TrackedSalientPoint& sal_pnt,
+        bool can_throw) const;
 
     std::optional<SalPntRectFacet> ProtrudeSalientPointTemplIntoWorld(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const;
 

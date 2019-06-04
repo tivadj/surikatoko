@@ -563,21 +563,31 @@ public:
         return result;
     }
 
-    Recti PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, Scalar ellisoid_cut_thr)
+    std::tuple<bool,Recti> PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, Scalar ellisoid_cut_thr)
     {
         MeanAndCov2D corner = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
 
-        RotatedEllipse2D corner_ellipse = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellisoid_cut_thr);
+        // an ellipse can always be extracted from 'good' covariance mat of error in position
+        // but here we allow bad covariance matrix
+        auto [op, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellisoid_cut_thr);
+        if (!op) return std::make_tuple(false, Recti{});
+
+        static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
+
         Rect corner_bounds = GetEllipseBounds2(corner_ellipse);
         Recti corner_bounds_i = TruncateRect(corner_bounds);
-        return corner_bounds_i;
+        return std::make_tuple(true, corner_bounds_i);
     }
 
     std::optional<suriko::Point2f> MatchSalientTempl(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic,
         Scalar ellisoid_cut_thr)
     {
-        Recti search_rect_unbounded = PredictSalientPointSearchRect(mono_slam, sal_pnt_id, ellisoid_cut_thr);
-        
+        auto [op, search_rect_unbounded] = PredictSalientPointSearchRect(mono_slam, sal_pnt_id, ellisoid_cut_thr);
+        if (!op)
+            return std::nullopt; // broken covariance matrix
+
+        static_assert(std::is_same_v<decltype(search_rect_unbounded), Recti>);
+
         if (min_search_rect_size_.has_value())
             search_rect_unbounded = ClampRectWhenFixedCenter(search_rect_unbounded, min_search_rect_size_.value());
 

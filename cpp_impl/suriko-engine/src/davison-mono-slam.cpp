@@ -389,14 +389,26 @@ void DavisonMonoSlam::CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azim
 }
 
 template <typename EigenMat>
-void CheckUncertCovMat(const EigenMat& pos_uncert)
+bool CheckUncertCovMat(const EigenMat& pos_uncert, bool can_throw)
 {
     constexpr Scalar ellipse_cut_thr = 0.05f;
 
     Eigen::Matrix<Scalar, kEucl3, 1> pnt_pos{ 0, 0, 0 };
 
-    RotatedEllipsoid3D rot_ellipsoid;
-    GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, ellipse_cut_thr, &rot_ellipsoid);
+    auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, ellipse_cut_thr);
+    if (can_throw) SRK_ASSERT(op);
+    return op;
+}
+
+template <typename EigenMat>
+void CheckEllipseIsExtractableFrom2DCovarMat(const EigenMat& covar_2D)
+{
+    constexpr Scalar ellipse_cut_thr = 0.05f;
+
+    Eigen::Matrix<Scalar, kPixPosComps, 1> pnt_pos{ 0, 0 };
+
+    auto [op, rot_ellipse] = Get2DRotatedEllipseFromCovMat(covar_2D, pnt_pos, ellipse_cut_thr);
+    SRK_ASSERT(op);
 }
 
 void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
@@ -404,7 +416,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     const EigenDynMat& src_estim_vars_covar) const
 {
     Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_pos_cov = src_estim_vars_covar.block<kEucl3, kEucl3>(0, 0);
-    CheckUncertCovMat(cam_pos_cov);
+    CheckUncertCovMat(cam_pos_cov, true);
 
     // check camera orientation quaternion is normalized
     CameraStateVars cam_state_vars;
@@ -422,8 +434,25 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     {
         const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
 
-        CheckSalientPoint(src_estim_vars, src_estim_vars_covar, sal_pnt);
+        CheckSalientPoint(src_estim_vars, src_estim_vars_covar, sal_pnt, true);
     }
+}
+
+void DavisonMonoSlam::RemoveSalientPointsWithNonextractableUncertEllipsoid(EigenDynVec *src_estim_vars,
+    EigenDynMat* src_estim_vars_covar)
+{
+    std::vector<size_t> bad_sal_pnt_inds;
+    for (SalPntId sal_pnt_id : GetSalientPoints())
+    {
+        const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
+
+        // TODO: need quick way to find out if position uncertainty ellipsoid of salient point is extractable from covariance matrix
+        if (!CheckSalientPoint(*src_estim_vars, *src_estim_vars_covar, sal_pnt, false))
+            bad_sal_pnt_inds.push_back(sal_pnt.sal_pnt_ind);
+    }
+    if (bad_sal_pnt_inds.empty())
+        return;
+    RemoveSalientPoints(bad_sal_pnt_inds);
 }
 
 void DavisonMonoSlam::FillRk2x2(Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* Rk) const
@@ -570,7 +599,18 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
     size_t last_sal_pnt_var_ind = SalientPointOffset(last_sal_pnt_ind);
     for (auto remove_sal_pnt_ind : sal_pnt_inds_to_delete_desc)
     {
-        VLOG(4) << "Removing SPind=" << remove_sal_pnt_ind;
+        if (kSurikoDebug)
+        {
+            auto remove_sp_id = GetSalientPointIdByOrderInEstimCovMat(remove_sal_pnt_ind);
+            auto remove_sp = GetSalientPoint(remove_sp_id);
+            std::stringstream ss;
+            ss << "Removing SPind=" << remove_sal_pnt_ind;
+#if defined(SRK_DEBUG)
+            ss << " inited at #" << remove_sp.initial_frame_ind_synthetic_only_ 
+                << "[" << remove_sp.initial_templ_center_pix_debug_.X() << "," << remove_sp.initial_templ_center_pix_debug_.Y() << "]";
+#endif
+            VLOG(4) << ss.str();
+        }
 
         last_sal_pnt_ind--;
         last_sal_pnt_var_ind -= kSalientPointComps;
@@ -584,9 +624,7 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
         TrackedSalientPoint& last_sal_pnt = GetSalientPoint(last_sal_pnt_id);
 
         sal_pnts_as_ids_.erase(remove_sal_pnt_id);
-
-        bool has_removing_sal_pnt = latest_frame_sal_pnts_.find(remove_sal_pnt_id) != latest_frame_sal_pnts_.end();
-        SRK_ASSERT(!has_removing_sal_pnt);
+        latest_frame_sal_pnts_.erase(remove_sal_pnt_id);
 
         bool need_moving = remove_sal_pnt_ind != last_sal_pnt_ind;  // otherwise it is already in the end and ready to be truncated
         if (need_moving)
@@ -636,6 +674,8 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
         estim_vars_covar_.conservativeResize(last_sal_pnt_var_ind, last_sal_pnt_var_ind);
         predicted_estim_vars_covar_.conservativeResize(last_sal_pnt_var_ind, last_sal_pnt_var_ind);
     }
+
+    if (kSurikoDebug) CheckSalientPointsConsistency();
 }
 
 void DavisonMonoSlam::RemoveObsoleteSalientPoints()
@@ -722,7 +762,6 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
         break;
     }
 
-
     // eagerly try allocate new salient points
     std::vector<CornersMatcherBlobId> new_blobs;
     this->corners_matcher_->RecruitNewSalientPoints(frame_ind, image, sal_pnts_as_ids_, matched_sal_pnts, &new_blobs);
@@ -779,6 +818,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     }
 
     PredictStateAndCovariance();
+    EnsureNonnegativeStateVariance(&predicted_estim_vars_covar_);
 
     if (in_multi_threaded_mode_)
         lk.unlock();
@@ -949,25 +989,17 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
 #if defined(SRK_DEBUG)
             EigenDynMat K_S_Kt = cache.K_S * Knew.transpose();
 #endif
-            // note: this may produce tiny negative values on diagonal
             estim_vars_covar_.noalias() -= cache.K_S * Knew.transpose();
         }
 
-        // zeroize tiny negative numbers on diagonal of error covariance (may appear when subtracting tiny numbers)
-        auto estim_err_diag = estim_vars_covar_.diagonal().array();
-        if (kSurikoDebug)
-        {
-            Eigen::Index min_index = -1;
-            Scalar min_value = estim_err_diag.minCoeff(&min_index);
-            SRK_ASSERT(min_value > -0.1) << "Got big negative numbers on diagonal of error covariance";
-        }
-        estim_err_diag = estim_err_diag.max(0);
-
-        //
         NormalizeCameraOrientationQuaternionAndCovariances(&estim_vars_, &estim_vars_covar_);
 
         if (fix_estim_vars_covar_symmetry_)
             FixSymmetricMat(&estim_vars_covar_);
+
+        EnsureNonnegativeStateVariance(&estim_vars_covar_);
+
+        RemoveSalientPointsWithNonextractableUncertEllipsoid(&estim_vars_, &estim_vars_covar_);
 
         static bool debug_cam_pos = false;
         if (kSurikoDebug && debug_cam_pos && gt_cami_from_tracker_fun_ != nullptr) // ground truth
@@ -1325,6 +1357,20 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
 
     est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4) = q_down;  // to the down
     est_vars_covar.block<kQuat4, Eigen::Dynamic>(kEucl3, kEucl3 + kQuat4, kQuat4, q_down_size) = q_down.transpose();  // to the right
+}
+
+void DavisonMonoSlam::EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar)
+{
+    // zeroize tiny negative numbers on diagonal of error covariance (may appear when subtracting tiny numbers)
+    // doing it after all updates to the error covariance matrix have completed
+    auto estim_err_diag = src_estim_vars_covar->diagonal().array();
+    if (kSurikoDebug)
+    {
+        Eigen::Index min_index = -1;
+        Scalar min_value = estim_err_diag.minCoeff(&min_index);
+        SRK_ASSERT(min_value > -0.1) << "Got big negative numbers on diagonal of error covariance";
+    }
+    estim_err_diag = estim_err_diag.max(0);
 }
 
 void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
@@ -2113,7 +2159,7 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     if (debug_estimated_vars || DebugPath(DebugPathEnum::DebugEstimVarsCov))
     {
         // check uncertainty ellipsoid can be extracted from covariance matrix
-        CheckSalientPoint(estim_vars_, estim_vars_covar_, sal_pnt);
+        CheckSalientPoint(estim_vars_, estim_vars_covar_, sal_pnt, true);
     }
     return sal_pnt_id;
 }
@@ -3083,6 +3129,31 @@ SalPntId DavisonMonoSlam::GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_i
     return SalPntId{ sp };
 }
 
+void DavisonMonoSlam::CheckSalientPointsConsistency() const
+{
+    auto sal_pnts_count = sal_pnts_.size();
+    SRK_ASSERT(sal_pnts_as_ids_.size() == sal_pnts_count);
+    SRK_ASSERT(latest_frame_sal_pnts_.size() <= sal_pnts_count);
+
+    for (size_t sal_pnt_ind = 0; sal_pnt_ind < sal_pnts_count; ++sal_pnt_ind)
+    {
+        const auto& p_sal_pnt = sal_pnts_[sal_pnt_ind];
+        const TrackedSalientPoint& sal_pnt = *p_sal_pnt;
+
+        // estimated state index
+        SRK_ASSERT(sal_pnt_ind == sal_pnt.sal_pnt_ind);
+
+        // id
+        auto sal_pnt_id = SalPntId{ p_sal_pnt.get() };
+        SalPntId sal_pnt_id_by_ind = GetSalientPointIdByOrderInEstimCovMat(sal_pnt_ind);
+        SRK_ASSERT(sal_pnt_id == sal_pnt_id_by_ind);
+
+        // offset
+        size_t offset = SalientPointOffset(sal_pnt_ind);
+        SRK_ASSERT(offset == sal_pnt.estim_vars_ind);
+    }
+}
+
 std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointTemplIntoWorld(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const
 {
     // Let B be a plane through the salient point, orthogonal to direction from camera to this salient point.
@@ -3155,7 +3226,7 @@ std::optional<SalPntRectFacet> DavisonMonoSlam::ProtrudeSalientPointTemplIntoWor
     if (kSurikoDebug)
     {
         Eigen::Matrix<Scalar, 3, 1> pos;
-        bool got_3d_pos = GetSalientPoint3DPosWithUncertainty(src_estim_vars, predicted_estim_vars_covar_, sal_pnt, &pos, nullptr);
+        bool got_3d_pos = GetSalientPoint3DPosWithUncertainty(src_estim_vars, predicted_estim_vars_covar_, sal_pnt, true, &pos, nullptr);
         if (got_3d_pos)
         {
             SalPntRectFacet r = rect_3d;
@@ -3343,19 +3414,23 @@ void DavisonMonoSlam::PropagateSalPntPosUncertainty(const SphericalSalientPoint&
 }
 #endif
 
-void DavisonMonoSlam::GetSalientPointPositionUncertainty(
+bool DavisonMonoSlam::GetSalientPointPositionUncertainty(
     const EigenDynMat& src_estim_vars_covar,
     const TrackedSalientPoint& sal_pnt,
     const MorphableSalientPoint& sal_pnt_vars,
-    Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_uncert) const
+    bool can_throw,
+    Eigen::Matrix<Scalar, kEucl3, kEucl3>* sal_pnt_pos_covar) const
 {
-    Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps> orig_uncert =
+    Eigen::Matrix<Scalar, kSalientPointComps, kSalientPointComps> sal_pnt_covar =
         src_estim_vars_covar.block<kSalientPointComps, kSalientPointComps>(sal_pnt.estim_vars_ind, sal_pnt.estim_vars_ind);
+
+    auto sal_pnt_covar_sym = (sal_pnt_covar + sal_pnt_covar.transpose()) / 2;
+    auto sal_pnt_covar_diff = (sal_pnt_covar_sym - sal_pnt_covar).norm();
 
     if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
 #if defined(XYZ_SAL_PNT_REPRES)
-        *sal_pnt_pos_uncert = orig_uncert;
+        *sal_pnt_pos_covar = sal_pnt_covar;
 #endif
     }
     else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
@@ -3364,9 +3439,19 @@ void DavisonMonoSlam::GetSalientPointPositionUncertainty(
         SphericalSalientPoint spher_sal_pnt;
         CopyFrom(&spher_sal_pnt, sal_pnt_vars);
         // use first order approximation 
-        PropagateSalPntPosUncertainty(spher_sal_pnt, orig_uncert, sal_pnt_pos_uncert);
+        PropagateSalPntPosUncertainty(spher_sal_pnt, sal_pnt_covar, sal_pnt_pos_covar);
+        
+        FixAlmostSymmetricMat(sal_pnt_pos_covar);
+
+        bool op = CheckUncertCovMat(*sal_pnt_pos_covar, can_throw);
+        if (!op)
+        {
+            if (can_throw) SRK_ASSERT(op);
+            return false;
+        }
 #endif
     }
+    return true;
 }
 
 auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) const
@@ -3479,6 +3564,12 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
     // derive covariance of projected coord (in pixels)
     Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> covar2D = J * input_covar * J.transpose();
 
+    static bool b2 = true;
+    if (b2)
+        FixAlmostSymmetricMat(&covar2D);
+
+    CheckEllipseIsExtractableFrom2DCovarMat(covar2D);
+
     // Pnew=J*P*Jt gives approximate 2D covariance of salient point's position uncertainty.
     // This works unsatisfactory because the size and eccentricity of the output ellipse are wrong.
     // TODO: fix 2D pos uncertainty ellipses for salient points
@@ -3525,6 +3616,7 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar,
     const TrackedSalientPoint& sal_pnt,
+    bool can_throw,
     Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
     Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const
 {
@@ -3555,7 +3647,12 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
     if (pos_uncert == nullptr)
         return true;
 
-    GetSalientPointPositionUncertainty(src_estim_vars_covar, sal_pnt, sal_pnt_vars, pos_uncert);
+    bool op = GetSalientPointPositionUncertainty(src_estim_vars_covar, sal_pnt, sal_pnt_vars, can_throw, pos_uncert);
+    if (!op)
+    {
+        if (can_throw) SRK_ASSERT(op);
+        return false;
+    }
 
     static bool simulate_propagation = false;
     static bool use_simulated_results = true;
@@ -3597,18 +3694,23 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
     return true;
 }
 
-void DavisonMonoSlam::CheckSalientPoint(
+bool DavisonMonoSlam::CheckSalientPoint(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar,
-    const TrackedSalientPoint& sal_pnt) const
+    const TrackedSalientPoint& sal_pnt,
+    bool can_throw) const
 {
     Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_pos;
     Eigen::Matrix<Scalar, kEucl3, kEucl3> sal_pnt_pos_uncert;
-    bool got_3d_pos = GetSalientPoint3DPosWithUncertainty(src_estim_vars, src_estim_vars_covar, sal_pnt, &sal_pnt_pos, &sal_pnt_pos_uncert);
-    if (got_3d_pos)
+    bool got_3d_pos = GetSalientPoint3DPosWithUncertainty(src_estim_vars, src_estim_vars_covar, sal_pnt, can_throw, &sal_pnt_pos, &sal_pnt_pos_uncert);
+    if (!got_3d_pos)
     {
-        CheckUncertCovMat(sal_pnt_pos_uncert);
+        if (can_throw) SRK_ASSERT(got_3d_pos);
+        return false;
     }
+    bool op = CheckUncertCovMat(sal_pnt_pos_uncert, can_throw);
+    if (can_throw) SRK_ASSERT(op);
+    return op;
 }
 
 auto DavisonMonoSlam::GetFilterStage(FilterStageType filter_stage)
@@ -3640,7 +3742,7 @@ bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType 
 
     const TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
 
-    return GetSalientPoint3DPosWithUncertainty(*src_estim_vars, *src_estim_vars_covar, sal_pnt, pos_mean, pos_uncert);
+    return GetSalientPoint3DPosWithUncertainty(*src_estim_vars, *src_estim_vars_covar, sal_pnt, false, pos_mean, pos_uncert);
 }
 
 bool DavisonMonoSlam::GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,

@@ -871,9 +871,8 @@ Rect GetEllipseBounds2(const RotatedEllipse2D& rotated_ellipse)
     return result;
 }
 
-void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
-    Scalar ellipsoid_cut_thr,
-    RotatedEllipsoid3D* result)
+std::tuple<bool, RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
+    Scalar ellipsoid_cut_thr)
 {
     // check symmetry
     Scalar sym_diff = (cov - cov.transpose()).norm();
@@ -902,8 +901,11 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
         Scalar val = dd[i];
         // Fix small errors when semi-axis is a small negative number,
         // which may occur when dealing with zero-covariance variables.
-        if (val < 0 && IsClose(0, val))
+        if (val < 0)
+        {
+            if (!IsClose(0, val)) return std::make_tuple(false, RotatedEllipsoid3D{});
             dd[i] = 0;
+        }
     }
     
     // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
@@ -917,7 +919,8 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
     }
 
     // order semi-axes from max to min
-    auto& R = result->world_from_ellipse.R;
+    auto result = RotatedEllipsoid3D{};
+    auto& R = result.world_from_ellipse.R;
     R.middleCols<1>(0) = eig_vecs.middleCols<1>(major_col_ind);
     R.middleCols<1>(1) = eig_vecs.middleCols<1>(1);
     R.middleCols<1>(2) = eig_vecs.middleCols<1>(minor_col_ind);
@@ -942,16 +945,17 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
     }
 
     // order semi-axes from max to min
-    auto& semi = result->semi_axes;
+    auto& semi = result.semi_axes;
     semi[0] = std::sqrt(right_side * dd[major_col_ind]);
     semi[1] = std::sqrt(right_side * dd[1]);
     semi[2] = std::sqrt(right_side * dd[minor_col_ind]);
 
-    result->world_from_ellipse.T = mean;
+    result.world_from_ellipse.T = mean;
 
     SRK_ASSERT(IsFinite(semi[0]));
     SRK_ASSERT(IsFinite(semi[1]));
     SRK_ASSERT(IsFinite(semi[2]));
+    return std::make_tuple(true, result);
 }
 
 // Note, on why the direct conversion is used: covariance_matrix -> rotated_ellipse=(semi_axes,R).
@@ -962,7 +966,7 @@ void GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>&
 // But it requires calculation of A=inv(Cov) which may not be stable.
 // Instead we eigen-decompose Cov=V*D*inv(V), and inverse the diagonal matrix, which is more stable.
 // Thus skipping the intermediate step improves the stablility.
-void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
+bool Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
     Scalar ellipsoid_cut_thr,
     Eigen::Matrix<Scalar, 2, 1>* semi_axes,
     Eigen::Matrix<Scalar, 2, 2>* world_from_ellipse)
@@ -996,8 +1000,11 @@ void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
         Scalar val = dd[i];
         // Fix small errors when semi-axis is a small negative number,
         // which may occur when dealing with zero-covariance variables.
-        if (val < 0 && IsClose(0, val))
+        if (val < 0)
+        {
+            if (!IsClose(0, val)) return false;
             dd[i] = 0;
+        }
     }
 
     // Eigen::SelfAdjointEigenSolver sorts eigenvalues in ascending order
@@ -1037,20 +1044,22 @@ void Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
     semi[1] = std::sqrt(right_side * dd[minor_col_ind]);
     SRK_ASSERT(IsFinite(semi[0]));
     SRK_ASSERT(IsFinite(semi[1]));
+    return true;
 }
 
-RotatedEllipse2D Get2DRotatedEllipseFromCovMat(
+std::tuple<bool,RotatedEllipse2D> Get2DRotatedEllipseFromCovMat(
     const Eigen::Matrix<Scalar, 2, 2>& cov,
     const Eigen::Matrix<Scalar, 2, 1>& mean,
     Scalar ellipsoid_cut_thr)
 {
     Eigen::Matrix<Scalar, 2, 1> semi_axes;
     Eigen::Matrix<Scalar, 2, 2> world_from_ellipse;
-    Get2DRotatedEllipseFromCovMat(cov, ellipsoid_cut_thr, &semi_axes, &world_from_ellipse);
+    if (!Get2DRotatedEllipseFromCovMat(cov, ellipsoid_cut_thr, &semi_axes, &world_from_ellipse))
+        return std::make_tuple(false, RotatedEllipse2D{});
 
     SE2Transform wfe{ world_from_ellipse , mean };
     RotatedEllipse2D result{ semi_axes , wfe };
-    return result;
+    return std::make_tuple(true, result);
 }
 
 
