@@ -1405,15 +1405,14 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
 void DavisonMonoSlam::EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar)
 {
     // zeroize tiny negative numbers on diagonal of error covariance (may appear when subtracting tiny numbers)
-    // doing it after all updates to the error covariance matrix have completed
-    auto estim_err_diag = src_estim_vars_covar->diagonal().array();
-    if (kSurikoDebug)
+    // zero diagonal value means that corresponding row and column must be zero too
+    for (Eigen::Index i = 0; i < src_estim_vars_covar->rows(); ++i)
     {
-        Eigen::Index min_index = -1;
-        Scalar min_value = estim_err_diag.minCoeff(&min_index);
-        SRK_ASSERT(min_value > -0.1) << "Got big negative numbers on diagonal of error covariance";
+        auto val = (*src_estim_vars_covar)(i, i);
+        if (val >= 0) continue;
+        src_estim_vars_covar->row(i).setZero();
+        src_estim_vars_covar->col(i).setZero();
     }
-    estim_err_diag = estim_err_diag.max(0);
 }
 
 void DavisonMonoSlam::OnEstimVarsChanged(size_t frame_ind)
