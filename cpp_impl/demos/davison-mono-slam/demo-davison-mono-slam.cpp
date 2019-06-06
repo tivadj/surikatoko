@@ -740,6 +740,9 @@ public:
                 for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
                 {
                     std::optional<suriko::Point2f> exist_pix_opt = mono_slam_->GetDetectedSalientTemplCenter(sal_pnt_id);
+                    if (!exist_pix_opt.has_value())
+                        continue;
+
                     suriko::Point2f exist_pix = exist_pix_opt.value();
                     Scalar dist = (Scalar)std::sqrt(suriko::Sqr(cand.pt.x - exist_pix[0]) + suriko::Sqr(cand.pt.y - exist_pix[1]));
                     if (dist < exclude_radius)

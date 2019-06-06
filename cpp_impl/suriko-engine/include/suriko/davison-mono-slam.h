@@ -17,9 +17,6 @@
 namespace suriko {
 namespace
 {
-}
-namespace
-{
     constexpr Scalar kNan = std::numeric_limits<Scalar>::quiet_NaN();
     constexpr size_t kEucl3 = 3; // x: 3 for position
     constexpr size_t kQuat4 = 4; // q: 4 for quaternion orientation
@@ -99,7 +96,8 @@ enum class SalPntTrackStatus
 {
     New,         // created in current frame
     Matched,     // observed and matched to one in some previous frame
-    Unobserved   // undetected in current frame
+    Unobserved,  // undetected in current frame
+    Deleted      // exists as descriptor but isn't represented in state array or error covariance matrix
 };
 
 struct TemplMatchStats
@@ -114,10 +112,8 @@ suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei 
 /// Represents the portion of the image, which is the projection of salient image into a camera.
 struct TrackedSalientPoint
 {
-    size_t initial_frame_ind_synthetic_only_;  // the frame ind where a salient point was first seen; used only in virtual scenarios
-
-    size_t estim_vars_ind; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
     size_t sal_pnt_ind; // order of the salient point in the sequence of salient points
+    size_t estim_vars_ind; // index into X[13+6N,1] and P[13+6N,13+6N] matrices
 
     SalPntTrackStatus track_status;
     size_t undetected_frames_count = 0;  // number of frames for which this salient point isn't detected; 0 if it is observed.
@@ -126,6 +122,7 @@ struct TrackedSalientPoint
     std::optional <suriko::Point2f> templ_center_pix_;
     suriko::Point2f offset_from_top_left_;  // =center-top_left; initialized once for the first frame
 
+    size_t initial_frame_ind_synthetic_only_;  // the frame ind where a salient point was first seen; used only in virtual scenarios
 #if defined(SRK_DEBUG)
     std::optional<suriko::Point2i> templ_top_left_pix_debug_; // in pixels
     suriko::Point2f initial_templ_center_pix_debug_;          // in pixels
@@ -151,6 +148,8 @@ struct TrackedSalientPoint
     {
         return track_status == SalPntTrackStatus::New || track_status == SalPntTrackStatus::Matched;
     }
+
+    bool IsDeleted() const { return track_status == SalPntTrackStatus::Deleted; }
 
     void SetTemplCenterPix(suriko::Point2f center, suriko::Sizei templ_size)
     {
@@ -393,9 +392,8 @@ private:
     EigenDynVec predicted_estim_vars_; // x[13+N*6]
     EigenDynMat predicted_estim_vars_covar_; // P[13+N*6, 13+N*6]
 
-    std::vector<std::unique_ptr<TrackedSalientPoint>> sal_pnts_; // the set of tracked salient points
-    std::set<SalPntId> sal_pnts_as_ids_; // the set ids of tracked salient points
-    std::set<SalPntId> latest_frame_sal_pnts_; // contains subset of salient points which were tracked in the latest frame
+    std::vector<std::unique_ptr<TrackedSalientPoint>> sal_pnts_; // the set of descriptors of salient points (including deleted salient points)
+    size_t estim_sal_pnts_count_ = 0;  // number of salient points in error covariance matrix; this doesn't include deleted salient points
 
     Eigen::Matrix<Scalar, kProcessNoiseComps, kProcessNoiseComps> process_noise_covar_; // Qk[6,6] process noise covariance matrix
 public:
@@ -650,9 +648,6 @@ private:
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar) const;
 
-    void RemoveSalientPointsWithNonextractableUncertEllipsoid(EigenDynVec* src_estim_vars,
-        EigenDynMat* src_estim_vars_covar);
-
     auto GetFilterStage(FilterStageType filter_stage) -> std::tuple<EigenDynVec*, EigenDynMat*>;
     auto GetFilterStage(FilterStageType filter_stage) const -> std::tuple<const EigenDynVec*, const EigenDynMat*>;
 
@@ -677,12 +672,16 @@ private:
         const EigenDynVec& src_estim_vars, const EigenDynMat& src_estim_vars_covar,
         EigenDynVec* predicted_estim_vars, EigenDynMat* predicted_estim_vars_covar) const;
 
-    void RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_delete_desc);
-    void RemoveObsoleteSalientPoints();
+    /// Removes salient points' state in estimation matrices. Salient point's descriptors are marked deleted.
+    void RemoveSalientPointsState(gsl::span<size_t> sal_pnt_inds_to_delete_desc);
+    void RemoveLongTermUnobservedSalientPoints(std::vector<SalPntId>* deleted_sal_pnt_ids);
+    void RemoveSalientPointsWithNonextractableUncertEllipsoid(EigenDynVec* src_estim_vars,
+        EigenDynMat* src_estim_vars_covar);
+    void RemoveMarkedDeletedSalientPointsDescriptors();
 
-    void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind);
-    void ProcessFrame_OneObservationPerUpdate(size_t frame_ind);
-    void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind);
+    void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
+    void ProcessFrame_OneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
+    void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
     void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
     void EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar);
     void OnEstimVarsChanged(size_t frame_ind);
@@ -806,6 +805,7 @@ private:
     void Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
         const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
         const EigenDynVec& derive_at_pnt,
+        const std::vector<SalPntId>& latest_frame_sal_pnt_ids,
         EigenDynMat* H_by_estim_vars) const;
 
     // Derivative of distorted observed corner (in pixels) by undistorted observed corner (in pixels).

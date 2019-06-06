@@ -450,9 +450,13 @@ void DavisonMonoSlam::RemoveSalientPointsWithNonextractableUncertEllipsoid(Eigen
         if (!CheckSalientPoint(*src_estim_vars, *src_estim_vars_covar, sal_pnt, false))
             bad_sal_pnt_inds.push_back(sal_pnt.sal_pnt_ind);
     }
-    if (bad_sal_pnt_inds.empty())
-        return;
-    RemoveSalientPoints(bad_sal_pnt_inds);
+
+    if (bad_sal_pnt_inds.empty()) return;
+
+    std::sort(bad_sal_pnt_inds.begin(), bad_sal_pnt_inds.end(),
+        [](auto x, auto y) { return x > y; });
+
+    RemoveSalientPointsState(bad_sal_pnt_inds);
 }
 
 void DavisonMonoSlam::FillRk2x2(Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* Rk) const
@@ -593,10 +597,12 @@ void DavisonMonoSlam::PredictEstimVarsHelper()
     PredictEstimVars(estim_vars_, estim_vars_covar_, &predicted_estim_vars_, &predicted_estim_vars_covar_);
 }
 
-void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_delete_desc)
+void DavisonMonoSlam::RemoveSalientPointsState(gsl::span<size_t> sal_pnt_inds_to_delete_desc)
 {
     size_t last_sal_pnt_ind = SalientPointsCount();
     size_t last_sal_pnt_var_ind = SalientPointOffset(last_sal_pnt_ind);
+
+    // Stage1: move estimated state to the end of array or to the right/bottom of error covariance matrix.
     for (auto remove_sal_pnt_ind : sal_pnt_inds_to_delete_desc)
     {
         if (kSurikoDebug)
@@ -622,9 +628,6 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
         auto remove_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(remove_sal_pnt_ind);
         auto last_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(last_sal_pnt_ind);
         TrackedSalientPoint& last_sal_pnt = GetSalientPoint(last_sal_pnt_id);
-
-        sal_pnts_as_ids_.erase(remove_sal_pnt_id);
-        latest_frame_sal_pnts_.erase(remove_sal_pnt_id);
 
         bool need_moving = remove_sal_pnt_ind != last_sal_pnt_ind;  // otherwise it is already in the end and ready to be truncated
         if (need_moving)
@@ -653,7 +656,7 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
 
             std::swap(sal_pnts_[remove_sal_pnt_ind], sal_pnts_[last_sal_pnt_ind]);
 
-            // update maintaining indices
+            // maintain indices
             SRK_ASSERT(last_sal_pnt.sal_pnt_ind == last_sal_pnt_ind);
             last_sal_pnt.sal_pnt_ind = remove_sal_pnt_ind;
 
@@ -662,11 +665,19 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
         }
     }
 
-    // truncate salient points in the back
+    // stage2: Actual resize of estimation state array and error covariance matrix.
+    // Salient points are only marked as deleted to allow the propagation of changes to other parts of the filter.
     if (!sal_pnt_inds_to_delete_desc.empty())
     {
-        auto new_sal_pnt_count = sal_pnts_.size() - sal_pnt_inds_to_delete_desc.size();
-        sal_pnts_.resize(new_sal_pnt_count);
+        // mark salient points as deleted
+        SRK_ASSERT(sal_pnt_inds_to_delete_desc.size() <= estim_sal_pnts_count_);
+
+        estim_sal_pnts_count_ -= sal_pnt_inds_to_delete_desc.size();
+
+        for (size_t i = estim_sal_pnts_count_; i < sal_pnts_.size(); ++i)
+        {
+            sal_pnts_[i]->track_status = SalPntTrackStatus::Deleted;
+        }
 
         estim_vars_.conservativeResize(last_sal_pnt_var_ind);
         predicted_estim_vars_.conservativeResize(last_sal_pnt_var_ind);
@@ -678,23 +689,33 @@ void DavisonMonoSlam::RemoveSalientPoints(gsl::span<size_t> sal_pnt_inds_to_dele
     if (kSurikoDebug) CheckSalientPointsConsistency();
 }
 
-void DavisonMonoSlam::RemoveObsoleteSalientPoints()
+void DavisonMonoSlam::RemoveMarkedDeletedSalientPointsDescriptors()
+{
+    SRK_ASSERT(estim_sal_pnts_count_ <= sal_pnts_.size());
+    for (size_t i = estim_sal_pnts_count_; i < sal_pnts_.size(); ++i)
+    {
+        SRK_ASSERT(sal_pnts_[i]->track_status == SalPntTrackStatus::Deleted);
+    }
+
+    sal_pnts_.resize(estim_sal_pnts_count_);  // deletes descriptors
+}
+
+void DavisonMonoSlam::RemoveLongTermUnobservedSalientPoints(std::vector<SalPntId>* deleted_sal_pnt_ids)
 {
     if (!sal_pnt_max_undetected_frames_count_.has_value())
         return;
 
     // update 'unobserved' counter
     std::vector<size_t> sal_pnt_inds_to_delete;
-    for (auto sal_pnt_id : sal_pnts_as_ids_)
+    for (auto& p_sal_pnt : sal_pnts_)
     {
-        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        TrackedSalientPoint& sal_pnt = *p_sal_pnt;
         if (sal_pnt.track_status == SalPntTrackStatus::Unobserved)
             ++sal_pnt.undetected_frames_count;
         else
             sal_pnt.undetected_frames_count = 0;  // reset counter
 
-        if (sal_pnt_max_undetected_frames_count_.has_value() &&
-            sal_pnt.undetected_frames_count > sal_pnt_max_undetected_frames_count_.value())
+        if (sal_pnt.undetected_frames_count > sal_pnt_max_undetected_frames_count_.value())
         {
             sal_pnt_inds_to_delete.push_back(sal_pnt.sal_pnt_ind);
         }
@@ -702,17 +723,24 @@ void DavisonMonoSlam::RemoveObsoleteSalientPoints()
 
     // init this during debugging to force removing the salient point
     static int sal_pnt_dummy_ind_to_remove = -1;
-    if (sal_pnt_dummy_ind_to_remove != -1)
+    if (kSurikoDebug && sal_pnt_dummy_ind_to_remove != -1)
     {
         sal_pnt_inds_to_delete.push_back(sal_pnt_dummy_ind_to_remove);
-        auto remove_sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(sal_pnt_dummy_ind_to_remove);
-        latest_frame_sal_pnts_.erase(remove_sal_pnt_id);
     }
+
+    if (sal_pnt_inds_to_delete.empty()) return;
+
+    if (deleted_sal_pnt_ids != nullptr)
+        for (size_t sal_pnt_ind : sal_pnt_inds_to_delete)
+        {
+            SalPntId sal_pnt_id = GetSalientPointIdByOrderInEstimCovMat(sal_pnt_ind);
+            deleted_sal_pnt_ids->push_back(sal_pnt_id);
+        }
 
     std::sort(sal_pnt_inds_to_delete.begin(), sal_pnt_inds_to_delete.end(),
         [](auto x, auto y) { return x > y; });
 
-    RemoveSalientPoints(sal_pnt_inds_to_delete);
+    RemoveSalientPointsState(sal_pnt_inds_to_delete);
 }
 
 void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
@@ -721,28 +749,38 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 
     // initial status of a salient point is 'not observed'
     // later we will overwrite status for the matched salient points as 'matched'
-    for (auto sal_pnt_id : sal_pnts_as_ids_)
+    for (auto& p_sal_pnt : sal_pnts_)
     {
-        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        TrackedSalientPoint& sal_pnt = *p_sal_pnt;
         sal_pnt.SetUndetected();
     }
 
     corners_matcher_->AnalyzeFrame(frame_ind, image);
 
     std::vector<std::pair<SalPntId, CornersMatcherBlobId>> matched_sal_pnts;
-    corners_matcher_->MatchSalientPoints(frame_ind, image, sal_pnts_as_ids_, &matched_sal_pnts);
+    corners_matcher_->MatchSalientPoints(frame_ind, image, GetSalientPoints(), &matched_sal_pnts);
 
-    latest_frame_sal_pnts_.clear();
-    for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
+    // propagate result of matching to salient points
+    for (auto [sal_pnt_id, blob_id] : matched_sal_pnts)
     {
         Point2f templ_center = corners_matcher_->GetBlobCoord(blob_id);
         TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
+
+        // the salient points which are not marked 'matched' here - remain 'undetected'
         sal_pnt.track_status = SalPntTrackStatus::Matched;
         sal_pnt.SetTemplCenterPix(templ_center, sal_pnt_templ_size_);
-        latest_frame_sal_pnts_.insert(sal_pnt_id);
     }
 
-    RemoveObsoleteSalientPoints();
+    RemoveLongTermUnobservedSalientPoints(nullptr);
+
+    // construct the set of salient points, visible in the current frame
+    std::vector<SalPntId> latest_frame_sal_pnt_ids;
+    for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
+    {
+        TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
+        if (sal_pnt.IsDetected())
+            latest_frame_sal_pnt_ids.push_back(sal_pnt_id);
+    }
 
     std::unique_lock<std::shared_mutex> lk(predicted_estim_vars_mutex_, std::defer_lock);
     if (in_multi_threaded_mode_)
@@ -752,19 +790,21 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     {
     default:
     case 1:
-        ProcessFrame_StackedObservationsPerUpdate(frame_ind);
+        ProcessFrame_StackedObservationsPerUpdate(frame_ind, latest_frame_sal_pnt_ids);
         break;
     case 2:
-        ProcessFrame_OneObservationPerUpdate(frame_ind);
+        ProcessFrame_OneObservationPerUpdate(frame_ind, latest_frame_sal_pnt_ids);
         break;
     case 3:
-        ProcessFrame_OneComponentOfOneObservationPerUpdate(frame_ind);
+        ProcessFrame_OneComponentOfOneObservationPerUpdate(frame_ind, latest_frame_sal_pnt_ids);
         break;
     }
 
+    latest_frame_sal_pnt_ids.clear();  // recognize that processing routines may have invalidated the list
+
     // eagerly try allocate new salient points
     std::vector<CornersMatcherBlobId> new_blobs;
-    this->corners_matcher_->RecruitNewSalientPoints(frame_ind, image, sal_pnts_as_ids_, matched_sal_pnts, &new_blobs);
+    this->corners_matcher_->RecruitNewSalientPoints(frame_ind, image, GetSalientPoints(), matched_sal_pnts, &new_blobs);
     if (!new_blobs.empty())
     {
         CameraStateVars cam_state;
@@ -802,9 +842,10 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 
             // current camera frame is the 'first' camera where a salient point is seen the first time: first_cam=cur_cam
             SalPntId sal_pnt_id = AddSalientPoint(frame_ind, cam_state, coord, templ_img, templ_stats, pnt_inv_dist_gt);
-            latest_frame_sal_pnts_.insert(sal_pnt_id);
             corners_matcher_->OnSalientPointIsAssignedToBlobId(sal_pnt_id, blob_id, image);
         }
+
+        if (kSurikoDebug) CheckCameraAndSalientPointsCovs(estim_vars_, estim_vars_covar_);  // TODO: seems unnecessary
 
         // now the estimated variables are changed, the dependent predicted variables must be updated too
         predicted_estim_vars_.resizeLike(estim_vars_);
@@ -831,6 +872,8 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 
     ProcessFrameOnExit_UpdateSalientPoint(frame_ind);
 
+    RemoveMarkedDeletedSalientPointsDescriptors();
+
     FinishFrameStats(frame_ind);
 }
 
@@ -839,9 +882,9 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 /// Ordering of observed salient points may be arbitrary.
 void MarkOrderingOfObservedSalientPoints() {}
 
-void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind)
+void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids)
 {
-    if (!latest_frame_sal_pnts_.empty())
+    if (!latest_frame_sal_pnt_ids.empty())
     {
         // improve predicted estimation with the info from observations
         std::swap(estim_vars_, predicted_estim_vars_);
@@ -872,12 +915,12 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         //
         //EigenDynMat Hk; // [2m,13+6n]
         auto& Hk = cache.H;
-        Deriv_H_by_estim_vars(cam_state, cam_orient_wfc, derive_at_pnt, &Hk);
+        Deriv_H_by_estim_vars(cam_state, cam_orient_wfc, derive_at_pnt, latest_frame_sal_pnt_ids, &Hk);
 
         // evaluate filter gain
         //EigenDynMat Rk;
         auto& Rk = cache.R;
-        size_t obs_sal_pnt_count = latest_frame_sal_pnts_.size();
+        size_t obs_sal_pnt_count = latest_frame_sal_pnt_ids.size();
         FillRk(obs_sal_pnt_count, &Rk);
 
         // innovation variance S=H*P*Ht
@@ -919,7 +962,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
         projected_sal_pnts.resizeLike(zk);
 
         size_t obs_sal_pnt_ind = -1;
-        for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
+        for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnt_ids)
         {
             MarkOrderingOfObservedSalientPoints();
             ++obs_sal_pnt_ind;
@@ -1036,9 +1079,9 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
     OnEstimVarsChanged(frame_ind);
 }
 
-void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
+void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids)
 {
-    if (!latest_frame_sal_pnts_.empty())
+    if (!latest_frame_sal_pnt_ids.empty())
     {
         // improve predicted estimation with the info from observations
         std::swap(estim_vars_, predicted_estim_vars_);
@@ -1058,7 +1101,7 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
 
         Scalar diff_vars_total = 0;
         Scalar diff_cov_total = 0;
-        for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
+        for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnt_ids)
         {
             const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
@@ -1164,9 +1207,9 @@ void DavisonMonoSlam::ProcessFrame_OneObservationPerUpdate(size_t frame_ind)
     OnEstimVarsChanged(frame_ind);
 }
 
-void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind)
+void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids)
 {
-    if (!latest_frame_sal_pnts_.empty())
+    if (!latest_frame_sal_pnt_ids.empty())
     {
         // improve predicted estimation with the info from observations
         std::swap(estim_vars_, predicted_estim_vars_);
@@ -1185,7 +1228,7 @@ void DavisonMonoSlam::ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t 
         Scalar diff_cov_total = 0;
         Scalar measurm_noise_variance = suriko::Sqr(static_cast<Scalar>(measurm_noise_std_pix_)); // R[1,1]
 
-        for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
+        for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnt_ids)
         {
             const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
 
@@ -1776,9 +1819,11 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os) const
     FormatVec(os, cam_ang_vel_covar_diag) << std::endl;
 
     //
-    for (SalPntId sal_pnt_id : latest_frame_sal_pnts_)
+    for (auto& p_sal_pnt : sal_pnts_)
     {
-        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        TrackedSalientPoint& sal_pnt = *p_sal_pnt;
+        if (!sal_pnt.IsDetected()) continue;  // dump only observed salient points
+
         os << "SP[ind=" << sal_pnt.sal_pnt_ind << "] center=";
         if (sal_pnt.templ_center_pix_.has_value())
             FormatVec(os, sal_pnt.templ_center_pix_.value().Mat());
@@ -1788,7 +1833,7 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os) const
         // get 3D position in tracker (usually =cam0) coordinates
         os << " estim3D=";
         Eigen::Matrix<Scalar, kEucl3, 1> pos_mean;
-        bool op = GetSalientPoint3DPosWithUncertaintyHelper(filter_state, sal_pnt_id, &pos_mean, nullptr);
+        bool op = GetSalientPoint3DPosWithUncertaintyHelper(filter_state, SalPntId{ p_sal_pnt.get() }, &pos_mean, nullptr);
         if (op)
             FormatVec(os, pos_mean);
         else
@@ -1835,9 +1880,9 @@ void DavisonMonoSlam::DumpTrackerState(std::ostringstream& os) const
 void DavisonMonoSlam::ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind)
 {
 #if defined(SRK_DEBUG)
-    for (SalPntId sal_pnt_id : latest_frame_sal_pnts_)
+    for (auto& p_sal_pnt : sal_pnts_)
     {
-        auto& sal_pnt = GetSalientPoint(sal_pnt_id);
+        TrackedSalientPoint& sal_pnt = *p_sal_pnt;
         if (!sal_pnt.IsDetected()) continue;
         sal_pnt.prev_detection_frame_ind_debug_ = frame_ind;
         sal_pnt.prev_detection_templ_center_pix_debug_ = sal_pnt.templ_center_pix_.value();
@@ -2122,7 +2167,6 @@ void DavisonMonoSlam::GetDefaultXyzSalientPointCovarOrConvertFromSpherical(
 
 }
 
-
 DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner_pix,
     Picture templ_img, TemplMatchStats templ_stats,
     std::optional<Scalar> pnt_inv_dist_gt)
@@ -2132,12 +2176,13 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
 
     AllocateAndInitStateForNewSalientPoint(sal_pnt_var_ind, cam_state, corner_pix, pnt_inv_dist_gt);
 
+    auto new_sal_pnt = std::make_unique<TrackedSalientPoint>();
+    SalPntId sal_pnt_id = SalPntId(new_sal_pnt.get());  // get address of salient point before it is moved
+
     //
     suriko::Point2i top_left = TemplateTopLeftInt(corner_pix);
 
-    // ID of new salient point
-    sal_pnts_.push_back(std::make_unique<TrackedSalientPoint>());
-    TrackedSalientPoint& sal_pnt = *sal_pnts_.back().get();
+    TrackedSalientPoint& sal_pnt = *new_sal_pnt.get();
     sal_pnt.estim_vars_ind = sal_pnt_var_ind;
     sal_pnt.sal_pnt_ind = old_sal_pnts_count;
     sal_pnt.track_status = SalPntTrackStatus::New;
@@ -2151,25 +2196,28 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     sal_pnt.initial_templ_bgr_debug = std::move(templ_img.bgr_debug);
 #endif
     sal_pnt.templ_stats = templ_stats;
-    //
-    SalPntId sal_pnt_id = SalPntId(sal_pnts_.back().get());
-    sal_pnts_as_ids_.insert(sal_pnt_id);
-    //
-    static bool debug_estimated_vars = false;
-    if (debug_estimated_vars || DebugPath(DebugPathEnum::DebugEstimVarsCov))
-    {
-        // check uncertainty ellipsoid can be extracted from covariance matrix
-        CheckSalientPoint(estim_vars_, estim_vars_covar_, sal_pnt, true);
-    }
+
+    // put salient point to the back of tracked points, but before the deleted points
+    auto ins_pos_rit = sal_pnts_.rbegin();
+    for (; ins_pos_rit != sal_pnts_.rend() && (*ins_pos_rit)->IsDeleted(); ++ins_pos_rit) {}
+    auto ins_pos_it = ins_pos_rit.base();
+
+    sal_pnts_.insert(ins_pos_it, std::move(new_sal_pnt));
+    estim_sal_pnts_count_++;
+
+    if (kSurikoDebug) CheckSalientPoint(estim_vars_, estim_vars_covar_, sal_pnt, true);
     return sal_pnt_id;
 }
 
 std::optional<suriko::Point2f> DavisonMonoSlam::GetDetectedSalientTemplCenter(SalPntId sal_pnt_id) const
 {
     const auto& sal_pnt = GetSalientPoint(sal_pnt_id);
-    if (!sal_pnt.IsDetected())
-        return std::nullopt;
-    return sal_pnt.templ_center_pix_.value();
+    if (sal_pnt.IsDetected())
+    {
+        return sal_pnt.templ_center_pix_.value();
+    }
+    // returns null for unobserved and deleted salient points
+    return std::nullopt;
 }
 
 void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2f corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const
@@ -2700,18 +2748,19 @@ void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(
 void DavisonMonoSlam::Deriv_H_by_estim_vars(const CameraStateVars& cam_state,
     const Eigen::Matrix<Scalar, kEucl3, kEucl3>& cam_orient_wfc,
     const EigenDynVec& derive_at_pnt,
+    const std::vector<SalPntId>& latest_frame_sal_pnt_ids,
     EigenDynMat* H_by_estim_vars) const
 {
     EigenDynMat& H = *H_by_estim_vars;
 
     size_t n = EstimatedVarsCount();
-    size_t matched_corners = latest_frame_sal_pnts_.size();
+    size_t matched_corners = latest_frame_sal_pnt_ids.size();
     H.resize(kPixPosComps * matched_corners, n);
     H.setZero();
 
     //
     size_t obs_sal_pnt_ind = -1;
-    for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
+    for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnt_ids)
     {
         MarkOrderingOfObservedSalientPoints();
         ++obs_sal_pnt_ind;
@@ -2800,12 +2849,21 @@ void DavisonMonoSlam::FiniteDiff_hd_by_sal_pnt_state(const CameraStateVars& cam_
 
 size_t DavisonMonoSlam::SalientPointsCount() const
 {
-    return sal_pnts_.size();
+    return estim_sal_pnts_count_;
 }
 
 const std::set<SalPntId>& DavisonMonoSlam::GetSalientPoints() const
 {
-    return sal_pnts_as_ids_;
+    static std::set<SalPntId> tracked_sal_pnt_ids; // the set ids of tracked salient points
+    tracked_sal_pnt_ids.clear();
+    for (auto& p_sal_pnt : sal_pnts_)
+    {
+        TrackedSalientPoint* sp = p_sal_pnt.get();
+        if (sp->IsDeleted()) continue;
+        SalPntId sal_pnt_id{ sp };
+        tracked_sal_pnt_ids.insert(sal_pnt_id);
+    }
+    return tracked_sal_pnt_ids;
 }
 
 size_t DavisonMonoSlam::EstimatedVarsCount() const
@@ -3131,11 +3189,7 @@ SalPntId DavisonMonoSlam::GetSalientPointIdByOrderInEstimCovMat(size_t sal_pnt_i
 
 void DavisonMonoSlam::CheckSalientPointsConsistency() const
 {
-    auto sal_pnts_count = sal_pnts_.size();
-    SRK_ASSERT(sal_pnts_as_ids_.size() == sal_pnts_count);
-    SRK_ASSERT(latest_frame_sal_pnts_.size() <= sal_pnts_count);
-
-    for (size_t sal_pnt_ind = 0; sal_pnt_ind < sal_pnts_count; ++sal_pnt_ind)
+    for (size_t sal_pnt_ind = 0; sal_pnt_ind < estim_sal_pnts_count_; ++sal_pnt_ind)
     {
         const auto& p_sal_pnt = sal_pnts_[sal_pnt_ind];
         const TrackedSalientPoint& sal_pnt = *p_sal_pnt;
@@ -3798,8 +3852,6 @@ DavisonMonoSlamInternalsLogger* DavisonMonoSlam::StatsLogger() const
 
 std::optional<Scalar> DavisonMonoSlam::CurrentFrameReprojError(FilterStageType filter_stage) const
 {
-    if (latest_frame_sal_pnts_.empty()) return std::nullopt;
-
     // specify state the reprojection error is based on
     const auto& src_estim_vars = filter_stage == FilterStageType::Estimated ? estim_vars_ : predicted_estim_vars_;
 
@@ -3807,9 +3859,11 @@ std::optional<Scalar> DavisonMonoSlam::CurrentFrameReprojError(FilterStageType f
     LoadCameraStateVarsFromArray(Span(src_estim_vars, kCamStateComps), &cam_state);
 
     Scalar err_sum = 0;
-    for (SalPntId obs_sal_pnt_id : latest_frame_sal_pnts_)
+    size_t obs_sal_pnts_count = 0;
+    for (auto& p_sal_pnt : sal_pnts_)
     {
-        const TrackedSalientPoint& sal_pnt = GetSalientPoint(obs_sal_pnt_id);
+        TrackedSalientPoint& sal_pnt = *p_sal_pnt;
+        if (!p_sal_pnt->IsDetected()) continue;  // reproject only observed salient points
 
         MorphableSalientPoint sal_pnt_vars;
         LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &sal_pnt_vars);
@@ -3820,9 +3874,13 @@ std::optional<Scalar> DavisonMonoSlam::CurrentFrameReprojError(FilterStageType f
         suriko::Point2f corner_pix = sal_pnt.templ_center_pix_.value();
         Scalar err_one = (corner_pix.Mat() - pix).squaredNorm();
         err_sum += err_one;
+        obs_sal_pnts_count++;
     }
 
-    return err_sum / latest_frame_sal_pnts_.size();
+    if (obs_sal_pnts_count == 0)
+        return std::nullopt;
+
+    return err_sum / obs_sal_pnts_count;
 }
 
 suriko::Point2i DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2f& center) const
