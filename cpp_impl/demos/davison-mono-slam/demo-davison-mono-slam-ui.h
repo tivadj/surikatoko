@@ -168,6 +168,7 @@ public:
 public:
     Scalar ellipse_cut_thr_;
     int dots_per_uncert_ellipse_;
+    bool ui_swallow_exc_ = true;
 };
 #endif
 

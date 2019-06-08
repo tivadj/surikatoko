@@ -401,14 +401,15 @@ bool CheckUncertCovMat(const EigenMat& pos_uncert, bool can_throw)
 }
 
 template <typename EigenMat>
-void CheckEllipseIsExtractableFrom2DCovarMat(const EigenMat& covar_2D)
+bool CheckEllipseIsExtractableFrom2DCovarMat(const EigenMat& covar_2D, bool can_throw)
 {
     constexpr Scalar ellipse_cut_thr = 0.05f;
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> pnt_pos{ 0, 0 };
 
     auto [op, rot_ellipse] = Get2DRotatedEllipseFromCovMat(covar_2D, pnt_pos, ellipse_cut_thr);
-    SRK_ASSERT(op);
+    if (can_throw) SRK_ASSERT(op);
+    return op;
 }
 
 void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
@@ -438,6 +439,7 @@ void DavisonMonoSlam::CheckCameraAndSalientPointsCovs(
     }
 }
 
+// TODO: what to do with 'bad' camera's position error covariance (we can remove salient points but not camera!)
 void DavisonMonoSlam::RemoveSalientPointsWithNonextractableUncertEllipsoid(EigenDynVec *src_estim_vars,
     EigenDynMat* src_estim_vars_covar)
 {
@@ -613,7 +615,7 @@ void DavisonMonoSlam::RemoveSalientPointsState(gsl::span<size_t> sal_pnt_inds_to
             ss << "Removing SPind=" << remove_sal_pnt_ind;
 #if defined(SRK_DEBUG)
             ss << " inited at #" << remove_sp.initial_frame_ind_synthetic_only_ 
-                << "[" << remove_sp.initial_templ_center_pix_debug_.X() << "," << remove_sp.initial_templ_center_pix_debug_.Y() << "]";
+                << "[x:" << remove_sp.initial_templ_center_pix_debug_.X() << ",y:" << remove_sp.initial_templ_center_pix_debug_.Y() << "]";
 #endif
             VLOG(4) << ss.str();
         }
@@ -3541,7 +3543,7 @@ bool DavisonMonoSlam::GetSalientPointPositionUncertainty(
 }
 
 auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) const
-    -> MeanAndCov2D
+    -> std::tuple<bool, MeanAndCov2D>
 {
     const EigenDynVec* src_estim_vars;
     const EigenDynMat* src_estim_vars_covar;
@@ -3555,7 +3557,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(FilterStageTy
 auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
     const EigenDynVec& src_estim_vars,
     const EigenDynMat& src_estim_vars_covar,
-    const TrackedSalientPoint& sal_pnt) const ->MeanAndCov2D
+    const TrackedSalientPoint& sal_pnt) const ->std::tuple<bool, MeanAndCov2D>
 {
     // fun(camera frame, salient point) -> pixel_coord, 13->2
     // collect 13x13 covariance matrix for
@@ -3649,12 +3651,10 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
 
     // derive covariance of projected coord (in pixels)
     Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> covar2D = J * input_covar * J.transpose();
+    FixAlmostSymmetricMat(&covar2D);
 
-    static bool b2 = true;
-    if (b2)
-        FixAlmostSymmetricMat(&covar2D);
-
-    CheckEllipseIsExtractableFrom2DCovarMat(covar2D);
+    if (!CheckEllipseIsExtractableFrom2DCovarMat(covar2D, false))
+        return std::make_tuple(false, MeanAndCov2D{});
 
     // Pnew=J*P*Jt gives approximate 2D covariance of salient point's position uncertainty.
     // This works unsatisfactory because the size and eccentricity of the output ellipse are wrong.
@@ -3695,7 +3695,7 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
             covar2D = simul_uncert;
         SRK_ASSERT(true);
     }
-    return MeanAndCov2D{hd, covar2D };
+    return std::make_tuple(true, MeanAndCov2D{hd, covar2D });
 }
 
 bool DavisonMonoSlam::GetSalientPoint3DPosWithUncertainty(
@@ -3795,8 +3795,30 @@ bool DavisonMonoSlam::CheckSalientPoint(
         return false;
     }
     bool op = CheckUncertCovMat(sal_pnt_pos_uncert, can_throw);
-    if (can_throw) SRK_ASSERT(op);
-    return op;
+    if (!op)
+    {
+        if (can_throw) SRK_ASSERT(op);
+        return op;
+    }
+
+    // pos uncertainty ellipsoid can be projected onto the camera, producing a valid 2D ellipse
+    auto [op_2D_uncert, corner] = GetSalientPointProjected2DPosWithUncertainty(src_estim_vars, src_estim_vars_covar, sal_pnt);
+    static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
+    if (!op_2D_uncert)
+    {
+        if (can_throw) SRK_ASSERT(op_2D_uncert);
+        return op_2D_uncert;
+    }
+
+    constexpr Scalar ellipsoid_cut_thr = 0.05f;
+    auto [op_ellip_2D, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipsoid_cut_thr);
+    static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
+    if (!op_ellip_2D)
+    {
+        if (can_throw) SRK_ASSERT(op_ellip_2D);
+        return op_ellip_2D;
+    }
+    return true;
 }
 
 auto DavisonMonoSlam::GetFilterStage(FilterStageType filter_stage)

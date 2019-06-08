@@ -565,14 +565,17 @@ public:
 
     std::tuple<bool,Recti> PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, Scalar ellisoid_cut_thr)
     {
-        MeanAndCov2D corner = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+        auto [op_cov, corner] = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+        static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
+        SRK_ASSERT(op_cov);
+        if (!op_cov) return std::make_tuple(false, Recti{});
 
         // an ellipse can always be extracted from 'good' covariance mat of error in position
         // but here we allow bad covariance matrix
-        auto [op, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellisoid_cut_thr);
-        if (!op) return std::make_tuple(false, Recti{});
-
+        auto [op_2D_ellip, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellisoid_cut_thr);
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
+        SRK_ASSERT(op_2D_ellip);
+        if (!op_2D_ellip) return std::make_tuple(false, Recti{});
 
         Rect corner_bounds = GetEllipseBounds2(corner_ellipse);
         Recti corner_bounds_i = TruncateRect(corner_bounds);
@@ -643,7 +646,9 @@ public:
             static bool debug_matching = false;
             if (debug_matching)
             {
-                MeanAndCov2D predicted_center = mono_slam_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+                auto [op, predicted_center] = mono_slam_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+                static_assert(std::is_same_v<decltype(predicted_center), MeanAndCov2D>);
+                SRK_ASSERT(op);
                 VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
                     << " as undetected because corr_coef=" << match_result.corr_coef
                     << " is less than thr=" << min_templ_corr_coeff_.value() << ","
@@ -1298,6 +1303,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     DavisonMonoSlam2DDrawer drawer;
     drawer.dots_per_uncert_ellipse_ = FLAGS_ui_dots_per_uncert_ellipse;
     drawer.ellipse_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
+    drawer.ui_swallow_exc_ = FLAGS_ui_swallow_exc;
 
     // the origin of a tracker (sometimes cam0)
     SE3Transform tracker_origin_from_world;

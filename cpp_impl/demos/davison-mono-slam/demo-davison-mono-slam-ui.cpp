@@ -292,9 +292,12 @@ void RenderPosUncertaintyMatAsEllipsoid(
     bool ui_swallow_exc)
 {
     auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pos, ellipsoid_cut_thr);
-    if (!op)
-        return;
     static_assert(std::is_same_v<decltype(rot_ellipsoid), RotatedEllipsoid3D>);
+    if (!op)
+    {
+        if (ui_swallow_exc) return;
+        SRK_ASSERT(op);
+    }
 
     // draw projection of ellipsoid
     RenderEllipsoid(rot_ellipsoid, dots_per_ellipse);
@@ -1077,13 +1080,21 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
     if (draw_sal_pnt_uncert_impl == 1)
     {
         MarkUsedTrackerStateToVisualize();
-        MeanAndCov2D corner = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Estimated, sal_pnt_id);
+        auto [op_cov, corner] = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Estimated, sal_pnt_id);
+        static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
+        if (!op_cov)
+        {
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op_cov);
+        }
 
-        auto [op, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
-        if (!op)
-            return;
-        
+        auto [op_2D_ellip, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
+        if (!op_2D_ellip)
+        {
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op_2D_ellip);
+        }
 
         DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, nullptr, out_image_bgr);
     }
@@ -1093,12 +1104,18 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
         bool op = mono_slam.GetSalientPointEstimated3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
         if (!op)
-            return;
+        {
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op);
+        }
 
         auto [op_ellip, rot_ellipsoid ]= GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellipse_cut_thr_);
-        if (!op_ellip)
-            return;
         static_assert(std::is_same_v<decltype(rot_ellipsoid), RotatedEllipsoid3D>);
+        if (!op_ellip)
+        {
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op_ellip);
+        }
 
         MarkUsedTrackerStateToVisualize();
         CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();

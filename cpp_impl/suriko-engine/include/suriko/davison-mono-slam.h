@@ -524,7 +524,7 @@ public:
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     auto GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) const
-        ->MeanAndCov2D;
+        ->std::tuple<bool, MeanAndCov2D>;
 
     RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr) const;
 
@@ -762,7 +762,7 @@ private:
     auto GetSalientPointProjected2DPosWithUncertainty(
         const EigenDynVec& src_estim_vars,
         const EigenDynMat& src_estim_vars_covar,
-        const TrackedSalientPoint& sal_pnt) const->MeanAndCov2D;
+        const TrackedSalientPoint& sal_pnt) const->std::tuple<bool,MeanAndCov2D>;
 
     /// NOTE: The resultant uncertainty doesn't respect uncertainty of the current camera frame.
     bool GetSalientPoint3DPosWithUncertainty(
