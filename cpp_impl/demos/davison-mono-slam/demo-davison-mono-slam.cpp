@@ -1042,6 +1042,7 @@ DEFINE_double(monoslam_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist_std, 1, "");
 DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
 DEFINE_int32(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
+DEFINE_double(monoslam_sal_pnt_negative_inv_rho_substitute, -1, "");
 DEFINE_double(monoslam_measurm_noise_std_pix, 1, "");
 DEFINE_int32(monoslam_update_impl, 1, "");
 DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
@@ -1334,6 +1335,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.closest_sal_pnt_templ_min_dist_pix_ = static_cast<Scalar>(FLAGS_monoslam_templ_closest_templ_min_dist_pix);
     if (FLAGS_monoslam_sal_pnt_max_undetected_frames_count > 0)
         mono_slam.sal_pnt_max_undetected_frames_count_ = FLAGS_monoslam_sal_pnt_max_undetected_frames_count;
+    if (FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute >= 0)
+        mono_slam.sal_pnt_negative_inv_rho_substitute_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute);
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
@@ -1412,6 +1415,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
     LOG(INFO) << "mono_slam_templ_min_dist=" << mono_slam.ClosestSalientPointTemplateMinDistance();
     LOG(INFO) << "mono_slam_virtual_templ_center_detection_noise_std_pix=" << FLAGS_monoslam_virtual_templ_center_detection_noise_std_pix;
+    LOG(INFO) << "mono_slam_sal_pnt_negative_inv_rho_substitute=" << mono_slam.sal_pnt_negative_inv_rho_substitute_.value_or(static_cast<Scalar>(-1));
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {

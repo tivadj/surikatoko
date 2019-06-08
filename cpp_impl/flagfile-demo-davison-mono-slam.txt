@@ -102,6 +102,7 @@
 --monoslam_fake_sal_pnt_init_inv_dist=true
 --monoslam_impl_of_set_estim_state_to_gt=2
 --monoslam_sal_pnt_max_undetected_frames_count=12
+--monoslam_sal_pnt_negative_inv_rho_substitute=-1
 
 --monoslam_ellipsoid_cut_thr=0.05
 # 1=all, 2=one observation, 3=one component of one observation

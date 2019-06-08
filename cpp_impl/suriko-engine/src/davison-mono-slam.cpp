@@ -1005,6 +1005,8 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             estim_vars_.noalias() += Knew * (zk - projected_sal_pnts);
         }
 
+        EnsureSalientPointPositiveInvDepth(&estim_vars_);
+
         // update covariance matrix
         //estim_vars_covar_.noalias() = (ident - Knew * Hk) * Pprev; // way1
         //estim_vars_covar_.noalias() = Pprev - Knew * innov_var * Knew.transpose(); // way2, 10% faster than way1
@@ -1400,6 +1402,32 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
 
     est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4) = q_down;  // to the down
     est_vars_covar.block<kQuat4, Eigen::Dynamic>(kEucl3, kEucl3 + kQuat4, kQuat4, q_down_size) = q_down.transpose();  // to the right
+}
+
+void DavisonMonoSlam::EnsureSalientPointPositiveInvDepth(EigenDynVec* src_estim_vars)
+{
+    // Fix salient point's negative inv depth. The negative inv depth doesn't break the filter,
+    // but visual salient point's will be rendered behind the camera.
+    // [SfM_EKF_Civera p45]
+    if (!sal_pnt_negative_inv_rho_substitute_.has_value())
+        return;
+
+    // zeroize tiny negative inverse depthes (may appear when subtracting tiny numbers)
+    // doing it after all updates to the state have completed
+    for (size_t sal_pnt_ind = 0; sal_pnt_ind < SalientPointsCount(); ++sal_pnt_ind)
+    {
+        size_t sal_pnt_var_ind = SalientPointOffset(sal_pnt_ind);
+        MorphableSalientPoint morph_sal_pnt = LoadSalientPointDataFromSrcEstimVars(*src_estim_vars, sal_pnt_var_ind);
+        if (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
+        {
+            if (morph_sal_pnt.inverse_dist_rho < 0)
+            {
+                //SRK_ASSERT(morph_sal_pnt.inverse_dist_rho >= -0.1) << "Got big negative estimated inverse depth";
+                DependsOnSalientPointPackOrder();
+                (*src_estim_vars)[sal_pnt_var_ind + kEucl3 + 2] = sal_pnt_negative_inv_rho_substitute_.value();  // +2 (=azim+elev) is offset of inv depth
+            }
+        }
+    }
 }
 
 void DavisonMonoSlam::EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar)
@@ -3076,11 +3104,16 @@ void DavisonMonoSlam::LoadSalientPointDataFromArray(gsl::span<const Scalar> src,
     }
 }
 
-DavisonMonoSlam::MorphableSalientPoint DavisonMonoSlam::LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const
+DavisonMonoSlam::MorphableSalientPoint DavisonMonoSlam::LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, size_t estim_vars_ind) const
 {
     DavisonMonoSlam::MorphableSalientPoint result;
-    LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(sal_pnt.estim_vars_ind, kSalientPointComps), &result);
+    LoadSalientPointDataFromArray(Span(src_estim_vars).subspan(estim_vars_ind, kSalientPointComps), &result);
     return result;
+}
+
+DavisonMonoSlam::MorphableSalientPoint DavisonMonoSlam::LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const
+{
+    return LoadSalientPointDataFromSrcEstimVars(src_estim_vars, sal_pnt.estim_vars_ind);
 }
 
 void DavisonMonoSlam::SaveSalientPointDataToArray(const SphericalSalientPoint& sal_pnt_vars, gsl::span<Scalar> dst) const

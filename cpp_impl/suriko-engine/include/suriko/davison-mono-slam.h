@@ -424,6 +424,7 @@ public:
 
     bool force_xyz_sal_pnt_pos_diagonal_uncert_ = false;
     std::optional<size_t> sal_pnt_max_undetected_frames_count_;  // salient points greater than this value are removed from tracker
+    std::optional<Scalar> sal_pnt_negative_inv_rho_substitute_;  // >=0 value, this replaces negative inv rho of a salient point (SP), preventing SP from jumping behind the camera
 
     // width and height of an image template of a salient point
     // Davison used templates of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
@@ -683,6 +684,7 @@ private:
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
     void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
+    void EnsureSalientPointPositiveInvDepth(EigenDynVec* src_estim_vars);
     void EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar);
     void OnEstimVarsChanged(size_t frame_ind);
     void FinishFrameStats(size_t frame_ind);
@@ -730,6 +732,7 @@ private:
     void LoadCameraStateVarsFromArray(gsl::span<const Scalar> src, CameraStateVars* result) const;
 
     void LoadSalientPointDataFromArray(gsl::span<const Scalar> src, MorphableSalientPoint* result) const;
+    MorphableSalientPoint LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, size_t estim_vars_ind) const;
     MorphableSalientPoint LoadSalientPointDataFromSrcEstimVars(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const;
 
     void SaveSalientPointDataToArray(const MorphableSalientPoint& sal_pnt_vars, gsl::span<Scalar> dst) const;
