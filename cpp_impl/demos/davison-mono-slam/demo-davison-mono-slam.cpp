@@ -714,7 +714,17 @@ public:
         std::vector<CornersMatcherBlobId>* new_blob_ids) override
     {
         std::vector<cv::KeyPoint> keypoints;
-        detector_->detect(image.gray, keypoints);
+        detector_->detect(image.gray, keypoints);  // keypoints are sorted by ascending size [W,H]
+
+        // reorder the features from high quality to low
+        // this will lead to deterministic creation and matching of image features
+        // otherwise different features may be selected for the same picture for different program's executions
+        std::sort(keypoints.begin(), keypoints.end(), [](auto& a, auto& b) { return a.response > b.response; });
+
+        cv::Mat keyp_img;
+        static bool debug_keypoints = false;
+        if (debug_keypoints)
+            cv::drawKeypoints(image.gray, keypoints, keyp_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         cv::Mat descr_per_row;
         detector_->compute(image.gray, keypoints, descr_per_row);
@@ -724,7 +734,6 @@ public:
         FilterOutClosest(keypoints, closest_templ_min_dist, &sparse_keypoints);
 
         cv::Mat sparse_img;
-        static bool debug_keypoints = false;
         if (debug_keypoints)
             cv::drawKeypoints(image.gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
@@ -795,8 +804,8 @@ public:
     suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) override
     {
         const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
-        constexpr auto PixCenter = Scalar{ 0.5 }; // set position on the center of the pixel
-        return suriko::Point2f{ kp.pt.x + PixCenter, kp.pt.y + PixCenter };
+        // some pixels already have fractional X or Y coordinate, like 213.2, so return it without changes
+        return suriko::Point2f{ kp.pt.x, kp.pt.y };
     }
 
     Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image) override
