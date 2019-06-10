@@ -577,46 +577,45 @@ void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_sl
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
-    //glPushMatrix();
-    //std::array<double, 4*4>  hartley_zisserman_to_opengl_mat;
-    //GetOpenGLFromHartleyZissermanMat(gsl::make_span(hartley_zisserman_to_opengl_mat));
-    //glMultMatrixd(hartley_zisserman_to_opengl_mat.data());
+    // World (ground truth) is rendered inside 'world' coordinates.
+    // A tracker is positioned somewhere inside world and is rendered inside its own frame, usually the first camera position.
+    // A world is chosen as the primary (identity) origin because one may think of multiple trackers inside the world.
 
-    // world axes
-    RenderAxes(1, 4);
-
-    bool has_gt_cameras = ui_params.gt_cam_orient_cfw != nullptr;  // gt=ground truth
-    if (display_ground_truth && has_gt_cameras)
+    if (bool has_gt_data = ui_params.entire_map != nullptr; has_gt_data && display_ground_truth)
     {
-        std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
-        RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, cam_instrinsics, track_color, display_trajectory,
-            mid_cam_disp_type);
-    }
+        // world axes
+        RenderAxes(1, 4);
 
-    bool has_gt_sal_pnts = ui_params.entire_map != nullptr;
-    if (display_ground_truth && has_gt_sal_pnts)
-    {
-        std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
-        glColor3fv(track_color.data());
-
-        for (const SalientPointFragment& sal_pnt_fragm : ui_params.entire_map->SalientPoints())
+        if (bool has_gt_cameras = ui_params.gt_cam_orient_cfw != nullptr)
         {
-            const auto& p = sal_pnt_fragm.coord.value();
-            glBegin(GL_POINTS);
-            glVertex3d(p[0], p[1], p[2]);
-            glEnd();
+            std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
+            RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, cam_instrinsics, track_color, display_trajectory,
+                mid_cam_disp_type);
+        }
+        if (bool has_gt_sal_pnts = ui_params.entire_map != nullptr)
+        {
+            std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
+            glColor3fv(track_color.data());
+
+            for (const SalientPointFragment& sal_pnt_fragm : ui_params.entire_map->SalientPoints())
+            {
+                const auto& p = sal_pnt_fragm.coord.value();
+                glBegin(GL_POINTS);
+                glVertex3d(p[0], p[1], p[2]);
+                glEnd();
+            }
         }
     }
 
     {
         // the scene is drawn in the coordinate system of a tracker (=cam0)
 
-        std::array<double, 4 * 4> tracker_from_world_4x4_by_col{};
+        std::array<double, 4 * 4> world_from_tracker_4x4_by_col{};
         const SE3Transform world_from_tracker = SE3Inv(ui_params.tracker_origin_from_world);
-        LoadSE3TransformIntoOpengGLMat(world_from_tracker, tracker_from_world_4x4_by_col);
+        LoadSE3TransformIntoOpengGLMat(world_from_tracker, world_from_tracker_4x4_by_col);
 
         glPushMatrix();
-        glMultMatrixd(tracker_from_world_4x4_by_col.data());
+        glMultMatrixd(world_from_tracker_4x4_by_col.data());
 
         RenderAxes(0.5, 2); // axes of the tracker's origin (=cam0)
 
@@ -981,12 +980,23 @@ std::shared_ptr<SceneVisualizationPangolinGui> SceneVisualizationPangolinGui::Ne
     return gui;
 }
 
-void SceneVisualizationPangolinGui::SetCameraBehindTrackerOnce(const SE3Transform& tracker_origin_from_world, Scalar back_dist)
+void SceneVisualizationPangolinGui::SetCameraBehindTracker()
 {
-    Eigen::Matrix<Scalar, 4, 4, Eigen::ColMajor> model_view =
-        internals::SE3Mat(Eigen::Matrix<Scalar, 3, 1>{0, 0, back_dist}) *
-        internals::SE3Mat(tracker_origin_from_world.R, tracker_origin_from_world.T);
+    const SE3Transform& tfw = s_ui_params_.tracker_origin_from_world;  // transform tracker from world
 
+    const DavisonMonoSlam& mono_slam = *s_ui_params_.mono_slam;
+
+    // take camera's coordinates from filter
+    CameraStateVars cam_vars = mono_slam.GetCameraEstimatedVars();
+    SE3Transform cam_tfc = CamWfc(cam_vars);
+    SE3Transform cam_cft = SE3Inv(cam_tfc);
+
+    static Scalar behind_cam_dist = 5;
+
+    Eigen::Matrix<Scalar, 4, 4, Eigen::ColMajor> model_view =
+        internals::SE3Mat(Eigen::Matrix<Scalar, 3, 1>{0, 0, behind_cam_dist})*
+        internals::SE3Mat(cam_cft.R, cam_cft.T)*
+        internals::SE3Mat(tfw.R, tfw.T);
     auto model_view_span = gsl::make_span(model_view.data(), model_view.size());
     internals::ConvertAxesHartleyZissermanToOpenGL(model_view_span);
 

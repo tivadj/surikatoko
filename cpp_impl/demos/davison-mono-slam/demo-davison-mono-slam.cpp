@@ -1512,8 +1512,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 kKeySetToGroundTruth, kKeyDumpInfo };
             pangolin_gui->key_pressed_handler_ = nullptr; // initialized lazily later
             pangolin_gui->InitUI();
-            Scalar back_dist = 5;
-            pangolin_gui->SetCameraBehindTrackerOnce(tracker_origin_from_world, back_dist);
+            pangolin_gui->SetCameraBehindTracker();
         }
     }
 #endif
