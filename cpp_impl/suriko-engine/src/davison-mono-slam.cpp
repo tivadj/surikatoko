@@ -395,9 +395,15 @@ bool CheckUncertCovMat(const EigenMat& pos_uncert, bool can_throw)
 
     Eigen::Matrix<Scalar, kEucl3, 1> pnt_pos{ 0, 0, 0 };
 
+    // Successfully extracted ellipsoid means 3D view can be rendered,
+    // as well as 2D ellipse can be constructed in camera's plane by projection.
     auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, ellipse_cut_thr);
-    if (can_throw) SRK_ASSERT(op);
-    return op;
+    if (!op)
+    {
+        if (can_throw) SRK_ASSERT(op);
+        return op;
+    }
+    return true;
 }
 
 template <typename EigenMat>
@@ -3799,24 +3805,6 @@ bool DavisonMonoSlam::CheckSalientPoint(
     {
         if (can_throw) SRK_ASSERT(op);
         return op;
-    }
-
-    // pos uncertainty ellipsoid can be projected onto the camera, producing a valid 2D ellipse
-    auto [op_2D_uncert, corner] = GetSalientPointProjected2DPosWithUncertainty(src_estim_vars, src_estim_vars_covar, sal_pnt);
-    static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
-    if (!op_2D_uncert)
-    {
-        if (can_throw) SRK_ASSERT(op_2D_uncert);
-        return op_2D_uncert;
-    }
-
-    constexpr Scalar ellipsoid_cut_thr = 0.05f;
-    auto [op_ellip_2D, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipsoid_cut_thr);
-    static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
-    if (!op_ellip_2D)
-    {
-        if (can_throw) SRK_ASSERT(op_ellip_2D);
-        return op_ellip_2D;
     }
     return true;
 }
