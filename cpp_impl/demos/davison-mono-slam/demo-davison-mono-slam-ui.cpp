@@ -1075,23 +1075,13 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam,
     }
 }
 
-/// A result of projecting salient point's pos error covariance onto the camera plane.
-struct PropagatePosErrorCovarOntoPlaneResult
+void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id,
+    cv::Mat* out_image_bgr) const
 {
-    enum class ResultImpl { PropagateCovar3DIn2DThenMakeEllipse, Covar3DToEllipsoidThenProject };
-    ResultImpl result_impl;
+    const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
+    SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
+    cv::Scalar sal_pnt_color_bgr = OcvColorBgr(sal_pnt_color);
 
-    // propagate 3D pos error covariance onto plane into 2D pos error covariance and then construct an ellipse (in pixels)
-    RotatedEllipse2D ellipse_pixels;
-
-    // construct ellipsoid from 3D pos covariance, then project ellipsoid on a plane, creating an ellipse (in meters)
-    RotatedEllipse2D ellipse_meters;
-    int ellipsoid_projection_impl = -1;
-};
-
-auto ProjectEstimatedSalientPointPosErrCovarIntoCamera(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, Scalar ellipse_cut_thr, bool can_throw)
--> std::tuple<bool, PropagatePosErrorCovarOntoPlaneResult>
-{
     // 1 = propagate (using derivatives) 3D uncertainty of a ([3x1] or [6x1]) salient point into the [2x1] 2D pixels uncertainty.
     // The result of this approach is very bad, we get dot-like circles when the correct shape is the elongated ellipse.
     // Perhaps the big errors are due to approximation of uncertainty using derivatives.
@@ -1104,21 +1094,19 @@ auto ProjectEstimatedSalientPointPosErrCovarIntoCamera(const DavisonMonoSlam& mo
         static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
         if (!op_cov)
         {
-            if (can_throw) SRK_ASSERT(op_cov);
-            return std::make_tuple(false, PropagatePosErrorCovarOntoPlaneResult{});
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op_cov);
         }
 
-        auto [op_2D_ellip, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr);
+        auto [op_2D_ellip, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
         if (!op_2D_ellip)
         {
-            if (can_throw) SRK_ASSERT(op_2D_ellip);
-            return std::make_tuple(false, PropagatePosErrorCovarOntoPlaneResult{});
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op_2D_ellip);
         }
-        PropagatePosErrorCovarOntoPlaneResult result{};
-        result.result_impl = PropagatePosErrorCovarOntoPlaneResult::ResultImpl::PropagateCovar3DIn2DThenMakeEllipse;
-        result.ellipse_pixels = corner_ellipse;
-        return std::make_tuple(true, result);
+
+        DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, nullptr, out_image_bgr);
     }
     else if (draw_sal_pnt_uncert_impl == 2)
     {
@@ -1127,16 +1115,16 @@ auto ProjectEstimatedSalientPointPosErrCovarIntoCamera(const DavisonMonoSlam& mo
         bool op = mono_slam.GetSalientPointEstimated3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
         if (!op)
         {
-            if (can_throw) SRK_ASSERT(op);
-            return std::make_tuple(false, PropagatePosErrorCovarOntoPlaneResult{});
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op);
         }
 
-        auto [op_ellip, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellipse_cut_thr);
+        auto [op_ellip, rot_ellipsoid ]= GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellipse_cut_thr_);
         static_assert(std::is_same_v<decltype(rot_ellipsoid), RotatedEllipsoid3D>);
         if (!op_ellip)
         {
-            if (can_throw) SRK_ASSERT(op_ellip);
-            return std::make_tuple(false, PropagatePosErrorCovarOntoPlaneResult{});
+            if (ui_swallow_exc_) return;
+            SRK_ASSERT(op_ellip);
         }
 
         MarkUsedTrackerStateToVisualize();
@@ -1151,40 +1139,6 @@ auto ProjectEstimatedSalientPointPosErrCovarIntoCamera(const DavisonMonoSlam& mo
         int impl_with = -1;
         RotatedEllipse2D rotated_ellipse = mono_slam.ProjectEllipsoidOnCameraOrApprox(rot_ellipsoid, cam_state, &impl_with);
 
-        PropagatePosErrorCovarOntoPlaneResult result{};
-        result.result_impl = PropagatePosErrorCovarOntoPlaneResult::ResultImpl::Covar3DToEllipsoidThenProject;
-        result.ellipse_meters = rotated_ellipse;
-        result.ellipsoid_projection_impl = impl_with;
-        return std::make_tuple(true, result);
-    }
-    return std::make_tuple(false, PropagatePosErrorCovarOntoPlaneResult{});
-}
-
-void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, cv::Mat* out_image_bgr) const
-{
-    auto [op, result] = ProjectEstimatedSalientPointPosErrCovarIntoCamera(mono_slam, sal_pnt_id, ellipse_cut_thr_, !ui_swallow_exc_);
-    static_assert(std::is_same_v<decltype(result), PropagatePosErrorCovarOntoPlaneResult>);
-    if (!op)
-    {
-        if (!ui_swallow_exc_) SRK_ASSERT(op);
-        return;
-    }
-
-    const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
-    SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
-    cv::Scalar sal_pnt_color_bgr = OcvColorBgr(sal_pnt_color);
-
-    switch (result.result_impl)
-    {
-    case PropagatePosErrorCovarOntoPlaneResult::ResultImpl::PropagateCovar3DIn2DThenMakeEllipse:
-    {
-        const RotatedEllipse2D& corner_ellipse = result.ellipse_pixels;
-        DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, nullptr, out_image_bgr);
-        break;
-    }
-    case PropagatePosErrorCovarOntoPlaneResult::ResultImpl::Covar3DToEllipsoidThenProject:
-    {
-        int impl_with = result.ellipsoid_projection_impl;
         if (impl_with == 1)
             sal_pnt_color_bgr = cv::Scalar{ 0, 0, 255 }; // red, projected ellipsoid
         else if (impl_with == 2)
@@ -1201,10 +1155,7 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
             return pnt_pix;
         };
 
-        const RotatedEllipse2D& rotated_ellipse = result.ellipse_meters;
         DrawDistortedEllipseOnPicture(mono_slam, rotated_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, cam_coord_to_pix_fun, out_image_bgr);
-        break;
-    }
     }
 }
 
