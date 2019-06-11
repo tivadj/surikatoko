@@ -241,6 +241,8 @@ public:
             suriko::Point3 pnt_camera = SE3Apply(cami_from_tracker, pnt_tracker);
             suriko::Point2f pnt_pix = mono_slam_->ProjectCameraPoint(pnt_camera);
 
+            // note: pixel's coordinate is fractional, eg. [252.345,100.273]
+
             Scalar pix_x = pnt_pix.X();
             Scalar pix_y = pnt_pix.Y();
             bool hit_wnd =
@@ -248,10 +250,6 @@ public:
                 pix_y >= 0 && pix_y < (Scalar)img_size_.height;
             if (!hit_wnd)
                 continue;
-
-            // set position on the center of the pixel
-            constexpr auto PixCenter = Scalar{ 0.5 };
-            pnt_pix = suriko::Point2f { pnt_pix.X() + PixCenter, pnt_pix.Y() + PixCenter };
 
             if (templ_center_detection_noise_std_ > 0)
             {
