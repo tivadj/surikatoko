@@ -1672,7 +1672,7 @@ void BundleAdjustmentKanatani::FillCorrectionsGapsFromNormalized(const Eigen::Ma
         FillNormalizedVarIndicesWithOffset(points_count * kPointVarsCount, norm_pattern); // offset point variables
 
         auto remove_rows = gsl::make_span(norm_pattern.data(), normalized_var_indices_count_);
-        auto empty_lines = gsl::span<size_t>(nullptr);
+        auto empty_lines = gsl::span<size_t>{};
         RemoveRowsAndColsInplace(remove_rows, empty_lines, &conv_back);
         Scalar diff_value = (normalized_corrections - conv_back).norm();
         CHECK(diff_value < 0.1);
@@ -1732,7 +1732,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsNaive(const std::vector<Scalar
     FillNormalizedVarIndicesWithOffset(PointsCount() * kPointVarsCount, norm_pattern); // offset point variables
 
     auto remove_lines = gsl::make_span(norm_pattern.data(), normalized_var_indices_count_);
-    auto empty_lines = gsl::span<size_t>(nullptr);
+    auto empty_lines = gsl::span<size_t>{};
     RemoveRowsAndColsInplace(remove_lines, remove_lines, &hessian);
     RemoveRowsAndColsInplace(remove_lines, empty_lines, &right_side);
 
@@ -1841,7 +1841,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
 
         // delete normalized columns
         auto remove_cols = gsl::make_span(normalized_var_indices_.data(), normalized_var_indices_count_);
-        auto empty_lines = gsl::span<size_t>(nullptr);
+        auto empty_lines = gsl::span<size_t>{};
         RemoveRowsAndColsInplace(empty_lines, remove_cols, mat);
     };
 
@@ -1903,7 +1903,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
     // normalize frame derivatives
     Eigen::Map<const Eigen::Matrix<Scalar, Eigen::Dynamic, 1>> frame_derivs(&grad_error[points_count * kPointVarsCount], frames_count * vars_count_per_frame_);
     EigenDynMat normalized_frame_derivs = frame_derivs; // copy
-    RemoveRowsAndColsInplace(gsl::make_span(normalized_var_indices_.data(), normalized_var_indices_count_), gsl::span<size_t>(nullptr), &normalized_frame_derivs);
+    RemoveRowsAndColsInplace(gsl::make_span(normalized_var_indices_.data(), normalized_var_indices_count_), gsl::span<size_t>{}, & normalized_frame_derivs);
 
     // sum(F.E.gradE) - Df
     decomp_lin_sys_right_side -= normalized_frame_derivs;
@@ -1977,7 +1977,7 @@ bool BundleAdjustmentKanatani::EstimateCorrectionsDecomposedInTwoPhases(const st
         FillNormalizedVarIndicesWithOffset(PointsCount() * kPointVarsCount, norm_pattern); // offset point variables
 
         auto remove_lines = gsl::make_span(norm_pattern.data(), normalized_var_indices_count_);
-        auto empty_lines = gsl::span<size_t>(nullptr);
+        auto empty_lines = gsl::span<size_t>{};
         RemoveRowsAndColsInplace(remove_lines, remove_lines, &hessian);
         RemoveRowsAndColsInplace(remove_lines, empty_lines, &right_side);
 
