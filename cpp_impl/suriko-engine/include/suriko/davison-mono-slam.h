@@ -488,6 +488,10 @@ private:
     {
         EigenDynVec Knew; // [13+N*6, 1]
     } one_comp_of_obs_per_update_cache_;
+    struct
+    {
+        Eigen::Matrix<Scalar, Eigen::Dynamic, kQuat4> P_down; // [dyn,4]
+    } quat_normalization_cache_;
 public:
     DavisonMonoSlam();
 

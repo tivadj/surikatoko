@@ -1389,7 +1389,7 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
     dq4x4(1, 3) = dq4x4(3, 1) = -q[1] * q[3];
     dq4x4(2, 3) = dq4x4(3, 2) = -q[2] * q[3];
 
-    Scalar q_mult = std::pow(Sqr(q[0]) + Sqr(q[1]) + Sqr(q[2]) + Sqr(q[3]), (Scalar)-1.5);
+    Scalar q_mult = std::pow(Sqr(q[0]) + Sqr(q[1]) + Sqr(q[2]) + Sqr(q[3]), -1.5f);
     dq4x4 *= q_mult;
 
     auto& est_vars_covar = *src_estim_vars_covar;
@@ -1397,8 +1397,10 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
     auto q_up = (est_vars_covar.block<kEucl3, kQuat4>(0, kEucl3) * dq4x4.transpose()).eval();
 
     auto q_down_size = est_vars_covar.rows() - kEucl3 - kQuat4;
-    auto q_down = est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4) * dq4x4.transpose();
+    auto& q_down = quat_normalization_cache_.P_down;
+    q_down.noalias() = est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4) * dq4x4.transpose();
 
+    // mutate inplace
     est_vars_covar.block<kEucl3, kQuat4>(0, kEucl3) = q_up;  // to the up
     est_vars_covar.block<kQuat4, kEucl3>(kEucl3, 0) = q_up.transpose();  // to the left
 
@@ -1408,8 +1410,8 @@ void DavisonMonoSlam::NormalizeCameraOrientationQuaternionAndCovariances(EigenDy
         est_vars_covar.block<kQuat4, kQuat4>(kEucl3, kEucl3) *
         dq4x4.transpose();
 
-    est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4) = q_down;  // to the down
-    est_vars_covar.block<kQuat4, Eigen::Dynamic>(kEucl3, kEucl3 + kQuat4, kQuat4, q_down_size) = q_down.transpose();  // to the right
+    est_vars_covar.block<Eigen::Dynamic, kQuat4>(kEucl3 + kQuat4, kEucl3, q_down_size, kQuat4).noalias() = q_down;  // to the down
+    est_vars_covar.block<kQuat4, Eigen::Dynamic>(kEucl3, kEucl3 + kQuat4, kQuat4, q_down_size).noalias() = q_down.transpose();  // to the right
 }
 
 void DavisonMonoSlam::EnsureSalientPointPositiveInvDepth(EigenDynVec* src_estim_vars)
@@ -2323,7 +2325,10 @@ void DavisonMonoSlam::Deriv_R_by_q(const Eigen::Matrix<Scalar, kQuat4, 1>& q,
     Eigen::Matrix<Scalar, 3, 3>* dR_by_dq2,
     Eigen::Matrix<Scalar, 3, 3>* dR_by_dq3) const
 {
-    // A.46-A.49
+    Scalar q_len = q.norm();
+    SRK_ASSERT(IsCloseAbs(1, q_len, 1e-3));
+
+    // A.45: A.46-A.49
     *dR_by_dq0 <<
         2 * q[0], -2 * q[3], 2 * q[2],
         2 * q[3], 2 * q[0], -2 * q[1],
@@ -2410,10 +2415,10 @@ void DavisonMonoSlam::Deriv_hd_by_camera_state(const MorphableSalientPoint& sal_
     dqcw_by_dqwc(2, 2) = -1;
     dqcw_by_dqwc(3, 3) = -1;
 
-    Eigen::Matrix<Scalar, kEucl3, kQuat4> dhc_by_dqwc = dhc_by_dqcw * dqcw_by_dqwc;
+    Eigen::Matrix<Scalar, kEucl3, kQuat4> dhc_by_dqwc = dhc_by_dqcw * dqcw_by_dqwc;  // A.38
 
     //
-    Eigen::Matrix<Scalar, kPixPosComps, kQuat4> dh_by_dqwc = hd_by_hu * hu_by_hc * dhc_by_dqwc;
+    Eigen::Matrix<Scalar, kPixPosComps, kQuat4> dh_by_dqwc = hd_by_hu * hu_by_hc * dhc_by_dqwc;  // A.37
     hd_by_xc->middleCols<kQuat4>(kEucl3) = dh_by_dqwc;
 }
 
