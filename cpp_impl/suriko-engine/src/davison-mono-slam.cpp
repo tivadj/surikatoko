@@ -158,22 +158,35 @@ DavisonMonoSlamTrackerInternalsHist& DavisonMonoSlamInternalsLogger::BuildStats(
 // static
 DavisonMonoSlam::DebugPathEnum DavisonMonoSlam::s_debug_path_ = DebugPathEnum::DebugNone;
 
-static constexpr Scalar estim_var_init_std = 1;
-
 DavisonMonoSlam::DavisonMonoSlam()
 {
     SetProcessNoiseStd(process_noise_std_);
 
-    ResetCamera(estim_var_init_std);
+    ResetCamera();
 }
 
-void DavisonMonoSlam::ResetCamera(Scalar estim_var_init_std, bool init_estim_vars)
+void DavisonMonoSlam::ResetCamera()
 {
-    // state vector
-    size_t n = kCamStateComps;
-    if (init_estim_vars)
-        estim_vars_.setZero(n, 1);
-    gsl::span<Scalar> state_span = gsl::make_span(estim_vars_.data(), n);
+    // the first time initialization goes to predicted state
+    // here it seems we need to initialize only predicted state
+    auto& src_estim_vars = predicted_estim_vars_;
+    auto & src_estim_vars_covar = predicted_estim_vars_covar_;
+
+    // allocate memory
+    src_estim_vars.setZero(kCamStateComps, 1);
+    src_estim_vars_covar.setZero(kCamStateComps, kCamStateComps);
+
+    SetCameraState(&src_estim_vars);
+    SetCameraStateCovar(&src_estim_vars_covar);
+
+    // ui (SetCameraBehindTracker) shows estimated state (so just for ui, we initialize estimated state here too)
+    estim_vars_ = predicted_estim_vars_;
+    estim_vars_covar_ = predicted_estim_vars_covar_;
+}
+
+void DavisonMonoSlam::SetCameraState(EigenDynVec* src_estim_vars)
+{
+    gsl::span<Scalar> state_span = gsl::make_span(src_estim_vars->data(), kCamStateComps);
 
     // camera position
     DependsOnCameraPosPackOrder();
@@ -196,98 +209,65 @@ void DavisonMonoSlam::ResetCamera(Scalar estim_var_init_std, bool init_estim_var
     state_span[10] = 0;
     state_span[11] = 0;
     state_span[12] = 0;
-
-    Scalar estim_var_init_variance = suriko::Sqr(estim_var_init_std);
-
-    // state uncertainty matrix
-    if (init_estim_vars)
-        estim_vars_covar_.setZero(n, n);
-    else
-        estim_vars_covar_.topLeftCorner< kCamStateComps, kCamStateComps>().setZero();
-
-    // camera position
-    estim_vars_covar_(0, 0) = estim_var_init_variance;
-    estim_vars_covar_(1, 1) = estim_var_init_variance;
-    estim_vars_covar_(2, 2) = estim_var_init_variance;
-    // camera orientation (quaternion)
-    estim_vars_covar_(3, 3) = estim_var_init_variance;
-    estim_vars_covar_(4, 4) = estim_var_init_variance;
-    estim_vars_covar_(5, 5) = estim_var_init_variance;
-    estim_vars_covar_(6, 6) = estim_var_init_variance;
-    // camera speed
-    estim_vars_covar_(7, 7) = estim_var_init_variance;
-    estim_vars_covar_(8, 8) = estim_var_init_variance;
-    estim_vars_covar_(9, 9) = estim_var_init_variance;
-    // camera angular speed
-    estim_vars_covar_(10, 10) = estim_var_init_variance;
-    estim_vars_covar_(11, 11) = estim_var_init_variance;
-    estim_vars_covar_(12, 12) = estim_var_init_variance;
 }
 
-void DavisonMonoSlam::SetCamera(const SE3Transform& cam_pos_cfw)
+void DavisonMonoSlam::SetCameraVelocity(std::optional<suriko::Point3> cam_vel_tracker, std::optional<suriko::Point3> cam_ang_vel_c)
 {
-    auto cam_pos_wfc = SE3Inv(cam_pos_cfw);
+    gsl::span<Scalar> cam_state = gsl::make_span(predicted_estim_vars_.data(), kCamStateComps);
 
-    // state vector
-    size_t n = kCamStateComps;
-    estim_vars_.setZero(n, 1);
-    gsl::span<Scalar> state_span = gsl::make_span(estim_vars_.data(), n);
+    if (cam_vel_tracker.has_value())
+    {
+        // camera velocity; at each iteration is increased by acceleration in the form of the gaussian noise
+        constexpr auto cam_vel_offset = kEucl3 + kQuat4;
+        DependsOnCameraPosPackOrder();
+        cam_state[cam_vel_offset + 0] = cam_vel_tracker.value().X();
+        cam_state[cam_vel_offset + 1] = cam_vel_tracker.value().Y();
+        cam_state[cam_vel_offset + 2] = cam_vel_tracker.value().Z();
+    }
 
-    // camera position
-    DependsOnCameraPosPackOrder();
-    state_span[0] = cam_pos_wfc.T[0];
-    state_span[1] = cam_pos_wfc.T[1];
-    state_span[2] = cam_pos_wfc.T[2];
+    if (cam_ang_vel_c.has_value())
+    {
+        // camera angular velocity; at each iteration is increased by acceleration in the form of the gaussian noise
+        constexpr auto cam_ang_vel_offset = kEucl3 + kQuat4 + kEucl3;
+        cam_state[cam_ang_vel_offset + 0] = cam_ang_vel_c.value().X();
+        cam_state[cam_ang_vel_offset + 1] = cam_ang_vel_c.value().Y();
+        cam_state[cam_ang_vel_offset + 2] = cam_ang_vel_c.value().Z();
+    }
+}
 
-    // camera orientation
-    gsl::span<Scalar> cam_pos_wfc_quat = gsl::make_span(estim_vars_.data() + kEucl3, kQuat4);
-    bool op = QuatFromRotationMat(cam_pos_wfc.R, cam_pos_wfc_quat);
-    SRK_ASSERT(op);
+void DavisonMonoSlam::SetCameraStateCovar(EigenDynMat* src_estim_vars_covar_tmp)
+{
+    auto& covar = *src_estim_vars_covar_tmp;
 
-    Scalar qlen = std::sqrt(
-        suriko::Sqr(cam_pos_wfc_quat[0]) +
-        suriko::Sqr(cam_pos_wfc_quat[1]) +
-        suriko::Sqr(cam_pos_wfc_quat[2]) +
-        suriko::Sqr(cam_pos_wfc_quat[3]));
-
-    state_span[3] = cam_pos_wfc_quat[0];
-    state_span[4] = cam_pos_wfc_quat[1];
-    state_span[5] = cam_pos_wfc_quat[2];
-    state_span[6] = cam_pos_wfc_quat[3];
-
-    // camera velocity; at each iteration is increased by acceleration in the form of the gaussian noise
-    state_span[7] = 0;
-    state_span[8] = 0;
-    state_span[9] = 0;
-
-    // camera angular velocity; at each iteration is increased by acceleration in the form of the gaussian noise
-    state_span[10] = 0;
-    state_span[11] = 0;
-    state_span[12] = 0;
-
+    // It seems, these values should always be const and equal zero (except orientation quaternion is an identity rotation)
+    // then the first camera has certain position and orientation and further frames are built upon it.
+    // Otherwise, if we put some uncertainty into position of the first camera, the uncertainty will propagate into consequent frames.
     Scalar cam_orient_q_comp_var = suriko::Sqr(cam_orient_q_comp_std_);
     Scalar cam_vel_var = suriko::Sqr(cam_vel_std_);
     Scalar cam_ang_vel_var = suriko::Sqr(cam_ang_vel_std_);
 
-    // state uncertainty matrix
-    estim_vars_covar_.setZero(n, n);
     // camera position
-    estim_vars_covar_(0, 0) = suriko::Sqr(cam_pos_x_std_m_);;
-    estim_vars_covar_(1, 1) = suriko::Sqr(cam_pos_y_std_m_);;
-    estim_vars_covar_(2, 2) = suriko::Sqr(cam_pos_z_std_m_);;
+    covar(0, 0) = suriko::Sqr(cam_pos_x_std_m_);;
+    covar(1, 1) = suriko::Sqr(cam_pos_y_std_m_);;
+    covar(2, 2) = suriko::Sqr(cam_pos_z_std_m_);;
     // camera orientation (quaternion)
-    estim_vars_covar_(3, 3) = cam_orient_q_comp_var;
-    estim_vars_covar_(4, 4) = cam_orient_q_comp_var;
-    estim_vars_covar_(5, 5) = cam_orient_q_comp_var;
-    estim_vars_covar_(6, 6) = cam_orient_q_comp_var;
+    covar(3, 3) = cam_orient_q_comp_var;
+    covar(4, 4) = cam_orient_q_comp_var;
+    covar(5, 5) = cam_orient_q_comp_var;
+    covar(6, 6) = cam_orient_q_comp_var;
     // camera speed
-    estim_vars_covar_(7, 7) = cam_vel_var;
-    estim_vars_covar_(8, 8) = cam_vel_var;
-    estim_vars_covar_(9, 9) = cam_vel_var;
+    covar(7, 7) = cam_vel_var;
+    covar(8, 8) = cam_vel_var;
+    covar(9, 9) = cam_vel_var;
     // camera angular speed
-    estim_vars_covar_(10, 10) = cam_ang_vel_var;
-    estim_vars_covar_(11, 11) = cam_ang_vel_var;
-    estim_vars_covar_(12, 12) = cam_ang_vel_var;
+    covar(10, 10) = cam_ang_vel_var;
+    covar(11, 11) = cam_ang_vel_var;
+    covar(12, 12) = cam_ang_vel_var;
+}
+
+void DavisonMonoSlam::SetCameraStateCovarHelper()
+{
+    SetCameraStateCovar(&predicted_estim_vars_covar_);
 }
 
 void DavisonMonoSlam::SetProcessNoiseStd(Scalar process_noise_std)
@@ -526,6 +506,7 @@ void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar
     Eigen::Matrix<Scalar, kQuat4, 1> new_cam_orient_quat_tmp;
     QuatMult(cam_orient_quat, cam_orient_delta_quat, &new_cam_orient_quat_tmp);
 
+    // the product of two unity quaternions must result into the unity quaternion
     Scalar q_len_normed = new_cam_orient_quat_tmp.norm();
     SRK_ASSERT(IsCloseAbs(1, q_len_normed, 0.001)) << "quaternion must have unity length";
 
@@ -597,12 +578,6 @@ void DavisonMonoSlam::PredictEstimVars(
 
     if (fix_estim_vars_covar_symmetry_)
         FixSymmetricMat(predicted_estim_vars_covar);
-}
-
-void DavisonMonoSlam::PredictEstimVarsHelper()
-{
-    // make predictions
-    PredictEstimVars(estim_vars_, estim_vars_covar_, &predicted_estim_vars_, &predicted_estim_vars_covar_);
 }
 
 void DavisonMonoSlam::RemoveSalientPointsState(gsl::span<size_t> sal_pnt_inds_to_delete_desc)
@@ -826,7 +801,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
             Point2f coord = corners_matcher_->GetBlobCoord(blob_id);
 
             std::optional<Scalar> pnt_inv_dist_gt;
-            if (fake_sal_pnt_initial_inv_dist_)
+            if (sal_pnt_perfect_init_inv_dist_)
             {
                 pnt_inv_dist_gt = corners_matcher_->GetSalientPointGroundTruthInvDepth(blob_id);
             }
@@ -1006,6 +981,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             bool change = cam_quat_len > 0.1;
             if (change)
                 VLOG(5) << "estim_vars cam_q_len=" << cam_quat_len;
+
             estim_vars_.noalias() += estim_vars_delta;
         }
         else
@@ -1045,6 +1021,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             estim_vars_covar_.noalias() -= cache.K_S * Knew.transpose();
         }
 
+        // 'update' step may result into quaternion of camera's orientation being non-unity
         NormalizeCameraOrientationQuaternionAndCovariances(&estim_vars_, &estim_vars_covar_);
 
         if (fix_estim_vars_covar_symmetry_)
@@ -1649,9 +1626,9 @@ void DavisonMonoSlam::SetCamStateCovarToGroundTruth(EigenDynMat* src_estim_vars_
 
 Eigen::Matrix<Scalar, kEucl3, kEucl3> DavisonMonoSlam::GetDefaultXyzSalientPointCovar() const
 {
-    const Scalar sal_pnt_pos_x_variance = suriko::Sqr(sal_pnt_pos_x_std_);
-    const Scalar sal_pnt_pos_y_variance = suriko::Sqr(sal_pnt_pos_y_std_);
-    const Scalar sal_pnt_pos_z_variance = suriko::Sqr(sal_pnt_pos_z_std_);
+    const Scalar sal_pnt_pos_x_variance = suriko::Sqr(sal_pnt_pos_x_std_if_gt_);
+    const Scalar sal_pnt_pos_y_variance = suriko::Sqr(sal_pnt_pos_y_std_if_gt_);
+    const Scalar sal_pnt_pos_z_variance = suriko::Sqr(sal_pnt_pos_z_std_if_gt_);
 
     Eigen::Matrix<Scalar, kEucl3, kEucl3> m{};
     m.setZero();
@@ -1667,9 +1644,10 @@ void DavisonMonoSlam::SetEstimStateCovarInEstimSpace(size_t frame_ind)
     estim_vars_covar_.setZero();
     SetCamStateCovarToGroundTruth(&estim_vars_covar_);
 
-    const Scalar sal_pnt_first_cam_pos_variance = suriko::Sqr(sal_pnt_first_cam_pos_std_);
-    const Scalar sal_pnt_azimuth_variance = suriko::Sqr(sal_pnt_azimuth_std_);
-    const Scalar sal_pnt_elevation_variance = suriko::Sqr(sal_pnt_elevation_std_);
+    const Scalar sal_pnt_first_cam_pos_variance = suriko::Sqr(sal_pnt_first_cam_pos_std_if_gt_);
+    const Scalar sal_pnt_azimuth_variance = suriko::Sqr(sal_pnt_azimuth_std_if_gt_);
+    const Scalar sal_pnt_elevation_variance = suriko::Sqr(sal_pnt_elevation_std_if_gt_);
+    const Scalar sal_pnt_inv_dist_variance = suriko::Sqr(sal_pnt_inv_dist_std_if_gt_);
 
     for (size_t sal_pnt_ind = 0; sal_pnt_ind < SalientPointsCount(); ++sal_pnt_ind)
     {
@@ -1688,7 +1666,7 @@ void DavisonMonoSlam::SetEstimStateCovarInEstimSpace(size_t frame_ind)
             sal_pnt_covar(2, 2) = sal_pnt_first_cam_pos_variance;
             sal_pnt_covar(3, 3) = sal_pnt_azimuth_variance;
             sal_pnt_covar(4, 4) = sal_pnt_elevation_variance;
-            sal_pnt_covar(5, 5) = suriko::Sqr(sal_pnt_init_inv_dist_std_);
+            sal_pnt_covar(5, 5) = sal_pnt_inv_dist_variance;
         }
     }
 }
@@ -3404,6 +3382,11 @@ CameraStateVars DavisonMonoSlam::GetCameraEstimatedVars() const
 CameraStateVars DavisonMonoSlam::GetCameraPredictedVars()
 {
     return GetCameraStateVars(FilterStageType::Predicted);
+}
+
+CameraStateVars DavisonMonoSlam::GetCameraPredictedVars() const
+{
+    return const_cast<DavisonMonoSlam*>(this)->GetCameraPredictedVars();
 }
 
 void DavisonMonoSlam::GetCameraPosAndOrientationWithUncertainty(FilterStageType filter_stage,

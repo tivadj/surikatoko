@@ -415,12 +415,13 @@ public:
     // default salient point's uncertainty
     Scalar sal_pnt_init_inv_dist_ = 1; // rho0, the inverse depth of a salient point in the first camera in which the point is seen
     Scalar sal_pnt_init_inv_dist_std_ = 1; // std(rho0)
-    Scalar sal_pnt_pos_x_std_ = 0;
-    Scalar sal_pnt_pos_y_std_ = 0;
-    Scalar sal_pnt_pos_z_std_ = 0;
-    Scalar sal_pnt_first_cam_pos_std_ = 0;
-    Scalar sal_pnt_azimuth_std_ = 0;
-    Scalar sal_pnt_elevation_std_ = 0;
+    Scalar sal_pnt_pos_x_std_if_gt_ = 0;
+    Scalar sal_pnt_pos_y_std_if_gt_ = 0;
+    Scalar sal_pnt_pos_z_std_if_gt_ = 0;
+    Scalar sal_pnt_first_cam_pos_std_if_gt_ = 0;
+    Scalar sal_pnt_azimuth_std_if_gt_ = 0;
+    Scalar sal_pnt_elevation_std_if_gt_ = 0;
+    Scalar sal_pnt_inv_dist_std_if_gt_ = 0;  // used for ground truth setup
 
     bool force_xyz_sal_pnt_pos_diagonal_uncert_ = false;
     std::optional<size_t> sal_pnt_max_undetected_frames_count_;  // salient points greater than this value are removed from tracker
@@ -447,7 +448,7 @@ public:
     std::function<Dir3DAndDistance(SE3Transform tracker_from_world, SE3Transform camera_from_tracker, SalPntId sal_pnt_id)> gt_sal_pnt_in_camera_fun_;  // gets ground truth 3D position of salient point in coordinates of tracker
 
     Scalar debug_ellipsoid_cut_thr_ = 0.04f; // value 0.05 corresponds to 2sig
-    bool fake_sal_pnt_initial_inv_dist_ = false; // true to correctly initialize points depth in virtual environments
+    bool sal_pnt_perfect_init_inv_dist_ = false; // true to correctly initialize points depth in virtual environments
     int set_estim_state_covar_to_gt_impl_ = 2;  // 1=sets diagonal covariance in estimation space, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point
 
     /// There are 3 implementations of incorporating m observed corners (corner=pixel, 2x1 mat).
@@ -494,14 +495,16 @@ private:
     } quat_normalization_cache_;
 public:
     DavisonMonoSlam();
-
-    void SetCamera(const SE3Transform& cam_pos_cfw);
-    
+    void ResetCamera();
+    void SetCameraVelocity(std::optional<suriko::Point3> cam_vel_tracker, std::optional<suriko::Point3> cam_ang_vel_c);
+    void SetCameraStateCovarHelper();
+private:
+    void SetCameraState(EigenDynVec* src_estim_vars);
+    void SetCameraStateCovar(EigenDynMat* src_estim_vars_covar);
+public:
     void SetProcessNoiseStd(Scalar process_noise_std);
 
     void ProcessFrame(size_t frame_ind, const Picture& image);
-
-    void PredictEstimVarsHelper();
 
     suriko::Point2f ProjectCameraPoint(const suriko::Point3& pnt_camera) const;
 
@@ -510,6 +513,7 @@ public:
     CameraStateVars GetCameraEstimatedVars();
     CameraStateVars GetCameraEstimatedVars() const;
     CameraStateVars GetCameraPredictedVars();
+    CameraStateVars GetCameraPredictedVars() const;
 
     void GetCameraEstimatedPosAndOrientationWithUncertainty(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
@@ -646,8 +650,6 @@ private:
     static void ConvertMorphableFromSphericalSalientPoints(const std::vector<SphericalSalientPointWithBuildInfo>& sal_pnt_build_infos,
         SalPntComps sal_pnt_repres,
         std::vector<MorphableSalientPoint>* sal_pnts);
-
-    void ResetCamera(Scalar estim_var_init_std, bool init_estim_vars = true);
 
     void CheckCameraAndSalientPointsCovs(
         const EigenDynVec& src_estim_vars,

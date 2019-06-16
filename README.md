@@ -1,6 +1,9 @@
 Requires:
 C++17 due to usage of std::filesystem
 
+Requires: gflags, glog, (Guideline) GSL, Eigen, OpenCV
+Optional: Pangolin, gtest
+
 Tested on:
 Windows, VS2017 v141
 Ubuntu, GCC 8.3
@@ -32,3 +35,4 @@ Hot keys:
 f=next frame
 i=dumps camera information to the console
 u=(virtual mode only) sets the position of the camera  and salient points to the ground truth
+s='skip' current frame - performs Kalman filter's 'prediction' step without 'update' step (as if camera is covered with a blanket)

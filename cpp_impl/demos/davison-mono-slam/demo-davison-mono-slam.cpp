@@ -165,6 +165,37 @@ void GenerateWorldPoints(WorldBounds wb, const std::array<Scalar, 3>& cell_size,
     }
 }
 
+bool GetSyntheticCameraInitialMovement(const std::vector<SE3Transform>& gt_cam_orient_cfw,
+    suriko::Point3* cam_vel_tracker,
+    suriko::Point3* cam_ang_vel_c)
+{
+    if (gt_cam_orient_cfw.size() < 2)
+        return false;
+    SE3Transform c0_from_world = gt_cam_orient_cfw[0];
+    SE3Transform c1_from_world = gt_cam_orient_cfw[1];
+    SE3Transform world_from_c0 = SE3Inv(c0_from_world);
+    SE3Transform world_from_c1 = SE3Inv(c1_from_world);
+
+    // In a synthetic scenario we can perfectly foresee the movement of camera (from frame 0 to 1).
+    // When processing frame 1, the residual should be zero.
+    // camera's velocity
+    // Tw1=Tw0+v01_w
+    // v01_w=velocity from camera-0 to camera-1 in world coordinates
+    auto init_shift_world = suriko::Point3{ world_from_c1.T - world_from_c0.T };
+    auto init_shift_tracker = suriko::Point3{ c0_from_world.R * init_shift_world.Mat() };
+    *cam_vel_tracker = init_shift_tracker;
+
+    // camera's angular velocity
+    // Rw1=Rw0*R01, R01=delta, which rotates from camera-1 to camera-0.
+    SE3Transform c0_from_c1 = SE3AFromB(c0_from_world, c1_from_world);
+
+    Eigen::Matrix<Scalar, 3, 1> axisangle_c0_from_c1;
+    bool op = AxisAngleFromRotMat(c0_from_c1.R, &axisangle_c0_from_c1);
+    if (!op)
+        axisangle_c0_from_c1.fill(0);
+    *cam_ang_vel_c = suriko::Point3{ axisangle_c0_from_c1[0], axisangle_c0_from_c1[1], axisangle_c0_from_c1[2] };
+    return true;
+}
 
 /// Gets the transformation from world into camera in given frame.
 SE3Transform CurCamFromTrackerOrigin(const std::vector<SE3Transform>& gt_cam_orient_cfw, size_t frame_ind, const SE3Transform& tracker_from_world)
@@ -1028,25 +1059,31 @@ DEFINE_int32(s5_periods_count, 100, "");
 
 DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
 DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
+DEFINE_bool(monoslam_cam_perfect_init_vel, false, "");
+DEFINE_bool(monoslam_cam_perfect_init_ang_vel, false, "");
 DEFINE_double(monoslam_cam_pos_x_std_m, 0, "");
 DEFINE_double(monoslam_cam_pos_y_std_m, 0, "");
 DEFINE_double(monoslam_cam_pos_z_std_m, 0, "");
 DEFINE_double(monoslam_cam_orient_q_comp_std, 0, "");
 DEFINE_double(monoslam_cam_vel_std, 0, "");
 DEFINE_double(monoslam_cam_ang_vel_std, 0, "");
+
+DEFINE_double(monoslam_sal_pnt_pos_x_std_if_gt, 0, "");
+DEFINE_double(monoslam_sal_pnt_pos_y_std_if_gt, 0, "");
+DEFINE_double(monoslam_sal_pnt_pos_z_std_if_gt, 0, "");
+DEFINE_double(monoslam_sal_pnt_first_cam_pos_std_if_gt, 0, "");
+DEFINE_double(monoslam_sal_pnt_azimuth_std_if_gt, 0, "");
+DEFINE_double(monoslam_sal_pnt_elevation_std_if_gt, 0, "");
+DEFINE_double(monoslam_sal_pnt_inv_dist_std_if_gt, 0, "");
+
 DEFINE_double(monoslam_process_noise_std, 0.08, "");
-DEFINE_double(monoslam_sal_pnt_pos_x_std, 0, "");
-DEFINE_double(monoslam_sal_pnt_pos_y_std, 0, "");
-DEFINE_double(monoslam_sal_pnt_pos_z_std, 0, "");
-DEFINE_double(monoslam_sal_pnt_first_cam_pos_std, 0, "");
-DEFINE_double(monoslam_sal_pnt_azimuth_std, 0, "");
-DEFINE_double(monoslam_sal_pnt_elevation_std, 0, "");
+DEFINE_double(monoslam_measurm_noise_std_pix, 1, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist, 1, "");
 DEFINE_double(monoslam_sal_pnt_init_inv_dist_std, 1, "");
+
 DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
 DEFINE_int32(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
 DEFINE_double(monoslam_sal_pnt_negative_inv_rho_substitute, -1, "");
-DEFINE_double(monoslam_measurm_noise_std_pix, 1, "");
 DEFINE_int32(monoslam_update_impl, 1, "");
 DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
 DEFINE_int32(monoslam_max_new_blobs_per_frame, 1, "");
@@ -1055,14 +1092,14 @@ DEFINE_int32(monoslam_templ_width, 15, "width of template");
 DEFINE_int32(monoslam_templ_min_search_rect_width, 7, "the min width of a rectangle when searching for tempplate in the next frame");
 DEFINE_int32(monoslam_templ_min_search_rect_height, 7, "");
 DEFINE_double(monoslam_templ_min_corr_coeff, -1, "");
-DEFINE_double(monoslam_virtual_templ_center_detection_noise_std_pix, 0, "std of measurement noise(=sqrt(R), 0=no noise");
+DEFINE_double(monoslam_templ_center_detection_noise_std_pix, 0, "std of measurement noise(=sqrt(R), 0=no noise");
 DEFINE_double(monoslam_templ_closest_templ_min_dist_pix, 0, "");
 DEFINE_bool(monoslam_stop_on_sal_pnt_moved_too_far, false, "width of template");
 DEFINE_bool(monoslam_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(monoslam_debug_estim_vars_cov, false, "");
 DEFINE_bool(monoslam_debug_predicted_vars_cov, false, "");
 DEFINE_int32(monoslam_debug_max_sal_pnt_count, -1, "[default=-1(none)] number of salient points won't be greater than this value");
-DEFINE_bool(monoslam_fake_sal_pnt_init_inv_dist, false, "");
+DEFINE_bool(monoslam_sal_pnt_perfect_init_inv_dist, false, "");
 DEFINE_int32(monoslam_set_estim_state_covar_to_gt_impl, 2, "1=ignore correlations, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point");
 DEFINE_double(monoslam_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
 DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
@@ -1113,7 +1150,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         // 3x1 Euclidean representation of a salient point is allowed only in virtual scenarios with turned on fake initialization of inverse depth.
         if (DavisonMonoSlam::kSalPntRepres == SalPntComps::kXyz)
         {
-            if (demo_data_source == DemoDataSource::kVirtualScene && FLAGS_monoslam_fake_sal_pnt_init_inv_dist)
+            if (demo_data_source == DemoDataSource::kVirtualScene && FLAGS_monoslam_sal_pnt_perfect_init_inv_dist)
                 return true;
         }
         return false;
@@ -1342,31 +1379,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     if (FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute >= 0)
         mono_slam.sal_pnt_negative_inv_rho_substitute_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute);
 
-    if (demo_data_source == DemoDataSource::kVirtualScene)
-    {
-        mono_slam.cam_pos_x_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_x_std_m);
-        mono_slam.cam_pos_y_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_y_std_m);
-        mono_slam.cam_pos_z_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_z_std_m);
-        mono_slam.cam_orient_q_comp_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_orient_q_comp_std);
-        mono_slam.cam_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_vel_std);
-        mono_slam.cam_ang_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_ang_vel_std);
-        mono_slam.sal_pnt_pos_x_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_x_std);
-        mono_slam.sal_pnt_pos_y_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_y_std);
-        mono_slam.sal_pnt_pos_z_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_z_std);
-        mono_slam.sal_pnt_first_cam_pos_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_first_cam_pos_std);
-        mono_slam.sal_pnt_azimuth_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_azimuth_std);
-        mono_slam.sal_pnt_elevation_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_elevation_std);
-        mono_slam.SetCamera(SE3Transform::NoTransform());
-    }
-    else if (demo_data_source == DemoDataSource::kImageSeqDir)
-    {
-        SE3Transform cam_cfw = SE3Inv(LookAtLufWfc(
-            { (Scalar)FLAGS_camera_look_from_x, (Scalar)FLAGS_camera_look_from_y, (Scalar)FLAGS_camera_look_from_z },
-            { (Scalar)FLAGS_camera_look_to_x, (Scalar)FLAGS_camera_look_to_y, (Scalar)FLAGS_camera_look_to_z },
-            { (Scalar)FLAGS_camera_up_x, (Scalar)FLAGS_camera_up_y, (Scalar)FLAGS_camera_up_z }));
-        mono_slam.SetCamera(cam_cfw);
-    }
-
     mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_monoslam_fix_estim_vars_covar_symmetry;
     mono_slam.debug_ellipsoid_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
@@ -1374,8 +1386,29 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.debug_max_sal_pnt_coun_ = FLAGS_monoslam_debug_max_sal_pnt_count;
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
-        mono_slam.fake_sal_pnt_initial_inv_dist_ = FLAGS_monoslam_fake_sal_pnt_init_inv_dist;
+        std::optional<suriko::Point3> cam_vel_tracker;
+        std::optional<suriko::Point3> cam_ang_vel_c;
+        if (suriko::Point3 cam_vel_tracker_tmp, cam_ang_vel_c_tmp;
+            GetSyntheticCameraInitialMovement(gt_cam_orient_cfw, &cam_vel_tracker_tmp, &cam_ang_vel_c_tmp))
+        {
+            if (FLAGS_monoslam_cam_perfect_init_vel) cam_vel_tracker = cam_vel_tracker_tmp;
+            if (FLAGS_monoslam_cam_perfect_init_ang_vel) cam_ang_vel_c = cam_ang_vel_c_tmp;
+        }
+        mono_slam.SetCameraVelocity(cam_vel_tracker, cam_ang_vel_c);
+
+        //
+        mono_slam.sal_pnt_perfect_init_inv_dist_ = FLAGS_monoslam_sal_pnt_perfect_init_inv_dist;
         mono_slam.set_estim_state_covar_to_gt_impl_ = FLAGS_monoslam_set_estim_state_covar_to_gt_impl;
+
+        // covariances used together with ground truth state
+        mono_slam.sal_pnt_pos_x_std_if_gt_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_x_std_if_gt);
+        mono_slam.sal_pnt_pos_y_std_if_gt_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_y_std_if_gt);
+        mono_slam.sal_pnt_pos_z_std_if_gt_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_pos_z_std_if_gt);
+        mono_slam.sal_pnt_first_cam_pos_std_if_gt_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_first_cam_pos_std_if_gt);
+        mono_slam.sal_pnt_azimuth_std_if_gt_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_azimuth_std_if_gt);
+        mono_slam.sal_pnt_elevation_std_if_gt_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_elevation_std_if_gt);
+        mono_slam.sal_pnt_inv_dist_std_if_gt_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_inv_dist_std_if_gt);
+
         mono_slam.gt_cami_from_world_fun_ = [&gt_cam_orient_cfw](size_t frame_ind) -> SE3Transform
         {
             SE3Transform c = gt_cam_orient_cfw[frame_ind];
@@ -1412,19 +1445,27 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         };
     }
 
-    mono_slam.PredictEstimVarsHelper();
+    // perhaps these values should be just constants
+    mono_slam.cam_pos_x_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_x_std_m);
+    mono_slam.cam_pos_y_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_y_std_m);
+    mono_slam.cam_pos_z_std_m_ = static_cast<Scalar>(FLAGS_monoslam_cam_pos_z_std_m);
+    mono_slam.cam_orient_q_comp_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_orient_q_comp_std);
+    mono_slam.cam_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_vel_std);
+    mono_slam.cam_ang_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_ang_vel_std);
+    mono_slam.SetCameraStateCovarHelper();
+
     LOG(INFO) << "mono_slam_process_noise_std=" << FLAGS_monoslam_process_noise_std;
     LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << FLAGS_monoslam_measurm_noise_std_pix;
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
     LOG(INFO) << "mono_slam_templ_min_dist=" << mono_slam.ClosestSalientPointTemplateMinDistance();
-    LOG(INFO) << "mono_slam_virtual_templ_center_detection_noise_std_pix=" << FLAGS_monoslam_virtual_templ_center_detection_noise_std_pix;
+    LOG(INFO) << "mono_slam_templ_center_detection_noise_std_pix=" << FLAGS_monoslam_templ_center_detection_noise_std_pix;
     LOG(INFO) << "mono_slam_sal_pnt_negative_inv_rho_substitute=" << mono_slam.sal_pnt_negative_inv_rho_substitute_.value_or(static_cast<Scalar>(-1));
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
         auto corners_matcher = std::make_unique<DemoCornersMatcher>(&mono_slam, gt_cam_orient_cfw, entire_map, cam_intrinsics.image_size);
-        corners_matcher->SetTemplCenterDetectionNoiseStd(static_cast<float>(FLAGS_monoslam_virtual_templ_center_detection_noise_std_pix));
+        corners_matcher->SetTemplCenterDetectionNoiseStd(static_cast<float>(FLAGS_monoslam_templ_center_detection_noise_std_pix));
         corners_matcher->tracker_origin_from_world_ = tracker_origin_from_world;
 
         if (FLAGS_monoslam_max_new_blobs_in_first_frame > 0)

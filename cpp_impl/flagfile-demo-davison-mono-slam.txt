@@ -77,33 +77,24 @@
 --camera_up_y=1
 --camera_up_z=0
 
-# {w:0.1,v:0.5}, {w:0.2,v:1}
-# for TestSeqMonoSLAM: 0.1
---monoslam_process_noise_std=0.03
---monoslam_measurm_noise_std_pix=0.5
---monoslam_virtual_templ_center_detection_noise_std_pix=0.2
-
-# camera pos initial std
+# camera pos initial std (these are candidates to be const)
 --monoslam_cam_pos_x_std_m=0.05
 --monoslam_cam_pos_y_std_m=0.05
 --monoslam_cam_pos_z_std_m=0.05
 --monoslam_cam_orient_q_comp_std=0.01
 --monoslam_cam_vel_std=0.01
 --monoslam_cam_ang_vel_std=0.01
---monoslam_sal_pnt_pos_x_std=0.05
---monoslam_sal_pnt_pos_y_std=0.05
---monoslam_sal_pnt_pos_z_std=1.5
---monoslam_sal_pnt_first_cam_pos_std=0.05
---monoslam_sal_pnt_azimuth_std=0
---monoslam_sal_pnt_elevation_std=0
+
+# {w:0.1,v:0.5}, {w:0.2,v:1}
+# for TestSeqMonoSLAM: 0.1
+--monoslam_process_noise_std=0.1
+--monoslam_measurm_noise_std_pix=0.2
 --monoslam_sal_pnt_init_inv_dist=1
 --monoslam_sal_pnt_init_inv_dist_std=1
---monoslam_force_xyz_sal_pnt_pos_diagonal_uncert=true
---monoslam_fake_sal_pnt_init_inv_dist=true
---monoslam_impl_of_set_estim_state_to_gt=2
+
+#
 --monoslam_sal_pnt_max_undetected_frames_count=12
 --monoslam_sal_pnt_negative_inv_rho_substitute=-1
-
 --monoslam_ellipsoid_cut_thr=0.05
 # 1=all, 2=one observation, 3=one component of one observation
 --monoslam_update_impl=1
@@ -118,6 +109,25 @@
 --monoslam_debug_estim_vars_cov=true
 --monoslam_debug_predicted_vars_cov=true
 --monoslam_debug_max_sal_pnt_count=-1
+
+# synthetic scenarios
+--monoslam_templ_center_detection_noise_std_pix=0.1
+--monoslam_cam_perfect_init_vel=false
+--monoslam_cam_perfect_init_ang_vel=false
+--monoslam_sal_pnt_perfect_init_inv_dist=false
+
+# Set Ground Truth
+--monoslam_set_estim_state_covar_to_gt_impl=2
+--monoslam_force_xyz_sal_pnt_pos_diagonal_uncert=true
+# impl-1 SP 3x1
+--monoslam_sal_pnt_pos_x_std_if_gt=0.05
+--monoslam_sal_pnt_pos_y_std_if_gt=0.05
+--monoslam_sal_pnt_pos_z_std_if_gt=1.5
+# impl-2 SP 6x1
+--monoslam_sal_pnt_first_cam_pos_std_if_gt=0
+--monoslam_sal_pnt_azimuth_std_if_gt=0
+--monoslam_sal_pnt_elevation_std_if_gt=0
+--monoslam_sal_pnt_inv_dist_std=_if_gt0
 
 
 # Visualizer
