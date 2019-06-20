@@ -1,0 +1,11 @@
+{
+    "//01": "comments are nodes which start with double slash",
+    "//02": "json doesn't support inbuilt comments because 'json is data'",
+    "p1_float": 3.3,
+    "p2_int": 17,
+    "p3_bool": true,
+    "p4_bool": false,
+    "p5_str": "Edifice",
+    "p6_array_float": [11.1, 22.2],
+    "p7_array_int": [320, 200],
+}

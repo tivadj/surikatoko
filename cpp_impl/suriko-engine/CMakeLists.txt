@@ -24,6 +24,7 @@ message(STATUS "suriko_monoslam_salient_point_repres=${suriko_monoslam_salient_p
 set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/approx-alg.h
         ${PROJECT_SOURCE_DIR}/include/suriko/bundle-adj-kanatani.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/config-reader.h
         ${PROJECT_SOURCE_DIR}/include/suriko/davison-mono-slam.h
         ${PROJECT_SOURCE_DIR}/include/suriko/eigen-helpers.hpp
         ${PROJECT_SOURCE_DIR}/include/suriko/obs-geom.h
@@ -42,6 +43,7 @@ set(lib_hdrs
 set(lib_srcs
         ${PROJECT_SOURCE_DIR}/src/auto-project-ellipsoid-on-camera.cpp
         ${PROJECT_SOURCE_DIR}/src/bundle-adj-kanatani.cpp
+        ${PROJECT_SOURCE_DIR}/src/config-reader.cpp
         ${PROJECT_SOURCE_DIR}/src/davison-mono-slam.cpp
         ${PROJECT_SOURCE_DIR}/src/image-proc.cpp
         ${PROJECT_SOURCE_DIR}/src/mat-serialization.cpp

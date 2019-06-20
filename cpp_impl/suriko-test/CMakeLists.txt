@@ -3,6 +3,7 @@ project(suriko-test-prj)
 add_executable(suriko-test
         main.cpp
         test-bundle-adj-kanatani.cpp
+        test-config-reader.cpp
         test-eigen-helpers.cpp
         test-geom.cpp
         test-obs-geom.cpp

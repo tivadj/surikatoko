@@ -1,0 +1,32 @@
+{
+    "// input = virtual scene": 0,
+    "scene_source": "virtscene",
+    
+    "world_x_limits": [-1.5, 1.5],
+    "world_y_limits": [-1.5, -0.4],
+    "world_z_limits": [0.0, 0.0001],
+    "world_z_ascent": 0,
+    "world_cell_size": [0.5, 0.5, 0.5],
+    "world_noise_x3D_std": 0.0,
+    "world_noise_R_std": 0.0,
+    
+    "// move in rectangular path around some surface": 0,
+    "virtual_scenario": "RectangularPath",
+    "viewer_eye_offset": [3, -2, 7],
+    "viewer_center_offset": [0, 0, 0],
+    "viewer_up": [0, 0, 1],
+    
+    "viewer_steps_per_side_x": 10,
+    "viewer_steps_per_side_y": 10,
+    
+    "camera_image_size": [320, 240],
+    "camera_princip_point": [160.0, 120.0],
+    "camera_focal_length_pix": [195.0, 195.0],
+
+    "// process noise: world_size/steps=3/10=0.3 => w=0.3/3=0.1": 0,
+    "// w=0.05 goes in different direction": 0,
+    "monoslam_process_noise_std": 0.15,
+    "monoslam_measurm_noise_std_pix": 0.2,
+    "monoslam_sal_pnt_init_inv_dist": 0.1,
+    "monoslam_sal_pnt_init_inv_dist_std": 1.0
+}

@@ -26,7 +26,6 @@ TEST_F(QuaternionTest, AxisAngleToQuat)
 
     Scalar ang = -1;
     Eigen::Matrix<Scalar, 3, 1> v_back;
-    Eigen::CwiseBinaryOp<Eigen::internal::scalar_difference_op<double>, const Eigen::Matrix<double, 3, 1, 0>, const Eigen::Matrix<double, 3, 1, 0>> ff = v_back - v_back;
     AxisPlusAngleFromQuat(q, gsl::make_span(v_back.data(), 3), &ang);
     v_back *= ang;
 

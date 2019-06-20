@@ -23,6 +23,7 @@
 #include "suriko/mat-serialization.h"
 #include "suriko/templ-match.h"
 #include "suriko/approx-alg.h"
+#include "suriko/config-reader.h"
 #include "suriko/davison-mono-slam.h"
 #include "suriko/virt-world/scene-generator.h"
 #include "suriko/quat.h"
@@ -45,6 +46,7 @@ using namespace std;
 using namespace suriko; 
 using namespace suriko::internals;
 using namespace suriko::virt_world;
+using namespace suriko::config;
 
 // Specify data source for demo: virtual scene data or sequence of images in a directory.
 enum class DemoDataSource { kVirtualScene, kImageSeqDir };
@@ -999,66 +1001,8 @@ bool ValidateDirectoryEmptyOrExists(const std::string &value)
 
 static constexpr auto kVirtualSceneCStr = "virtscene";
 static constexpr auto kImageSeqDirCStr = "imageseqdir";
-DEFINE_string(scene_source, kVirtualSceneCStr, "{virtual,imageseqdir}");
-DEFINE_string(scene_imageseq_dir, "", "Path to directory with image files");
-DEFINE_int32(virtual_scenario, 1, "");
-DEFINE_double(world_xmin, -1.5, "world xmin");
-DEFINE_double(world_xmax, 1.5, "world xmax");
-DEFINE_double(world_ymin, -1.5, "world ymin");
-DEFINE_double(world_ymax, 1.5, "world ymax");
-DEFINE_double(world_zmin, 0, "world zmin");
-DEFINE_double(world_zmax, 1, "world zmax");
-DEFINE_double(world_z_ascent, 0, "z_real=gridz+cos(z_ascent)");
-DEFINE_double(world_cell_size_x, 0.5, "cell size x");
-DEFINE_double(world_cell_size_y, 0.5, "cell size y");
-DEFINE_double(world_cell_size_z, 0.5, "cell size z");
-DEFINE_double(world_noise_R_std, 0.0, "Standard deviation of noise distribution for R, 0=no noise (eg: 0.01)");
-DEFINE_double(world_noise_x3D_std, 0.0, "Standard deviation of noise distribution for salient points, 0=no noise (eg: 0.1)");
-DEFINE_double(viewer_eye_offset_x, 4, "");
-DEFINE_double(viewer_eye_offset_y, -2.5, "");
-DEFINE_double(viewer_eye_offset_z, 7, "");
-DEFINE_double(viewer_center_offset_x, 0, "");
-DEFINE_double(viewer_center_offset_y, 0, "");
-DEFINE_double(viewer_center_offset_z, 0, "");
-DEFINE_double(viewer_up_x, 0, "");
-DEFINE_double(viewer_up_y, 0, "");
-DEFINE_double(viewer_up_z, 1, "");
-// virtual scenario2
-DEFINE_double(s2_max_deviation, 0.1, "");
-DEFINE_int32(s2_num_steps, 100, "");
-// virtual scenario3
-DEFINE_double(s3_max_deviation, 0.1, "");
-DEFINE_int32(s3_periods_count, 1, "");
-DEFINE_int32(s3_shots_per_period, 4, "");
-DEFINE_bool(s3_const_view_dir, false, "");
-// virtual scenario4
-DEFINE_int32(s4_periods_count, 0, "");
-DEFINE_double(s4_0_eye_x, 0.0, "");
-DEFINE_double(s4_0_eye_y, 0.0, "");
-DEFINE_double(s4_0_eye_z, 0.0, "");
-DEFINE_double(s4_0_center_x, 0.0, "");
-DEFINE_double(s4_0_center_y, 0.0, "");
-DEFINE_double(s4_0_center_z, 0.0, "");
-DEFINE_double(s4_0_up_x, 0.0, "");
-DEFINE_double(s4_0_up_y, 0.0, "");
-DEFINE_double(s4_0_up_z, 0.0, "");
-DEFINE_double(s4_1_eye_x, 0.0, "");
-DEFINE_double(s4_1_eye_y, 0.0, "");
-DEFINE_double(s4_1_eye_z, 0.0, "");
-DEFINE_double(s4_1_center_x, 0.0, "");
-DEFINE_double(s4_1_center_y, 0.0, "");
-DEFINE_double(s4_1_center_z, 0.0, "");
-DEFINE_double(s4_1_up_x, 0.0, "");
-DEFINE_double(s4_1_up_y, 0.0, "");
-DEFINE_double(s4_1_up_z, 0.0, "");
-// virtual scenario5
-DEFINE_double(s5_min_ang, 0.78, "pi/4");
-DEFINE_double(s5_max_ang, 2.35, "3pi/4");
-DEFINE_int32(s5_shots_per_period, 4, "");
-DEFINE_int32(s5_periods_count, 100, "");
 
-DEFINE_int32(viewer_steps_per_side_x, 20, "number of viewer's steps at each side of the rectangle");
-DEFINE_int32(viewer_steps_per_side_y, 10, "number of viewer's steps at each side of the rectangle");
+DEFINE_string(demo_params, "", "path to json file to read parameters for demo");
 DEFINE_bool(monoslam_cam_perfect_init_vel, false, "");
 DEFINE_bool(monoslam_cam_perfect_init_ang_vel, false, "");
 DEFINE_double(monoslam_cam_pos_x_std_m, 0, "");
@@ -1075,11 +1019,6 @@ DEFINE_double(monoslam_sal_pnt_first_cam_pos_std_if_gt, 0, "");
 DEFINE_double(monoslam_sal_pnt_azimuth_std_if_gt, 0, "");
 DEFINE_double(monoslam_sal_pnt_elevation_std_if_gt, 0, "");
 DEFINE_double(monoslam_sal_pnt_inv_dist_std_if_gt, 0, "");
-
-DEFINE_double(monoslam_process_noise_std, 0.08, "");
-DEFINE_double(monoslam_measurm_noise_std_pix, 1, "");
-DEFINE_double(monoslam_sal_pnt_init_inv_dist, 1, "");
-DEFINE_double(monoslam_sal_pnt_init_inv_dist_std, 1, "");
 
 DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
 DEFINE_int32(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
@@ -1102,31 +1041,38 @@ DEFINE_int32(monoslam_debug_max_sal_pnt_count, -1, "[default=-1(none)] number of
 DEFINE_bool(monoslam_sal_pnt_perfect_init_inv_dist, false, "");
 DEFINE_int32(monoslam_set_estim_state_covar_to_gt_impl, 2, "1=ignore correlations, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point");
 DEFINE_double(monoslam_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
+
 DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
 DEFINE_int32(ui_loop_prolong_period_ms, 3000, "");
 DEFINE_int32(ui_tight_loop_relaxing_delay_ms, 100, "");
 DEFINE_int32(ui_dots_per_uncert_ellipse, 12, "Number of dots to split uncertainty ellipse (4=rectangle)");
+
 DEFINE_bool(ctrl_multi_threaded_mode, false, "true for UI to work in a separated dedicated thread; false for UI to work inside worker's thread");
 DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
 DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without reconstruction");
 DEFINE_bool(ctrl_visualize_during_processing, true, "");
 DEFINE_bool(ctrl_visualize_after_processing, true, "");
 DEFINE_bool(ctrl_collect_tracker_internals, false, "");
-DEFINE_int32(camera_image_width, 320, "");
-DEFINE_int32(camera_image_height, 240, "");
-DEFINE_double(camera_princip_point_x, 162.0, "");
-DEFINE_double(camera_princip_point_y, 125.0, "");
-DEFINE_double(camera_focal_length_pix_x, 195.0, "");
-DEFINE_double(camera_focal_length_pix_y, 195.0, "");
-DEFINE_double(camera_look_from_x, 0.0, "");
-DEFINE_double(camera_look_from_y, 0.0, "");
-DEFINE_double(camera_look_from_z, 0.0, "");
-DEFINE_double(camera_look_to_x, 0.0, "");
-DEFINE_double(camera_look_to_y, 0.0, "");
-DEFINE_double(camera_look_to_z, 1.0, "");
-DEFINE_double(camera_up_x, 0.0, "");
-DEFINE_double(camera_up_y, 1.0, "");
-DEFINE_double(camera_up_z, 0.0, "");
+
+void ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_reader)
+{
+    auto& cr = *config_reader;
+    auto& ms = *mono_slam;
+
+    auto opt_set = [](std::optional<double> opt_f64, gsl::not_null<Scalar*> dst)
+    {
+        if (opt_f64.has_value())
+            * dst = static_cast<Scalar>(opt_f64.value());
+    };
+
+    auto process_noise_std = cr.GetValue<double>("monoslam_process_noise_std");
+    if (process_noise_std.has_value())
+        ms.SetProcessNoiseStd(static_cast<Scalar>(process_noise_std.value()));
+
+    opt_set(cr.GetValue<double>("monoslam_measurm_noise_std_pix"), &ms.measurm_noise_std_pix_);
+    opt_set(cr.GetValue<double>("monoslam_sal_pnt_init_inv_dist"), &ms.sal_pnt_init_inv_dist_);
+    opt_set(cr.GetValue<double>("monoslam_sal_pnt_init_inv_dist_std"), &ms.sal_pnt_init_inv_dist_std_);
+}
 
 int DavisonMonoSlamDemo(int argc, char* argv[])
 {
@@ -1137,8 +1083,37 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cv::theRNG().state = 123; // specify seed for OpenCV randomness, so that debugging always goes the same execution path
 #endif
 
+    auto log_absent_mandatory_flag = [](std::string_view param_name)
+    {
+        LOG(ERROR) << "mandatory flag '" << param_name << "' is not provided";
+    };
+
+    std::filesystem::path demo_params = FLAGS_demo_params;
+    if (demo_params.empty())
+    {
+        log_absent_mandatory_flag("demo_params");
+        return 1;
+    }
+
+    ConfigReader config_reader{ demo_params };
+    auto demo_params_dev = demo_params.replace_filename(demo_params.filename().stem().string() + "-DEV" + demo_params.extension().string());
+    if (std::filesystem::exists(demo_params_dev))
+        config_reader.ReadConfig(demo_params_dev);  // allow dev to override some params
+    if (config_reader.HasErrors())
+    {
+        LOG(ERROR) << config_reader.Error();
+        return 1;
+    }
+
+    std::string scene_source = config_reader.GetValue<std::string>("scene_source").value_or("");
+    if (scene_source.empty())
+    {
+        log_absent_mandatory_flag("scene_source");
+        return 1;
+    }
+
     DemoDataSource demo_data_source = DemoDataSource::kVirtualScene;
-    if (FLAGS_scene_source == std::string(kImageSeqDirCStr))
+    if (scene_source == std::string(kImageSeqDirCStr))
         demo_data_source = DemoDataSource::kImageSeqDir;
 
     auto check_sal_pnt_representation = [&]() -> bool
@@ -1172,11 +1147,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         return 1;
     }
 
+    std::string scene_imageseq_dir;
     if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
+        scene_imageseq_dir = config_reader.GetValue<std::string>("scene_imageseq_dir").value_or("");
+
         // validate directory only if it is the source of images for demo
-        if (!ValidateDirectoryEmptyOrExists(FLAGS_scene_imageseq_dir)) {
-            LOG(ERROR) << "directory [" << FLAGS_scene_imageseq_dir << "] doesn't exist";
+        if (!ValidateDirectoryEmptyOrExists(scene_imageseq_dir)) {
+            LOG(ERROR) << "directory [" << scene_imageseq_dir << "] doesn't exist";
             return 2;
         }
     }
@@ -1187,24 +1165,45 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
-        LOG(INFO) << "world_noise_x3D_std=" << FLAGS_world_noise_x3D_std;
-        LOG(INFO) << "world_noise_R_std=" << FLAGS_world_noise_R_std;
+        auto world_noise_x3D_std = FloatParam<Scalar>(&config_reader, "world_noise_x3D_std").value_or(0.0f);
+        auto world_noise_R_std = FloatParam<Scalar>(&config_reader, "world_noise_R_std").value_or(0.0f);
+
+        LOG(INFO) << "world_noise_x3D_std=" << world_noise_x3D_std;
+        LOG(INFO) << "world_noise_R_std=" << world_noise_R_std;
 
         //
-        bool corrupt_salient_points_with_noise = FLAGS_world_noise_x3D_std > 0;
-        bool corrupt_cam_orient_with_noise = FLAGS_world_noise_R_std > 0;
+        bool corrupt_salient_points_with_noise = world_noise_x3D_std > 0;
+        bool corrupt_cam_orient_with_noise = world_noise_R_std > 0;
+
+        auto world_x_limits = FloatSeq<Scalar>(&config_reader, "world_x_limits").value_or(std::vector<Scalar>{-1.5f, 1.5f});
+        auto world_y_limits = FloatSeq<Scalar>(&config_reader, "world_y_limits").value_or(std::vector<Scalar>{-1.5f, 1.5f});
+        auto world_z_limits = FloatSeq<Scalar>(&config_reader, "world_z_limits").value_or(std::vector<Scalar>{-1.5f, 1.5f});
+        if (world_x_limits.size() != 2 || world_y_limits.size() != 2 || world_z_limits.size() != 2)
+        {
+            LOG(ERROR) << "require type(world_xyz_limits): array<double,2>";
+            return 1;
+        }
+
+        auto world_z_ascent = FloatParam<Scalar>(&config_reader, "world_z_ascent").value_or(0.2f);
+
+        auto world_cell_size = FloatSeq<Scalar>(&config_reader, "world_cell_size").value_or(std::vector<Scalar>{0.5f, 0.5f, 0.5f});
+        if (world_cell_size.size() != 3)
+        {
+            LOG(ERROR) << "require type(world_cell_size): array<double,3>";
+            return 1;
+        }
 
         WorldBounds wb{};
-        wb.x_min = static_cast<Scalar>(FLAGS_world_xmin);
-        wb.x_max = static_cast<Scalar>(FLAGS_world_xmax);
-        wb.y_min = static_cast<Scalar>(FLAGS_world_ymin);
-        wb.y_max = static_cast<Scalar>(FLAGS_world_ymax);
-        wb.z_min = static_cast<Scalar>(FLAGS_world_zmin);
-        wb.z_max = static_cast<Scalar>(FLAGS_world_zmax);
+        wb.x_min = world_x_limits[0];
+        wb.x_max = world_x_limits[1];
+        wb.y_min = world_y_limits[0];
+        wb.y_max = world_y_limits[1];
+        wb.z_min = world_z_limits[0];
+        wb.z_max = world_z_limits[1];
         std::array<Scalar, 3> cell_size = {
-            static_cast<Scalar>(FLAGS_world_cell_size_x), 
-            static_cast<Scalar>(FLAGS_world_cell_size_y),
-            static_cast<Scalar>(FLAGS_world_cell_size_z)
+            world_cell_size[0],
+            world_cell_size[1],
+            world_cell_size[2]
         };
 
         std::random_device rd;  //Will be used to obtain a seed for the random number engine
@@ -1213,60 +1212,106 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         std::unique_ptr<std::normal_distribution<Scalar>> x3D_noise_dis;
         if (corrupt_salient_points_with_noise)
-            x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0.0f, static_cast<Scalar>(FLAGS_world_noise_x3D_std));
+            x3D_noise_dis = std::make_unique<std::normal_distribution<Scalar>>(0.0f, world_noise_x3D_std);
 
         //
         entire_map.SetFragmentIdOffsetInternal(1000'000);
-        GenerateWorldPoints(wb, cell_size, static_cast<Scalar>(FLAGS_world_z_ascent), corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
+        GenerateWorldPoints(wb, cell_size, world_z_ascent, corrupt_salient_points_with_noise, &gen, x3D_noise_dis.get(), &entire_map);
         LOG(INFO) << "points_count=" << entire_map.SalientPointsCount();
 
-        suriko::Point3 viewer_eye_offset(FLAGS_viewer_eye_offset_x, FLAGS_viewer_eye_offset_y, FLAGS_viewer_eye_offset_z);
-        suriko::Point3 viewer_center_offset(FLAGS_viewer_center_offset_x, FLAGS_viewer_center_offset_y, FLAGS_viewer_center_offset_z);
-        Eigen::Matrix<Scalar, 3, 1> up(static_cast<Scalar>(FLAGS_viewer_up_x), static_cast<Scalar>(FLAGS_viewer_up_y), static_cast<Scalar>(FLAGS_viewer_up_z));
-
-        if (FLAGS_virtual_scenario == 1)
-            GenerateCameraShotsAlongRectangularPath(wb, FLAGS_viewer_steps_per_side_x, FLAGS_viewer_steps_per_side_y,
-                viewer_eye_offset, viewer_center_offset, up, &gt_cam_orient_cfw);
-        else if (FLAGS_virtual_scenario == 2)
-            GenerateCameraShotsRightAndLeft(wb, viewer_eye_offset, viewer_center_offset, up,
-                static_cast<Scalar>(FLAGS_s2_max_deviation),
-                FLAGS_s2_num_steps,
-                &gt_cam_orient_cfw);
-        else if (FLAGS_virtual_scenario == 3)
+        auto viewer_eye_offset_a = FloatSeq<Scalar>(&config_reader, "viewer_eye_offset").value_or(std::vector<Scalar>{4, -2.5f, 7});
+        auto viewer_center_offset_a = FloatSeq<Scalar>(&config_reader, "viewer_center_offset").value_or(std::vector<Scalar>{0, 0, 0});
+        auto viewer_up_a = FloatSeq<Scalar>(&config_reader, "viewer_up").value_or(std::vector<Scalar>{0, 0, 1});
+        if (viewer_eye_offset_a.size() != 3 || viewer_center_offset_a.size() != 3 || viewer_up_a.size() != 3)
         {
+            LOG(ERROR) << "require type(viewer_eye_offset): array<double,3>";
+            LOG(ERROR) << "require type(viewer_center_offset): array<double,3>";
+            LOG(ERROR) << "require type(viewer_up): array<double,3>";
+            return 1;
+        }
+
+        suriko::Point3 viewer_eye_offset{ viewer_eye_offset_a[0], viewer_eye_offset_a[1], viewer_eye_offset_a[2] };
+        suriko::Point3 viewer_center_offset{ viewer_center_offset_a[0], viewer_center_offset_a[1], viewer_center_offset_a[2] };
+        Eigen::Matrix<Scalar, 3, 1> viewer_up{ viewer_up_a[0], viewer_up_a[1], viewer_up_a[2] };
+
+        std::string virtual_scenario = config_reader.GetValue<std::string>("virtual_scenario").value_or("");
+        if (virtual_scenario.empty())
+        {
+            log_absent_mandatory_flag("virtual_scenario");
+            return 1;
+        }
+
+        if (virtual_scenario == "RectangularPath")
+        {
+            int viewer_steps_per_side_x = config_reader.GetValue<int>("viewer_steps_per_side_x").value_or(20);
+            int viewer_steps_per_side_y = config_reader.GetValue<int>("viewer_steps_per_side_y").value_or(10);
+            GenerateCameraShotsAlongRectangularPath(wb, viewer_steps_per_side_x, viewer_steps_per_side_y,
+                viewer_eye_offset, viewer_center_offset, viewer_up, &gt_cam_orient_cfw);
+        }
+        else if (virtual_scenario == "RightAndLeft")
+        {
+            auto max_deviation = FloatParam<Scalar>(&config_reader, "viewer_max_deviation").value_or(1.5f);
+            auto num_steps = config_reader.GetValue<int>("viewer_max_deviation").value_or(100);
+            GenerateCameraShotsRightAndLeft(wb, viewer_eye_offset, viewer_center_offset, viewer_up,
+                max_deviation,
+                num_steps,
+                &gt_cam_orient_cfw);
+        }
+        else if (virtual_scenario == "OscilateRightAndLeft")
+        {
+            auto max_deviation = FloatParam<Scalar>(&config_reader, "scenario_max_deviation").value_or(0.6f);
+            int shots_per_period = config_reader.GetValue<int>("scenario_shots_per_period").value_or(160);
+            int periods_count = config_reader.GetValue<int>("scenario_periods_count").value_or(100);
+            bool const_view_dir = config_reader.GetValue<bool>("scenario_const_view_dir").value_or(false);
             auto viewer_eye = viewer_eye_offset;
             auto center = viewer_center_offset;
-            GenerateCameraShotsOscilateRightAndLeft(wb, viewer_eye, center, up,
-                static_cast<Scalar>(FLAGS_s3_max_deviation),
-                FLAGS_s3_periods_count,
-                FLAGS_s3_shots_per_period,
-                FLAGS_s3_const_view_dir,
+            GenerateCameraShotsOscilateRightAndLeft(wb, viewer_eye, center, viewer_up,
+                max_deviation,
+                periods_count,
+                shots_per_period,
+                const_view_dir,
                 &gt_cam_orient_cfw);
         }
-        else if (FLAGS_virtual_scenario == 4)
+        else if (virtual_scenario == "Custom3DPath")
         {
+            int periods_count = config_reader.GetValue<int>("viewer_periods_count").value_or(100);
+            auto float_seq = FloatSeq<Scalar>(&config_reader, "viewer_eye_center_up").value_or(std::vector<Scalar>{});
+            if (float_seq.size() % 9 != 0)
+            {
+                LOG(INFO) << "Expect sequence of N camera orientations, formatted 9*N=[eye center up...] where eye, center and up are 3D position [X Y Z]";
+                return 1;
+            }
+            size_t cams_count = float_seq.size() / 9;
             std::vector<LookAtComponents> cam_poses;
-            cam_poses.push_back(LookAtComponents{
-                suriko::Point3{FLAGS_s4_0_eye_x,FLAGS_s4_0_eye_y,FLAGS_s4_0_eye_z},
-                suriko::Point3{FLAGS_s4_0_center_x,FLAGS_s4_0_center_y,FLAGS_s4_0_center_z},
-                suriko::Point3{FLAGS_s4_0_up_x,FLAGS_s4_0_up_y,FLAGS_s4_0_up_z}
-                });
-            cam_poses.push_back(LookAtComponents{
-                suriko::Point3{FLAGS_s4_1_eye_x,FLAGS_s4_1_eye_y,FLAGS_s4_1_eye_z},
-                suriko::Point3{FLAGS_s4_1_center_x,FLAGS_s4_1_center_y,FLAGS_s4_1_center_z},
-                suriko::Point3{FLAGS_s4_1_up_x,FLAGS_s4_1_up_y,FLAGS_s4_1_up_z}
-                });
-            GenerateCameraShots3DPath(wb, cam_poses, FLAGS_s4_periods_count, &gt_cam_orient_cfw);
+            for (size_t i = 0; i < cams_count; ++i)
+            {
+                size_t off = i * 9;
+                suriko::Point3 eye{ float_seq[off + 0], float_seq[off + 1], float_seq[off + 2] };
+                suriko::Point3 cnt{ float_seq[off + 3], float_seq[off + 4], float_seq[off + 5] };
+                suriko::Point3 upp{ float_seq[off + 6], float_seq[off + 7], float_seq[off + 8] };
+                cam_poses.push_back(LookAtComponents{ eye, cnt, upp });
+            }
+            GenerateCameraShots3DPath(wb, cam_poses, periods_count, &gt_cam_orient_cfw);
         }
-        else if (FLAGS_virtual_scenario == 5)
+        else if (virtual_scenario == "RotateLeftAndRight")
         {
+            auto viewer_min_ang = FloatParam<Scalar>(&config_reader, "viewer_min_ang").value_or(0.95f);
+            auto viewer_max_ang = FloatParam<Scalar>(&config_reader, "viewer_max_ang").value_or(1.39f);
+            auto shots_per_period = config_reader.GetValue<int>("shots_per_period").value_or(32);
+            auto periods_count = config_reader.GetValue<int>("periods_count").value_or(100);
             auto viewer_eye = viewer_eye_offset;
-            GenerateCameraShotsRotateLeftAndRight(wb, viewer_eye, up,
-                static_cast<Scalar>(FLAGS_s5_min_ang),
-                static_cast<Scalar>(FLAGS_s5_max_ang),
-                FLAGS_s5_periods_count,
-                FLAGS_s5_shots_per_period,
+            GenerateCameraShotsRotateLeftAndRight(wb, viewer_eye, viewer_up,
+                viewer_min_ang,
+                viewer_max_ang,
+                periods_count,
+                shots_per_period,
                 &gt_cam_orient_cfw);
+        }
+        else
+        {
+            LOG(ERROR) << "Unsupported virtual scenario: '" << virtual_scenario 
+                << "'. Use one of [RectangularPath,RightAndLeft,OscilateRightAndLeft,Custom3DPath,RotateLeftAndRight]";
+            return 1;
         }
 
         std::vector<SE3Transform> gt_cam_orient_wfc;
@@ -1274,7 +1319,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         if (corrupt_cam_orient_with_noise)
         {
-            std::normal_distribution<Scalar> cam_orient_noise_dis(0, static_cast<Scalar>(FLAGS_world_noise_R_std));
+            std::normal_distribution<Scalar> cam_orient_noise_dis(0, world_noise_R_std);
             for (SE3Transform& cam_orient : gt_cam_orient_cfw)
             {
                 Eigen::Matrix<Scalar, 3, 1> dir;
@@ -1301,10 +1346,14 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     size_t frames_count = gt_cam_orient_cfw.size();
     LOG(INFO) << "frames_count=" << frames_count;
 
+    auto camera_image_size = config_reader.GetSeq<int>("camera_image_size").value_or(std::vector<int>{0, 0});
+    auto camera_princip_point = config_reader.GetSeq<double>("camera_princip_point").value_or(std::vector<double>{0, 0});
+    auto camera_focal_length_pix = config_reader.GetSeq<double>("camera_focal_length_pix").value_or(std::vector<double>{0, 0});
+
     // focal_len_pix = focal_len_mm / pixel_size_mm
     std::array<Scalar, 2> foc_len_pix = {
-        static_cast<Scalar>(FLAGS_camera_focal_length_pix_x), 
-        static_cast<Scalar>(FLAGS_camera_focal_length_pix_y) };
+        static_cast<Scalar>(camera_focal_length_pix[0]),
+        static_cast<Scalar>(camera_focal_length_pix[1]) };
 
     // assume dy=PixelSizeMm[1]=some constant
     const Scalar pix_size_y = 0.001f;
@@ -1313,8 +1362,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     Scalar pix_size_x = focal_length_mm / foc_len_pix[0];
 
     CameraIntrinsicParams cam_intrinsics;
-    cam_intrinsics.image_size = { FLAGS_camera_image_width, FLAGS_camera_image_height };
-    cam_intrinsics.principal_point_pix = { (Scalar)FLAGS_camera_princip_point_x, (Scalar)FLAGS_camera_princip_point_y };
+    cam_intrinsics.image_size = { camera_image_size[0], camera_image_size[1] };
+    cam_intrinsics.principal_point_pix = { static_cast<Scalar>(camera_princip_point[0]), static_cast<Scalar>(camera_princip_point[1]) };
     cam_intrinsics.focal_length_mm = focal_length_mm;
     cam_intrinsics.pixel_size_mm = { pix_size_x , pix_size_y };
 
@@ -1362,15 +1411,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     DavisonMonoSlam::SetDebugPath(debug_path);
 
     DavisonMonoSlam mono_slam{ };
+    ApplyParamsFromConfigFile(&mono_slam, &config_reader);
     mono_slam.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
     mono_slam.between_frames_period_ = 1;
     mono_slam.cam_intrinsics_ = cam_intrinsics;
     mono_slam.cam_distort_params_ = cam_distort_params;
-    mono_slam.sal_pnt_init_inv_dist_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_init_inv_dist);
-    mono_slam.sal_pnt_init_inv_dist_std_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_init_inv_dist_std);
     mono_slam.force_xyz_sal_pnt_pos_diagonal_uncert_ = FLAGS_monoslam_force_xyz_sal_pnt_pos_diagonal_uncert;
-    mono_slam.SetProcessNoiseStd(static_cast<Scalar>(FLAGS_monoslam_process_noise_std));
-    mono_slam.measurm_noise_std_pix_ = static_cast<Scalar>(FLAGS_monoslam_measurm_noise_std_pix);
     mono_slam.sal_pnt_templ_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
     if (FLAGS_monoslam_templ_closest_templ_min_dist_pix > 0)
         mono_slam.closest_sal_pnt_templ_min_dist_pix_ = static_cast<Scalar>(FLAGS_monoslam_templ_closest_templ_min_dist_pix);
@@ -1454,8 +1500,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.cam_ang_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_ang_vel_std);
     mono_slam.SetCameraStateCovarHelper();
 
-    LOG(INFO) << "mono_slam_process_noise_std=" << FLAGS_monoslam_process_noise_std;
-    LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << FLAGS_monoslam_measurm_noise_std_pix;
+    LOG(INFO) << "mono_slam_process_noise_std=" << mono_slam.process_noise_std_;
+    LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << mono_slam.measurm_noise_std_pix_;
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
     LOG(INFO) << "mono_slam_templ_min_dist=" << mono_slam.ClosestSalientPointTemplateMinDistance();
@@ -1502,6 +1548,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     {
         mono_slam.SetStatsLogger(std::make_unique<DavisonMonoSlamInternalsLogger>(&mono_slam));
     }
+
+    auto unused_params = config_reader.GetUnusedParams();
+    for (auto param : unused_params)
+        LOG(INFO) << "Unused param=" << param;
+
 
 #if defined(SRK_HAS_OPENCV)
     cv::Mat camera_image_bgr = cv::Mat::zeros(cam_intrinsics.image_size.height, (int)cam_intrinsics.image_size.width, CV_8UC3);
@@ -1564,8 +1615,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
-        LOG(INFO) << "imageseq_dir=" << FLAGS_scene_imageseq_dir;
-        dir_it = std::filesystem::directory_iterator(FLAGS_scene_imageseq_dir);
+        LOG(INFO) << "imageseq_dir=" << scene_imageseq_dir;
+        dir_it = std::filesystem::directory_iterator(scene_imageseq_dir);
     }
 
     bool iterate_frames = true;

@@ -1,0 +1,34 @@
+{
+    "// input = virtual scene": 0,
+    "scene_source": "virtscene",
+    
+    "world_x_limits": [0.0, 0.6],
+    "world_y_limits": [0.0, 0.6],
+    "world_z_limits": [0.0, 0.6001],
+    "world_z_ascent": 0.2,
+    "world_cell_size": [0.5, 0.5, 0.5],
+    "world_noise_x3D_std": 0.0,
+    "world_noise_R_std": 0.0,
+    
+    "// oscillate around some direction, keeping position on the segment, orthogonal to viewing direction": 0,
+    "virtual_scenario": "OscilateRightAndLeft",
+    "viewer_eye_offset": [0, -1.5, 0],
+    "viewer_center_offset": [0, 0, 0],
+    "viewer_up": [0, 0, 1],
+    
+    "viewer_max_deviation": 0.6,
+    "viewer_shots_per_period": 160,
+    "viewer_periods_count": 100,
+    "// true to rotate camera, false to keep constant orientation": 0,
+    "viewer_const_view_dir": false,
+    
+    "camera_image_size": [320, 240],
+    "camera_princip_point": [160.0, 120.0],
+    "camera_focal_length_pix": [195.0, 195.0],
+
+    "// process noise: max_deviation/shots=0.6/40=0.015 => w=0.015/3=0.05": 0,
+    "monoslam_process_noise_std": 0.05,
+    "monoslam_measurm_noise_std_pix": 0.2,
+    "monoslam_sal_pnt_init_inv_dist": 0.1,
+    "monoslam_sal_pnt_init_inv_dist_std": 1.0
+}
