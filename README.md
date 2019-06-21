@@ -30,10 +30,10 @@ Almost spherical ellipsoids are drawn with two extra strokes on the flanks.
 2D camera view. As 3D position of every salient point is projected onto the camera, in the same way the uncertainty is propagated from 3D world coordinates into 2D picture coordinates. The resultant 2D ellipse brings uncertainty, associated with position and orientation of the camera. Thus 3D world view and 2D camera view show uncertainties which are visually different.
 Camera view shows only salient points which fit the current view, the 3D view renders all salient points.
 World view renders salient points' patches by back-projecting 2D blobs in the picture, back into the 3D world. Hence the patch is linked to the frame of a camera. The salient point itself is rendered as a dot (small solid rectangle) in the coordinates, estimated by Kalman Filter. Thus some salient point may have the 3D center and patch coordinates diverge and visually do not overlap. This indicates some inconsistencies in the filtering process.
-2D ellipse colors:
-Red (projection of ellipsoid in forefront of the camera)
-Yellow  (projection of ellipsoid which cut camera plane)
-Cyan (approximation of projection of ellipsoid, created by projecting a couple of 3D points which lie on ellipsoid boundary)
+2D ellipse:
+Solid: projection of an ellipsoid which is in forefront of the camera;
+Dashed: projection of ellipsoid which cuts camera plane;
+Dotted: approximation of projection of ellipsoid, created by projecting a couple of 3D points which lie on the ellipsoid boundary.
 
 Hot keys:
 f=next frame

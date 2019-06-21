@@ -659,10 +659,10 @@ std::weak_ptr<SceneVisualizationPangolinGui> SceneVisualizationPangolinGui::s_th
 
 void SceneVisualizationPangolinGui::InitUI()
 {
-    constexpr float fw = 640;
-    constexpr float fh = 480;
-    constexpr int w = (int)fw;
-    constexpr int h = (int)fh;
+    float fw = 1280;
+    float fh = 960;
+    int w = (int)fw;
+    int h = (int)fh;
 
     pangolin::CreateWindowAndBind("3DReconstr", w, h);
     glEnable(GL_DEPTH_TEST);
@@ -675,7 +675,7 @@ void SceneVisualizationPangolinGui::InitUI()
         pangolin::ModelViewLookAt(30, -30, 30, 0, 0, 0, pangolin::AxisY)
     );
 
-    constexpr int kUiWidth = 280;
+    int kUiWidth = 160;
 
     // ui panel to the left 
     pangolin::CreatePanel("ui")
@@ -696,6 +696,7 @@ void SceneVisualizationPangolinGui::InitUI()
     cb_displ_ground_truth_ = std::make_unique<pangolin::Var<bool>>("ui.displ_gt", false, true);
     slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
     cb_displ_mid_cam_type_ = std::make_unique<pangolin::Var<bool>>("ui.displ_3D_uncert", true, true);
+    button_set_viewer_behind_camera_ = std::make_unique<pangolin::Var<bool>>("ui.view_behind_cam", false, false);
 
     // Pangolin doesn't allow generic key handler, so have to set a specific handler for all possible input keys
     for (int key : allowed_key_pressed_codes_)
@@ -727,6 +728,9 @@ void SceneVisualizationPangolinGui::RenderFrame()
     *a_frame_ind_ = frame_ind;
 
     display_cam->Activate(*view_state_3d_);
+
+    if (pangolin::Pushed(*button_set_viewer_behind_camera_))
+        SetCameraBehindTracker();
 
     bool display_trajectory = cb_displ_traj_->Get();
     bool display_3D_uncertainties = cb_displ_mid_cam_type_->Get();
@@ -1032,11 +1036,18 @@ cv::Scalar OcvColorBgr(SrkColor c)
     };
 }
 
+enum class LineType
+{
+    Solid,
+    Dashed,
+    Dotted
+};
+
 /// Draws ellipse in camera plane by dividing it into points and projecting/distorting them into pixels.
-void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam,
-    const RotatedEllipse2D& ellipse_pix,
+void DrawDistortedEllipseOnPicture(const RotatedEllipse2D& ellipse_pix,
     size_t dots_per_ellipse,
     cv::Scalar color,
+    LineType line_type,
     std::function<suriko::Point2f(suriko::Point2f)> transform_ellipse_pnt_fun,
     cv::Mat* camera_image_bgr)
 {
@@ -1069,8 +1080,11 @@ void DrawDistortedEllipseOnPicture(const DavisonMonoSlam& mono_slam,
 
         if (pnt_int_prev.has_value())
         {
-            cv::line(*camera_image_bgr, pnt_int_prev.value(), pnt_int, color);
+            if (line_type == LineType::Solid || line_type == LineType::Dashed && i % 2 == 0)
+                cv::line(*camera_image_bgr, pnt_int_prev.value(), pnt_int, color);
         }
+        if (line_type == LineType::Dotted)
+            cv::drawMarker(*camera_image_bgr, pnt_int, color, cv::MarkerTypes::MARKER_SQUARE, 1); // square of size 1 = point
         pnt_int_prev = pnt_int;
     }
 }
@@ -1106,7 +1120,7 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
             SRK_ASSERT(op_2D_ellip);
         }
 
-        DrawDistortedEllipseOnPicture(mono_slam, corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, nullptr, out_image_bgr);
+        DrawDistortedEllipseOnPicture(corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, LineType::Solid,nullptr, out_image_bgr);
     }
     else if (draw_sal_pnt_uncert_impl == 2)
     {
@@ -1139,12 +1153,13 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
         int impl_with = -1;
         RotatedEllipse2D rotated_ellipse = mono_slam.ProjectEllipsoidOnCameraOrApprox(rot_ellipsoid, cam_state, &impl_with);
 
+        auto line_type = LineType::Solid;
         if (impl_with == 1)
-            sal_pnt_color_bgr = cv::Scalar{ 0, 0, 255 }; // red, projected ellipsoid
+            line_type = LineType::Solid;  // projected ellipsoid
         else if (impl_with == 2)
-            sal_pnt_color_bgr = cv::Scalar{ 0, 255, 255 }; // yellow, ellipsoid cuts camera plane
+            line_type = LineType::Dashed;  // ellipsoid cuts camera plane
         else if (impl_with == 3)
-            sal_pnt_color_bgr = cv::Scalar{ 255, 255, 0 }; // cyan, projected beacon points
+            line_type = LineType::Dotted;  // projected beacon points
 
         auto cam_coord_to_pix_fun = [&mono_slam](suriko::Point2f pos_camera) -> suriko::Point2f
         {
@@ -1155,7 +1170,7 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
             return pnt_pix;
         };
 
-        DrawDistortedEllipseOnPicture(mono_slam, rotated_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, cam_coord_to_pix_fun, out_image_bgr);
+        DrawDistortedEllipseOnPicture(rotated_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, line_type, cam_coord_to_pix_fun, out_image_bgr);
     }
 }
 
