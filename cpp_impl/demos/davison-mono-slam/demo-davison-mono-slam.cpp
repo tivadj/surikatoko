@@ -1347,25 +1347,22 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     LOG(INFO) << "frames_count=" << frames_count;
 
     auto camera_image_size = config_reader.GetSeq<int>("camera_image_size").value_or(std::vector<int>{0, 0});
-    auto camera_princip_point = config_reader.GetSeq<double>("camera_princip_point").value_or(std::vector<double>{0, 0});
-    auto camera_focal_length_pix = config_reader.GetSeq<double>("camera_focal_length_pix").value_or(std::vector<double>{0, 0});
+    auto camera_princip_point = FloatSeq<Scalar>(&config_reader, "camera_princip_point").value_or(std::vector<Scalar>{0, 0});
+    auto camera_pixel_size_mm = FloatSeq<Scalar>(&config_reader, "camera_pixel_size_mm").value_or(std::vector<Scalar>{0, 0});
+    auto camera_focal_length_mm = FloatParam<Scalar>(&config_reader, "camera_focal_length_mm").value_or(0);
 
-    // focal_len_pix = focal_len_mm / pixel_size_mm
-    std::array<Scalar, 2> foc_len_pix = {
-        static_cast<Scalar>(camera_focal_length_pix[0]),
-        static_cast<Scalar>(camera_focal_length_pix[1]) };
-
-    // assume dy=PixelSizeMm[1]=some constant
-    const Scalar pix_size_y = 0.001f;
-
-    const Scalar focal_length_mm = foc_len_pix[1] * pix_size_y;
-    Scalar pix_size_x = focal_length_mm / foc_len_pix[0];
+    if (camera_focal_length_mm == 0 || camera_pixel_size_mm[0] == 0)
+    {
+        LOG(ERROR) << "camera_focal_length_mm: f is mandatory";
+        LOG(ERROR) << "camera_pixel_size_mm: [dx,dy] is mandatory";
+        return 1;
+    }
 
     CameraIntrinsicParams cam_intrinsics;
     cam_intrinsics.image_size = { camera_image_size[0], camera_image_size[1] };
-    cam_intrinsics.principal_point_pix = { static_cast<Scalar>(camera_princip_point[0]), static_cast<Scalar>(camera_princip_point[1]) };
-    cam_intrinsics.focal_length_mm = focal_length_mm;
-    cam_intrinsics.pixel_size_mm = { pix_size_x , pix_size_y };
+    cam_intrinsics.principal_point_pix = { camera_princip_point[0], camera_princip_point[1] };
+    cam_intrinsics.focal_length_mm = camera_focal_length_mm;
+    cam_intrinsics.pixel_size_mm = { camera_pixel_size_mm[0] , camera_pixel_size_mm[1] };
 
     LOG(INFO) << "img_size=[" << cam_intrinsics.image_size.width << "," << cam_intrinsics.image_size.height << "] pix";
     LOG(INFO) << "foc_len="
@@ -1379,9 +1376,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     std::array<Scalar, 2> f_pix = cam_intrinsics.FocalLengthPix();
     LOG(INFO) << "foc_len[alphax,alphay]=[" << f_pix[0] << "," << f_pix[1] << "] pix";
 
-    RadialDistortionParams cam_distort_params;
-    cam_distort_params.k1 = 0;
-    cam_distort_params.k2 = 0;
+    MikhailRadialDistortionParams cam_distort_params{};
+    if (auto camera_distort_mikhail_k1k2 = FloatSeq<Scalar>(&config_reader, "camera_distort_mikhail_k1k2"); camera_distort_mikhail_k1k2.has_value())
+    {
+        cam_distort_params.k1 = camera_distort_mikhail_k1k2.value()[0];
+        cam_distort_params.k2 = camera_distort_mikhail_k1k2.value()[1];
+    }
 
     //
     DavisonMonoSlam2DDrawer drawer;
@@ -1416,6 +1416,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.between_frames_period_ = 1;
     mono_slam.cam_intrinsics_ = cam_intrinsics;
     mono_slam.cam_distort_params_ = cam_distort_params;
+    mono_slam.cam_enable_distortion_ = config_reader.GetValue<bool>("camera_enable_distortion").value_or(true);
     mono_slam.force_xyz_sal_pnt_pos_diagonal_uncert_ = FLAGS_monoslam_force_xyz_sal_pnt_pos_diagonal_uncert;
     mono_slam.sal_pnt_templ_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
     if (FLAGS_monoslam_templ_closest_templ_min_dist_pix > 0)

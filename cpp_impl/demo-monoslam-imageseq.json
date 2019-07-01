@@ -6,7 +6,11 @@
     "// Davison's FireWire Camera used to record TestSeqMonoSLAM images": 0,
     "camera_image_size": [320, 240],
     "camera_princip_point": [162.0, 125.0],
-    "camera_focal_length_pix": [195.0, 195.0],
+    "camera_pixel_size_mm": [0.0112, 0.0112],
+    "camera_focal_length_mm": 2.1735,
+    
+    "camera_enable_distortion": false,
+    "camera_distort_mikhail_k1k2": [0.06333, 0.0139],
     
     "monoslam_process_noise_std": 0.1,
     "monoslam_measurm_noise_std_pix": 0.6,

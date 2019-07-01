@@ -24,7 +24,8 @@
     
     "camera_image_size": [320, 240],
     "camera_princip_point": [160.0, 120.0],
-    "camera_focal_length_pix": [195.0, 195.0],
+    "camera_pixel_size_mm": [0.01, 0.01],
+    "camera_focal_length_mm": 1.95,
 
     "// process noise: max_deviation/shots=0.6/40=0.015 => w=0.015/3=0.05": 0,
     "monoslam_process_noise_std": 0.05,

@@ -232,18 +232,28 @@ struct CameraIntrinsicParams
 
     std::array<Scalar, 2> principal_point_pix; // [Cx,Cy] in pixels
 
-    Scalar focal_length_mm;  // =f, focal length in millimiters
+    Scalar focal_length_mm;  // =f, focal length in millimeters
+    
+    // Used in distortion model.
     std::array<Scalar,2> pixel_size_mm; // [dx,dy] in millimeters
 
     /// Focal length in pixels (alphax=f/dx, alphay=f/dy)
     std::array<Scalar, 2> FocalLengthPix() const { return { focal_length_mm / pixel_size_mm[0], focal_length_mm / pixel_size_mm[1] }; }
 };
 
-/// scale_factor=1+k1*r^2+k2*r^4
-struct RadialDistortionParams
+Scalar Calc_rd(const CameraIntrinsicParams& cam_intrinsics, const Point2f& h_distorted);
+
+/// Radial distortion as described in "Introduction to modern photogrammetry", Mikhail, 2001.
+/// The distortion model uses the scale factor=1+k1*r^2+k2*r^4
+/// Reconstructed history:
+/// In 2007 Davison used Swaminathan and Nayar distortion model as per paper "MonoSLAM Real-Time Single Camera SLAM", Davison, 2007.
+/// In 2008 Davison switched to Mikhail distortion model as per paper "Inverse depth parametrization for monocular SLAM", Civera, Davison, Montiel, 2008.
+struct MikhailRadialDistortionParams
 {
-    Scalar k1;
-    Scalar k2;
+    // Radial distortion model as in A.26: ru=rd(1+k1*rd^2+k2*rd^4)
+    // (k1,k2)=(0,0) means no distortion.
+    Scalar k1 = 0;  // the coefficient before rd^2, measured in mm^-2
+    Scalar k2 = 0;  // the coefficient before rd^4, measured in mm^-4
 };
 
 /// Position and orientation of an object in 3D space.
@@ -440,7 +450,8 @@ public:
 
     // camera
     CameraIntrinsicParams cam_intrinsics_{};
-    RadialDistortionParams cam_distort_params_{};
+    bool cam_enable_distortion_ = true;
+    MikhailRadialDistortionParams cam_distort_params_{};
 public:
     std::function<SE3Transform(size_t frame_ind)> gt_cami_from_world_fun_;  // used to get the first camera cam0 in the world coordinates
     std::function<SE3Transform(size_t frame_ind)> gt_cami_from_tracker_fun_;  // gets ground truth camera position in coordinates of tracker

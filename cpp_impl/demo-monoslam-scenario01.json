@@ -21,7 +21,8 @@
     
     "camera_image_size": [320, 240],
     "camera_princip_point": [160.0, 120.0],
-    "camera_focal_length_pix": [195.0, 195.0],
+    "camera_pixel_size_mm": [0.01, 0.01],
+    "camera_focal_length_mm": 1.95,
 
     "// process noise: world_size/steps=3/10=0.3 => w=0.3/3=0.1": 0,
     "// w=0.05 goes in different direction": 0,

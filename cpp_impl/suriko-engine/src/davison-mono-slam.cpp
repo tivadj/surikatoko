@@ -2,12 +2,13 @@
 #include <numeric> // accumulate
 #include "suriko/davison-mono-slam.h"
 #include <glog/logging.h>
+#include <unsupported/Eigen/Polynomials>
+#include <opencv2/imgproc.hpp>
 #include "suriko/approx-alg.h"
 #include "suriko/quat.h"
 #include "suriko/eigen-helpers.hpp"
 #include "suriko/templ-match.h"
 #include "suriko/rand-stuff.h"
-#include <opencv2/imgproc.hpp>
 
 namespace suriko
 {
@@ -41,6 +42,19 @@ auto SpanAu(EigenMat& m, size_t count) -> gsl::span<typename EigenMat::Scalar>
     typedef typename EigenMat::Scalar S;
     // fails: m.data()=const double* and it doesn't match gsl::span<double>
     return gsl::make_span<S>(m.data(), static_cast<typename gsl::span<S>::index_type>(count));
+}
+
+Scalar Calc_rd(const CameraIntrinsicParams& cam_intrinsics, const Point2f& h_distorted)
+{
+    const auto& Cx = cam_intrinsics.principal_point_pix[0];
+    const auto& Cy = cam_intrinsics.principal_point_pix[1];
+    const auto& dx = cam_intrinsics.pixel_size_mm[0];
+    const auto& dy = cam_intrinsics.pixel_size_mm[1];
+
+    using suriko::Sqr, suriko::Pow4;
+    const auto& hd = h_distorted;
+    Scalar rd = std::sqrt(Sqr(dx * (hd.X() - Cx)) + Sqr(dy * (hd.Y() - Cy)));  // A.24
+    return rd;
 }
 
 SE3Transform CamWfc(const CameraStateVars& cam_state)
@@ -2001,8 +2015,20 @@ DavisonMonoSlam::SphericalSalientPoint DavisonMonoSlam::GetNewSphericalSalientPo
     SphericalSalientPointIntermProjVars* interm_proj_vars) const
 {
     // undistort 2D image coordinate
-    Eigen::Matrix<Scalar, kPixPosComps, 1> hd = first_cam_corner_pix.Mat(); // distorted
-    Eigen::Matrix<Scalar, kPixPosComps, 1> hu = hd; // undistorted
+    const auto& h_distorted = first_cam_corner_pix; // distorted
+    Eigen::Matrix<Scalar, kPixPosComps, 1> hu = h_distorted.Mat(); // undistorted
+    if (cam_enable_distortion_)
+    {
+        auto [Cx, Cy] = cam_intrinsics_.principal_point_pix;
+        Scalar rd = Calc_rd(cam_intrinsics_, h_distorted);
+
+        const auto& k1 = cam_distort_params_.k1;
+        const auto& k2 = cam_distort_params_.k2;
+
+        Scalar stretch = 1 + k1 * Sqr(rd) + k2 * Pow4(rd);
+        hu[0] = Cx + (h_distorted.X() - Cx) * stretch;
+        hu[1] = Cy + (h_distorted.Y() - Cy) * stretch;
+    }
 
     // A.58
     Eigen::Matrix<Scalar, kEucl3, 1> hc;
@@ -2237,28 +2263,32 @@ std::optional<suriko::Point2f> DavisonMonoSlam::GetDetectedSalientTemplCenter(Sa
 
 void DavisonMonoSlam::Deriv_hu_by_hd(suriko::Point2f corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hu_by_hd) const
 {
-    Scalar ud = corner_pix[0];
-    Scalar vd = corner_pix[1];
-    Scalar Cx = cam_intrinsics_.principal_point_pix[0];
-    Scalar Cy = cam_intrinsics_.principal_point_pix[1];
-    Scalar dx = cam_intrinsics_.pixel_size_mm[0];
-    Scalar dy = cam_intrinsics_.pixel_size_mm[1];
-    Scalar k1 = cam_distort_params_.k1;
-    Scalar k2 = cam_distort_params_.k2;
+    if (!cam_enable_distortion_)
+    {
+        hu_by_hd->setIdentity();
+        return;
+    }
 
-    Scalar rd = std::sqrt(
-        suriko::Sqr(dx * (ud - Cx)) +
-        suriko::Sqr(dy * (vd - Cy)));
+    const auto& hd = corner_pix;
+    auto [Cx,Cy] = cam_intrinsics_.principal_point_pix;
+    auto [dx,dy] = cam_intrinsics_.pixel_size_mm;
+    const auto& k1 = cam_distort_params_.k1;
+    const auto& k2 = cam_distort_params_.k2;
 
-    Scalar tort = 1 + k1 * suriko::Sqr(rd) + k2 * suriko::Pow4(rd);
+    using suriko::Sqr, suriko::Pow4;
+    Scalar rd = Calc_rd(cam_intrinsics_, corner_pix);
 
-    Scalar p2 = (k1 + 2 * k2 * suriko::Sqr(rd));
+    Scalar stretch = 1 + k1 * Sqr(rd) + k2 * Pow4(rd);
 
+    Scalar kk = k1 + 2 * k2 * Sqr(rd);
+    Scalar side = 2 * kk * (hd.Y() - Cy) * (hd.X() - Cx);
+
+    // A.32
     auto& r = *hu_by_hd;
-    r(0, 0) = tort + 2 * suriko::Sqr(dx * (ud - Cx))*p2;
-    r(1, 1) = tort + 2 * suriko::Sqr(dy * (vd - Cy))*p2;
-    r(1, 0) = 2 * suriko::Sqr(dx) * (vd - Cy)*(ud - Cx)*p2;
-    r(0, 1) = 2 * suriko::Sqr(dy) * (vd - Cy)*(ud - Cx)*p2;
+    r(0, 0) = stretch + 2 * kk * Sqr(dx * (hd.X() - Cx));
+    r(1, 1) = stretch + 2 * kk * Sqr(dy * (hd.Y() - Cy));
+    r(1, 0) = side * Sqr(dx);
+    r(0, 1) = side * Sqr(dy);
 }
 
 void DavisonMonoSlam::Deriv_hd_by_hu(suriko::Point2f corner_pix, Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>* hd_by_hu) const
@@ -2267,7 +2297,7 @@ void DavisonMonoSlam::Deriv_hd_by_hu(suriko::Point2f corner_pix, Eigen::Matrix<S
     Deriv_hu_by_hd(corner_pix, &hu_by_hd);
 
     *hd_by_hu = hu_by_hd.inverse(); // A.33
-    hd_by_hu->setIdentity(); // TODO: for now, suppport only 'no distortion' model
+    SRK_ASSERT(AllFiniteNotMax(*hd_by_hu));
 }
 
 void DavisonMonoSlam::Deriv_hu_by_hc(const SalPntProjectionIntermidVars& proj_hist, Eigen::Matrix<Scalar, kPixPosComps, kEucl3>* hu_by_hc) const
@@ -2538,8 +2568,55 @@ Eigen::Matrix<Scalar, kPixPosComps,1> DavisonMonoSlam::ProjectInternalSalientPoi
     SRK_ASSERT(sal_pnt_cam_opt.has_value());
     
     Eigen::Matrix<Scalar, kEucl3, 1> sal_pnt_cam = sal_pnt_cam_opt.value();
-    Eigen::Matrix<Scalar, kPixPosComps, 1> hd = ProjectCameraSalientPoint(sal_pnt_cam, proj_hist);
-    return hd;
+    Eigen::Matrix<Scalar, kPixPosComps, 1> h_distorted = ProjectCameraSalientPoint(sal_pnt_cam, proj_hist);
+    return h_distorted;
+}
+
+suriko::Point2f DistortPixel(const CameraIntrinsicParams& cam_intrinsics,
+    const MikhailRadialDistortionParams& cam_distort_params,
+    const suriko::Point2f& h_undistorted)
+{
+    // hu->hd: distort image coordinates
+    using suriko::Sqr, suriko::Pow4;
+    Scalar Cx = cam_intrinsics.principal_point_pix[0];
+    Scalar Cy = cam_intrinsics.principal_point_pix[1];
+    const auto& dx = cam_intrinsics.pixel_size_mm[0];
+    const auto& dy = cam_intrinsics.pixel_size_mm[1];
+    Scalar ru = std::sqrt(Sqr(dx * (h_undistorted[0] - Cx)) + Sqr(dy * (h_undistorted[1] - Cy)));
+
+    // solve polynomial fun(rd)=0=-ru+rd+k1*rd^3+k2*rd^5
+    Scalar rd = -1;
+    const auto& k1 = cam_distort_params.k1;
+    const auto& k2 = cam_distort_params.k2;
+    if (k2 != 0)  // Eigen impl requires nonzero highest degree coefficient
+    {
+        // https://eigen.tuxfamily.org/dox/unsupported/group__Polynomials__Module.html
+        constexpr auto PolyDeg = 5;
+        Eigen::Matrix<Scalar, PolyDeg+1, 1> distort_poly{};
+        distort_poly << -ru, 1, 0, k1, 0, k2;
+        Eigen::PolynomialSolver<Scalar, PolyDeg> poly_solver{ distort_poly };
+        std::vector<Scalar> rd_roots;
+        poly_solver.realRoots(rd_roots);
+        SRK_ASSERT(rd_roots.size() == 1);
+        rd = rd_roots[0];
+    }
+    else
+    {
+        if (k1 == 0) rd = ru;
+        else
+        {
+            // polynomial fun(rd)=0=-ru+rd+k1*rd^3
+            Scalar e = std::pow(9 * k1 * k1 * ru + std::sqrt(3 * k1 * k1 * k1 * (4 + 27 * k1 * ru * ru)), 1.0f / 3);
+            rd = (-2 * std::pow(3, 1.0f / 3) * k1 + std::pow(2, 1.0f / 3) * e * e) / (std::pow(6, 2.0 / 3) * k1 * e);
+        }
+    }
+    SRK_ASSERT(rd != -1);
+    Scalar stretch = 1 + k1 * Sqr(rd) + k2 * Pow4(rd);
+
+    suriko::Point2f h_distorted{};
+    h_distorted[0] = Cx + (h_undistorted[0] - Cx) / stretch;
+    h_distorted[1] = Cy + (h_undistorted[1] - Cy) / stretch;
+    return h_distorted;
 }
 
 Eigen::Matrix<Scalar, kPixPosComps,1> DavisonMonoSlam::ProjectCameraSalientPoint(
@@ -2553,28 +2630,21 @@ Eigen::Matrix<Scalar, kPixPosComps,1> DavisonMonoSlam::ProjectCameraSalientPoint
     // hc(X,Y,Z)->hu(uu,vu): project 3D salient point in camera-k onto image (pixels)
     //const auto& sal_pnt_cam = sal_pnt_camk_scaled;
     const auto& sal_pnt_cam = pnt_camera;
-    
-    Eigen::Matrix<Scalar, kPixPosComps, 1> hu;
-    hu[0] = Cx - f_pix[0] * sal_pnt_cam[0] / sal_pnt_cam[2];
-    hu[1] = Cy - f_pix[1] * sal_pnt_cam[1] / sal_pnt_cam[2];
 
-    // hu->hd: distort image coordinates
-    Scalar ru = std::sqrt(
-        suriko::Sqr(cam_intrinsics_.pixel_size_mm[0] * (hu[0] - Cx)) +
-        suriko::Sqr(cam_intrinsics_.pixel_size_mm[1] * (hu[1] - Cy)));
-    
-    // solve polynomial fun(rd)=k2*rd^5+k1*rd^3+rd-ru=0
-    Scalar rd = ru; // TODO:
+    suriko::Point2f h_undistorted;
+    h_undistorted[0] = Cx - f_pix[0] * sal_pnt_cam[0] / sal_pnt_cam[2];
+    h_undistorted[1] = Cy - f_pix[1] * sal_pnt_cam[1] / sal_pnt_cam[2];
 
-    Eigen::Matrix<Scalar, kPixPosComps, 1> hd;
-    hd[0] = hu[0]; // TODO: not impl
-    hd[1] = hu[1];
-    
+    suriko::Point2f h_distorted = h_undistorted;
+    if (cam_enable_distortion_)
+        h_distorted = DistortPixel(cam_intrinsics_, cam_distort_params_, h_undistorted);
+
     if (proj_hist != nullptr)
     {
         proj_hist->hc = sal_pnt_cam;
     }
-    return hd;
+
+    return h_distorted.Mat();
 }
 
 suriko::Point2f DavisonMonoSlam::ProjectCameraPoint(const suriko::Point3& pnt_camera) const
