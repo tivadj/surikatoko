@@ -174,7 +174,7 @@ DavisonMonoSlam::DebugPathEnum DavisonMonoSlam::s_debug_path_ = DebugPathEnum::D
 
 DavisonMonoSlam::DavisonMonoSlam()
 {
-    SetProcessNoiseStd(process_noise_std_);
+    SetProcessNoiseStd(process_noise_linear_velocity_std_, process_noise_angular_velocity_std_);
 
     ResetCamera();
 }
@@ -284,15 +284,16 @@ void DavisonMonoSlam::SetCameraStateCovarHelper()
     SetCameraStateCovar(&predicted_estim_vars_covar_);
 }
 
-void DavisonMonoSlam::SetProcessNoiseStd(Scalar process_noise_std)
+void DavisonMonoSlam::SetProcessNoiseStd(Scalar process_noise_linear_velocity_std, Scalar process_noise_angular_velocity_std)
 {
-    process_noise_std_ = process_noise_std;
-    
-    Scalar process_noise_std_variance = suriko::Sqr(process_noise_std);
+    process_noise_linear_velocity_std_ = process_noise_linear_velocity_std;
+    process_noise_angular_velocity_std_ = process_noise_angular_velocity_std;
 
     process_noise_covar_.setZero();
-    for (int i=0; i < process_noise_covar_.rows(); ++i)
-        process_noise_covar_(i, i) = process_noise_std_variance;
+    for (int i = 0; i < kVelocComps; ++i)
+        process_noise_covar_(i, i) = suriko::Sqr(process_noise_linear_velocity_std_);
+    for (int i = 0; i < kAngVelocComps; ++i)
+        process_noise_covar_(kVelocComps + i, kVelocComps + i) = suriko::Sqr(process_noise_angular_velocity_std_);
 }
 
 void AzimElevFromEuclidCoords(suriko::Point3 hw, Scalar* azim_theta, Scalar* elev_phi)

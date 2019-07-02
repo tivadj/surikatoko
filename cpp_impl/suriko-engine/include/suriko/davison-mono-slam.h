@@ -411,7 +411,14 @@ public:
     Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
 
     // drastically affects performance: it increases uncertainty regions of salient points, hence the search regions, used for salient points correspondence, are increased
-    Scalar process_noise_std_ = 1;  // used to init Qk[6,6], uncertainty in camera dynamic model motion
+    // used to init bot-right 3x3 of Qk[6,6], uncertainty in camera dynamic model motion
+    Scalar process_noise_linear_velocity_std_ = 1;  // in mm, this much camera can move per one time step
+
+    // this much each component of 3x1 camera orientation angle-vector can change per one time step
+    // measured in units of angle-vector rotation representation
+    // used to init top-left 3x3 of Qk[6,6], uncertainty in camera dynamic model motion
+    Scalar process_noise_angular_velocity_std_ = 0.01;  // in radians, influence how much camera can rotate
+
     Scalar measurm_noise_std_pix_ = 1;
 
     // default camera's uncertainty
@@ -513,7 +520,7 @@ private:
     void SetCameraState(EigenDynVec* src_estim_vars);
     void SetCameraStateCovar(EigenDynMat* src_estim_vars_covar);
 public:
-    void SetProcessNoiseStd(Scalar process_noise_std);
+    void SetProcessNoiseStd(Scalar process_noise_linear_velocity_std, Scalar process_noise_angular_velocity_std);
 
     void ProcessFrame(size_t frame_ind, const Picture& image);
 

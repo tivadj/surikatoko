@@ -26,8 +26,9 @@
 
     "// process noise: world_size/steps=3/10=0.3 => w=0.3/3=0.1": 0,
     "// w=0.05 goes in different direction": 0,
-    "monoslam_process_noise_std": 0.15,
-    "monoslam_measurm_noise_std_pix": 0.2,
+    "monoslam_process_noise_cam_lin_veloc_std_mm": 0.15,
+    "monoslam_process_noise_cam_ang_veloc_std_rad": 0.01,
+    "monoslam_measurm_noise_std_pix": 1.0,
     "monoslam_sal_pnt_init_inv_dist": 0.1,
     "monoslam_sal_pnt_init_inv_dist_std": 1.0
 }

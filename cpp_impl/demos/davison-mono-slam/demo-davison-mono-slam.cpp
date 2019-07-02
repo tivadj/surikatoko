@@ -983,7 +983,7 @@ void CheckDavisonMonoSlamConfigurationAndDump(const DavisonMonoSlam& mono_slam,
     std::optional<Scalar> between_frames_max_cam_shift = GetMaxCamShift(gt_cam_orient_cfw);
     if (between_frames_max_cam_shift.has_value())
     {
-        auto max_expected_cam_shift = mono_slam.process_noise_std_ * 3;
+        auto max_expected_cam_shift = mono_slam.process_noise_linear_velocity_std_ * 3;
         if (between_frames_max_cam_shift.value() > max_expected_cam_shift)
             LOG(INFO)
                 << "Note: max_cam_shift=" << between_frames_max_cam_shift.value()
@@ -1054,7 +1054,7 @@ DEFINE_bool(ctrl_visualize_during_processing, true, "");
 DEFINE_bool(ctrl_visualize_after_processing, true, "");
 DEFINE_bool(ctrl_collect_tracker_internals, false, "");
 
-void ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_reader)
+bool ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_reader)
 {
     auto& cr = *config_reader;
     auto& ms = *mono_slam;
@@ -1065,13 +1065,24 @@ void ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_
             * dst = static_cast<Scalar>(opt_f64.value());
     };
 
-    auto process_noise_std = cr.GetValue<double>("monoslam_process_noise_std");
-    if (process_noise_std.has_value())
-        ms.SetProcessNoiseStd(static_cast<Scalar>(process_noise_std.value()));
+    auto process_noise_linear_velocity_std = FloatParam<Scalar>(&cr, "monoslam_process_noise_cam_lin_veloc_std_mm").value_or(-1);
+    if (process_noise_linear_velocity_std == -1)
+    {
+        LOG(ERROR) << "no mandatory parameter monoslam_process_noise_cam_lin_veloc_std_mm";
+        return false;
+    }
+    auto process_noise_angular_velocity_std = FloatParam<Scalar>(&cr, "monoslam_process_noise_cam_ang_veloc_std_rad").value_or(-1);
+    if (!process_noise_angular_velocity_std == -1)
+    {
+        LOG(ERROR) << "no mandatory parameter monoslam_process_noise_cam_ang_veloc_std_rad";
+        return false;
+    }
+    ms.SetProcessNoiseStd(process_noise_linear_velocity_std, process_noise_angular_velocity_std);
 
     opt_set(cr.GetValue<double>("monoslam_measurm_noise_std_pix"), &ms.measurm_noise_std_pix_);
     opt_set(cr.GetValue<double>("monoslam_sal_pnt_init_inv_dist"), &ms.sal_pnt_init_inv_dist_);
     opt_set(cr.GetValue<double>("monoslam_sal_pnt_init_inv_dist_std"), &ms.sal_pnt_init_inv_dist_std_);
+    return true;
 }
 
 int DavisonMonoSlamDemo(int argc, char* argv[])
@@ -1411,7 +1422,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     DavisonMonoSlam::SetDebugPath(debug_path);
 
     DavisonMonoSlam mono_slam{ };
-    ApplyParamsFromConfigFile(&mono_slam, &config_reader);
+    if (!ApplyParamsFromConfigFile(&mono_slam, &config_reader))
+        return 1;
     mono_slam.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
     mono_slam.between_frames_period_ = 1;
     mono_slam.cam_intrinsics_ = cam_intrinsics;
@@ -1501,7 +1513,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.cam_ang_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_ang_vel_std);
     mono_slam.SetCameraStateCovarHelper();
 
-    LOG(INFO) << "mono_slam_process_noise_std=" << mono_slam.process_noise_std_;
+    LOG(INFO) << "mono_slam_process_noise_lin_veloc_std=" << mono_slam.process_noise_linear_velocity_std_;
+    LOG(INFO) << "mono_slam_process_noise_ang_veloc_std=" << mono_slam.process_noise_angular_velocity_std_;
     LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << mono_slam.measurm_noise_std_pix_;
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
