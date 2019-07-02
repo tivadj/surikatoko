@@ -1259,10 +1259,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
         else if (virtual_scenario == "OscilateRightAndLeft")
         {
-            auto max_deviation = FloatParam<Scalar>(&config_reader, "scenario_max_deviation").value_or(0.6f);
-            int shots_per_period = config_reader.GetValue<int>("scenario_shots_per_period").value_or(160);
-            int periods_count = config_reader.GetValue<int>("scenario_periods_count").value_or(100);
-            bool const_view_dir = config_reader.GetValue<bool>("scenario_const_view_dir").value_or(false);
+            auto max_deviation = FloatParam<Scalar>(&config_reader, "viewer_max_deviation").value_or(0.6f);
+            int shots_per_period = config_reader.GetValue<int>("viewer_shots_per_period").value_or(160);
+            int periods_count = config_reader.GetValue<int>("viewer_periods_count").value_or(100);
+            bool const_view_dir = config_reader.GetValue<bool>("viewer_const_view_dir").value_or(false);
             auto viewer_eye = viewer_eye_offset;
             auto center = viewer_center_offset;
             GenerateCameraShotsOscilateRightAndLeft(wb, viewer_eye, center, viewer_up,

@@ -850,7 +850,7 @@ private:
         const SalPntProjectionIntermidVars& proj_hist,
         const Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>& hd_by_dhu,
         const Eigen::Matrix<Scalar, kPixPosComps, kEucl3>& dhu_by_dhc,
-        Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_xc) const;
+        Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam) const;
 
     // Derivative of distorted observed corner (in pixels) by salient point's variables (6 vars).
     void Deriv_hd_by_sal_pnt(const MorphableSalientPoint& sal_pnt,

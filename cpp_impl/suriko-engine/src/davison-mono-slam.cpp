@@ -2364,38 +2364,38 @@ void DavisonMonoSlam::Deriv_hd_by_camera_state(const MorphableSalientPoint& sal_
     const SalPntProjectionIntermidVars& proj_hist,
     const Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps>& hd_by_hu,
     const Eigen::Matrix<Scalar, kPixPosComps, kEucl3>& hu_by_hc,
-    Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_xc) const
+    Eigen::Matrix<Scalar, kPixPosComps, kCamStateComps>* hd_by_cam) const
 {
-    hd_by_xc->setZero();
+    hd_by_cam->setZero();
 
     //
     Eigen::Matrix<Scalar, kEucl3, kEucl3> Rcw = cam_orient_wfc.transpose();
 
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> dhc_by_dr;
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> hc_by_rwc;
     if constexpr (kSalPntRepres == SalPntComps::kXyz)
     {
-        dhc_by_dr = -Rcw;  // A.36
+        hc_by_rwc = -Rcw;  // A.36
     }
     else if constexpr (kSalPntRepres == SalPntComps::kSphericalFirstCamInvDist)
     {
 #if defined(SPHER_SAL_PNT_REPRES)
-        dhc_by_dr = -sal_pnt.inverse_dist_rho * Rcw;  // A.35
+        hc_by_rwc = -sal_pnt.inverse_dist_rho * Rcw;  // A.35
 #endif
     }
 
-    Eigen::Matrix<Scalar, kPixPosComps, kEucl3> dh_by_dr = hd_by_hu * hu_by_hc * dhc_by_dr; // A.31
-    hd_by_xc->middleCols<kEucl3>(0) = dh_by_dr;
+    Eigen::Matrix<Scalar, kPixPosComps, kEucl3> hd_by_rwc = hd_by_hu * hu_by_hc * hc_by_rwc; // A.31
+    hd_by_cam->middleCols<kEucl3>(0) = hd_by_rwc;
 
 
     //
     Eigen::Matrix<Scalar, kQuat4, 1> cam_orient_cfw = QuatInverse(cam_state.orientation_wfc);
-    const auto& q = cam_orient_cfw;
+    const auto& qcw = cam_orient_cfw;
 
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> dR_by_dq0;
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> dR_by_dq1;
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> dR_by_dq2;
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> dR_by_dq3;
-    Deriv_R_by_q(q, &dR_by_dq0, &dR_by_dq1, &dR_by_dq2, &dR_by_dq3);
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> Rcw_by_qcw0;
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> Rcw_by_qcw1;
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> Rcw_by_qcw2;
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> Rcw_by_qcw3;
+    Deriv_R_by_q(qcw, &Rcw_by_qcw0, &Rcw_by_qcw1, &Rcw_by_qcw2, &Rcw_by_qcw3);
 
     Eigen::Matrix<Scalar, kEucl3, 1> part2;
     if constexpr (kSalPntRepres == SalPntComps::kXyz)
@@ -2411,23 +2411,23 @@ void DavisonMonoSlam::Deriv_hd_by_camera_state(const MorphableSalientPoint& sal_
 #endif
     }
 
-    Eigen::Matrix<Scalar, kEucl3, kQuat4> dhc_by_dqcw; // A.40
-    dhc_by_dqcw.middleCols<1>(0) = dR_by_dq0 * part2;
-    dhc_by_dqcw.middleCols<1>(1) = dR_by_dq1 * part2;
-    dhc_by_dqcw.middleCols<1>(2) = dR_by_dq2 * part2;
-    dhc_by_dqcw.middleCols<1>(3) = dR_by_dq3 * part2;
+    Eigen::Matrix<Scalar, kEucl3, kQuat4> hc_by_qcw; // A.40
+    hc_by_qcw.middleCols<1>(0) = Rcw_by_qcw0 * part2;
+    hc_by_qcw.middleCols<1>(1) = Rcw_by_qcw1 * part2;
+    hc_by_qcw.middleCols<1>(2) = Rcw_by_qcw2 * part2;
+    hc_by_qcw.middleCols<1>(3) = Rcw_by_qcw3 * part2;
 
-    Eigen::Matrix<Scalar, kQuat4, kQuat4> dqcw_by_dqwc; // A.39
-    dqcw_by_dqwc.setIdentity();
-    dqcw_by_dqwc(1, 1) = -1;
-    dqcw_by_dqwc(2, 2) = -1;
-    dqcw_by_dqwc(3, 3) = -1;
+    Eigen::Matrix<Scalar, kQuat4, kQuat4> qcw_by_qwc; // A.39
+    qcw_by_qwc.setIdentity();
+    qcw_by_qwc(1, 1) = -1;
+    qcw_by_qwc(2, 2) = -1;
+    qcw_by_qwc(3, 3) = -1;
 
-    Eigen::Matrix<Scalar, kEucl3, kQuat4> dhc_by_dqwc = dhc_by_dqcw * dqcw_by_dqwc;  // A.38
+    Eigen::Matrix<Scalar, kEucl3, kQuat4> hc_by_qwc = hc_by_qcw * qcw_by_qwc;  // A.38
 
     //
-    Eigen::Matrix<Scalar, kPixPosComps, kQuat4> dh_by_dqwc = hd_by_hu * hu_by_hc * dhc_by_dqwc;  // A.37
-    hd_by_xc->middleCols<kQuat4>(kEucl3) = dh_by_dqwc;
+    Eigen::Matrix<Scalar, kPixPosComps, kQuat4> hd_by_qwc = hd_by_hu * hu_by_hc * hc_by_qwc;  // A.37
+    hd_by_cam->middleCols<kQuat4>(kEucl3) = hd_by_qwc;
 }
 
 void DavisonMonoSlam::Deriv_hd_by_sal_pnt(const MorphableSalientPoint& sal_pnt,
