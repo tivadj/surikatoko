@@ -25,7 +25,6 @@
 --monoslam_cam_ang_vel_std=0
 
 #
---monoslam_sal_pnt_max_undetected_frames_count=12
 --monoslam_sal_pnt_negative_inv_rho_substitute=-1
 # 1=all, 2=one observation, 3=one component of one observation
 --monoslam_update_impl=1

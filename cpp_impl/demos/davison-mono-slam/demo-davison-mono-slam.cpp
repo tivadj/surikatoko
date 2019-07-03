@@ -1013,7 +1013,6 @@ DEFINE_double(monoslam_sal_pnt_elevation_std_if_gt, 0, "");
 DEFINE_double(monoslam_sal_pnt_inv_dist_std_if_gt, 0, "");
 
 DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
-DEFINE_int32(monoslam_sal_pnt_max_undetected_frames_count, 0, "");
 DEFINE_double(monoslam_sal_pnt_negative_inv_rho_substitute, -1, "");
 DEFINE_int32(monoslam_update_impl, 1, "");
 DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
@@ -1052,10 +1051,10 @@ bool ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_
     auto& cr = *config_reader;
     auto& ms = *mono_slam;
 
-    auto opt_set = [](std::optional<double> opt_f64, gsl::not_null<Scalar*> dst)
+    auto opt_set = [](std::optional<Scalar> opt_value, gsl::not_null<Scalar*> dst)
     {
-        if (opt_f64.has_value())
-            * dst = static_cast<Scalar>(opt_f64.value());
+        if (opt_value.has_value())
+            * dst = opt_value.value();
     };
 
     auto process_noise_linear_velocity_std = FloatParam<Scalar>(&cr, "monoslam_process_noise_cam_lin_veloc_std_mm").value_or(-1);
@@ -1072,9 +1071,16 @@ bool ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_
     }
     ms.SetProcessNoiseStd(process_noise_linear_velocity_std, process_noise_angular_velocity_std);
 
-    opt_set(cr.GetValue<double>("monoslam_measurm_noise_std_pix"), &ms.measurm_noise_std_pix_);
-    opt_set(cr.GetValue<double>("monoslam_sal_pnt_init_inv_dist"), &ms.sal_pnt_init_inv_dist_);
-    opt_set(cr.GetValue<double>("monoslam_sal_pnt_init_inv_dist_std"), &ms.sal_pnt_init_inv_dist_std_);
+    opt_set(FloatParam<Scalar>(&cr, "monoslam_measurm_noise_std_pix"), &ms.measurm_noise_std_pix_);
+    opt_set(FloatParam<Scalar>(&cr, "monoslam_sal_pnt_init_inv_dist"), &ms.sal_pnt_init_inv_dist_);
+    opt_set(FloatParam<Scalar>(&cr, "monoslam_sal_pnt_init_inv_dist_std"), &ms.sal_pnt_init_inv_dist_std_);
+
+    opt_set(FloatParam<Scalar>(&cr, "monoslam_seconds_per_frame"), &ms.seconds_per_frame_);
+    
+    auto sal_pnt_max_undetected_frames_count = FloatParam<Scalar>(&cr, "monoslam_sal_pnt_max_undetected_frames_count");
+    if (sal_pnt_max_undetected_frames_count.has_value())
+        ms.sal_pnt_max_undetected_frames_count_ = sal_pnt_max_undetected_frames_count.value();
+
     return true;
 }
 
@@ -1418,7 +1424,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     if (!ApplyParamsFromConfigFile(&mono_slam, &config_reader))
         return 1;
     mono_slam.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
-    mono_slam.between_frames_period_ = 1;
     mono_slam.cam_intrinsics_ = cam_intrinsics;
     mono_slam.cam_distort_params_ = cam_distort_params;
     mono_slam.cam_enable_distortion_ = config_reader.GetValue<bool>("camera_enable_distortion").value_or(true);
@@ -1426,8 +1431,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.sal_pnt_templ_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
     if (FLAGS_monoslam_templ_closest_templ_min_dist_pix > 0)
         mono_slam.closest_sal_pnt_templ_min_dist_pix_ = static_cast<Scalar>(FLAGS_monoslam_templ_closest_templ_min_dist_pix);
-    if (FLAGS_monoslam_sal_pnt_max_undetected_frames_count > 0)
-        mono_slam.sal_pnt_max_undetected_frames_count_ = FLAGS_monoslam_sal_pnt_max_undetected_frames_count;
     if (FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute >= 0)
         mono_slam.sal_pnt_negative_inv_rho_substitute_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute);
     mono_slam.covar2D_to_ellipse_confidence_ = static_cast<Scalar>(FLAGS_monoslam_covar2D_to_ellipse_confidence);
@@ -1506,6 +1509,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.cam_ang_vel_std_ = static_cast<Scalar>(FLAGS_monoslam_cam_ang_vel_std);
     mono_slam.SetCameraStateCovarHelper();
 
+    LOG(INFO) << "mono_slam_dT=" << mono_slam.seconds_per_frame_;
     LOG(INFO) << "mono_slam_process_noise_lin_veloc_std=" << mono_slam.process_noise_linear_velocity_std_;
     LOG(INFO) << "mono_slam_process_noise_ang_veloc_std=" << mono_slam.process_noise_angular_velocity_std_;
     LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << mono_slam.measurm_noise_std_pix_;

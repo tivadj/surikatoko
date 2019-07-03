@@ -501,7 +501,7 @@ void DavisonMonoSlam::PredictCameraMotionByKinematicModel(gsl::span<const Scalar
     Eigen::Map<Eigen::Matrix<Scalar, kAngVelocComps, 1>> new_cam_ang_vel(&new_cam_state[kEucl3 + kQuat4 + kVelocComps]);
 
     // camera position
-    Scalar dT = between_frames_period_;
+    Scalar dT = seconds_per_frame_;
     new_cam_pos = cam_pos + cam_vel * dT;
 
     DependsOnInputNoisePackOrder();
@@ -2854,7 +2854,7 @@ size_t DavisonMonoSlam::EstimatedVarsCount() const
 
 void DavisonMonoSlam::Deriv_cam_state_by_cam_state(Eigen::Matrix<Scalar, kCamStateComps, kCamStateComps>* result) const
 {
-    Scalar dT = between_frames_period_;
+    Scalar dT = seconds_per_frame_;
 
     auto& m = *result;
     m.setIdentity();
@@ -2926,7 +2926,7 @@ void DavisonMonoSlam::FiniteDiff_cam_state_by_cam_state(gsl::span<const Scalar> 
 
 void DavisonMonoSlam::Deriv_cam_state_by_process_noise(Eigen::Matrix<Scalar, kCamStateComps, kProcessNoiseComps>* result) const
 {
-    Scalar dT = between_frames_period_;
+    Scalar dT = seconds_per_frame_;
 
     auto& m = *result;
     m.setZero();

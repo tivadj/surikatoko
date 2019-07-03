@@ -408,7 +408,7 @@ private:
     Eigen::Matrix<Scalar, kProcessNoiseComps, kProcessNoiseComps> process_noise_covar_; // Qk[6,6] process noise covariance matrix
 public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
-    Scalar between_frames_period_ = 1; // elapsed time between two consecutive frames
+    Scalar seconds_per_frame_ = 1; // in seconds, elapsed time between two consecutive frames
 
     // drastically affects performance: it increases uncertainty regions of salient points, hence the search regions, used for salient points correspondence, are increased
     // used to init bot-right 3x3 of Qk[6,6], uncertainty in camera dynamic model motion

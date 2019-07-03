@@ -16,5 +16,9 @@
     "monoslam_process_noise_cam_ang_veloc_std_rad": 0.01,
     "monoslam_measurm_noise_std_pix": 1.0,
     "monoslam_sal_pnt_init_inv_dist": 0.1,
-    "monoslam_sal_pnt_init_inv_dist_std": 1
+    "monoslam_sal_pnt_init_inv_dist_std": 1,
+
+    "// Civera used delta_t=1; Davison used delta_t=0.033333333 in original MonoSlam": 0,
+    "monoslam_seconds_per_frame": 1,
+    "monoslam_sal_pnt_max_undetected_frames_count": 12
 }
