@@ -9,7 +9,7 @@
     "camera_pixel_size_mm": [0.0112, 0.0112],
     "camera_focal_length_mm": 2.1735,
     
-    "camera_enable_distortion": false,
+    "camera_enable_distortion": true,
     "camera_distort_mikhail_k1k2": [0.06333, 0.0139],
     
     "monoslam_process_noise_cam_lin_veloc_std_mm": 0.01,

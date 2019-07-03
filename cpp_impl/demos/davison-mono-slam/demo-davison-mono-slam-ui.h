@@ -57,7 +57,7 @@ struct UIThreadParams
 {
     const DavisonMonoSlam* mono_slam;
     SE3Transform tracker_origin_from_world;
-    Scalar ellipsoid_cut_thr;
+    Scalar covar3D_to_ellipsoid_chi_square;
     bool wait_for_user_input_after_each_frame;
     std::function<size_t()> get_observable_frame_ind_fun;
     const std::vector<SE3Transform>* gt_cam_orient_cfw;
@@ -166,7 +166,9 @@ public:
     
     void DrawEstimatedSalientPoint(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, cv::Mat* out_image_bgr) const;
 public:
-    Scalar ellipse_cut_thr_;
+    // Determines confidence interval to convert error in 3D position covariance matrix into ellipsoid (x/a)^2+(y/b)^2+(z/c)^2=chi^2.
+    // Here we take chi^2 instead of more user-friendly 'confidence interval', because in 3D there is no simple formula 'confidence interval'->chi^2.
+    Scalar covar3D_to_ellipsoid_chi_square_;  // {confidence interval,chi-square}={68%,3.505},{95%,7.814},{99%,11.344}
     int dots_per_uncert_ellipse_;
     bool ui_swallow_exc_ = true;
 };

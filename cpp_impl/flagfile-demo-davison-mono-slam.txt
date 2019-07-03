@@ -9,7 +9,7 @@
 
 # Controller
 --ctrl_multi_threaded_mode=false
---ctrl_wait_after_each_frame=true
+--ctrl_wait_after_each_frame=false
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true
@@ -27,9 +27,9 @@
 #
 --monoslam_sal_pnt_max_undetected_frames_count=12
 --monoslam_sal_pnt_negative_inv_rho_substitute=-1
---monoslam_ellipsoid_cut_thr=0.05
 # 1=all, 2=one observation, 3=one component of one observation
 --monoslam_update_impl=1
+--monoslam_covar2D_to_ellipse_confidence=0.95
 --monoslam_max_new_blobs_in_first_frame=-10
 --monoslam_max_new_blobs_per_frame=-1
 --monoslam_match_blob_prob=-0.3
@@ -68,3 +68,6 @@
 --ui_loop_prolong_period_ms=1000
 --ui_tight_loop_relaxing_delay_ms=10
 --ui_dots_per_uncert_ellipse=32
+# {confidence interval,chi-square}={68%,3.505},{95%,7.814},{99%,11.344}
+--ui_covar3D_to_ellipsoid_chi_square=7.814
+

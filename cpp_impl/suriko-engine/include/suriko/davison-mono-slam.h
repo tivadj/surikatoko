@@ -453,6 +453,11 @@ public:
     // this prevents overlapping of templates of tracked salient points
     std::optional<Scalar> closest_sal_pnt_templ_min_dist_pix_;
 
+    // The confidence interval determining the size of ellipse, extracted from 2D covariance matrix.
+    // The value 95% corresponds to chi^2=5.99146 in ellipse equation (x/a)^2+(y/b)^2=chi^2 where a,b are semi major,minor axes of ellipse.
+    // [SfM_EKF_Civera para 3.7.2 on page 50]
+    Scalar covar2D_to_ellipse_confidence_ = 0.95f;  // {confidence interval, chi-square}={95%,5.99146}, {99%,9.21034}
+
     std::optional<int> debug_max_sal_pnt_coun_;
 
     // camera
@@ -465,7 +470,6 @@ public:
     std::function<std::optional<SE3Transform>(SE3Transform tracker_from_world, size_t frame_ind)> gt_cami_from_tracker_new_;  // gets ground truth camera frame in coordinates of a given tracker
     std::function<Dir3DAndDistance(SE3Transform tracker_from_world, SE3Transform camera_from_tracker, SalPntId sal_pnt_id)> gt_sal_pnt_in_camera_fun_;  // gets ground truth 3D position of salient point in coordinates of tracker
 
-    Scalar debug_ellipsoid_cut_thr_ = 0.04f; // value 0.05 corresponds to 2sig
     bool sal_pnt_perfect_init_inv_dist_ = false; // true to correctly initialize points depth in virtual environments
     int set_estim_state_covar_to_gt_impl_ = 2;  // 1=sets diagonal covariance in estimation space, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point
 
@@ -552,7 +556,8 @@ public:
     auto GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) const
         ->std::tuple<bool, MeanAndCov2D>;
 
-    RotatedEllipse2D ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state, int* impl_with = nullptr) const;
+    std::tuple<bool, RotatedEllipse2D> GetSalientPointProjectedUncertEllipse(FilterStageType filter_stage, SalPntId sal_pnt_id) const;
+    std::tuple<bool, RotatedEllipse2D> GetPredictedSalientPointProjectedUncertEllipse(SalPntId sal_pnt_id) const;
 
     std::optional<Scalar> CurrentFrameReprojError(FilterStageType filter_stage = FilterStageType::Predicted) const;
 
@@ -707,6 +712,7 @@ private:
     void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
+    void ComputeEstimSalientPointSearchRects(const std::vector<SalPntId>& latest_frame_sal_pnt_ids, const EigenDynMat& innov_var);
     void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
     void EnsureSalientPointPositiveInvDepth(EigenDynVec* src_estim_vars);
     void EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar);
@@ -903,9 +909,6 @@ private:
         SalPntProjectionIntermidVars *proj_hist) const;
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectInternalSalientPoint(const CameraStateVars& cam_state, const MorphableSalientPoint& sal_pnt_vars, SalPntProjectionIntermidVars *proj_hist) const;
-
-    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid, const CameraStateVars& cam_state) const;
-    RotatedEllipse2D ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid, const CameraStateVars& cam_state) const;
 
     void GetGroundTruthEstimVars(size_t frame_ind,
         CameraStateVars* cam_state,

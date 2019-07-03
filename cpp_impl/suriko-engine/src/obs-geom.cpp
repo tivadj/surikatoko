@@ -79,6 +79,15 @@ Recti TruncateRect(const Rect& a)
     return result;
 }
 
+Recti EncompassRect(const Rect& a)
+{
+    auto x1 = static_cast<int>(std::floor(a.x));
+    auto x2 = static_cast<int>(std::floor(a.Right()));
+    auto y1 = static_cast<int>(std::floor(a.y));
+    auto y2 = static_cast<int>(std::floor(a.Bottom()));
+    return Recti{ x1, y1, x2 - x1, y2 - y1 };
+}
+
 // Ensures the size of the rectangle is at least of a given value, keeping the center intact.
 Recti ClampRectWhenFixedCenter(const Recti& r, suriko::Sizei min_size)
 {
@@ -736,109 +745,6 @@ SE3Transform LookAtLufWfc(
     return world_from_cam;
 }
 
-Scalar GetUncertaintyEllipsoidProbabilityCutValue(
-    const Eigen::Matrix<Scalar, 3, 3>& gauss_sigma,
-    Scalar portion_of_max_prob, bool check_det = true)
-{
-    Scalar uncert_det = gauss_sigma.determinant();
-    static bool test_det = true;
-    if (test_det && check_det)
-        SRK_ASSERT(uncert_det >= 0);
-    Scalar max_prob = 1 / std::sqrt(suriko::Pow3(2 * Pi<Scalar>()) * uncert_det);
-    Scalar cut_value = portion_of_max_prob * max_prob;
-    return cut_value;
-}
-
-template <size_t Dim>
-Scalar GetUncertaintyEllipsoidProbabilityCutValueNew(
-    const Eigen::Matrix<Scalar, Dim, Dim>& gauss_sigma,
-    Scalar portion_of_max_prob, bool check_det = true)
-{
-    Scalar uncert_det = gauss_sigma.determinant();
-    static bool test_det = true;
-    if (test_det && check_det)
-        SRK_ASSERT(uncert_det >= 0);
-    Scalar max_prob = 1 / std::sqrt(std::pow(2 * Pi<Scalar>(), Scalar{ Dim }) * uncert_det);
-    Scalar cut_value = portion_of_max_prob * max_prob;
-    return cut_value;
-}
-
-void PickPointOnEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
-    const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert, Scalar ellipsoid_cut_thr,
-    const Eigen::Matrix<Scalar, 3, 1>& ray,
-    Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid)
-{
-    Eigen::Matrix<Scalar, 3, 3> uncert_inv = cam_pos_uncert.inverse();
-    Scalar uncert_det = cam_pos_uncert.determinant();
-    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(cam_pos_uncert, ellipsoid_cut_thr);
-
-    // cross ellipsoid with ray
-    Scalar b1 = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * Pi<Scalar>())*uncert_det);
-    Eigen::Matrix<Scalar, 1, 1> b2 = ray.transpose() * uncert_inv * ray;
-    Scalar t2 = b1 / b2[0];
-    SRK_ASSERT(t2 >= 0) << "invalid covariance matrix";
-
-    Scalar t = std::sqrt(t2);
-
-    // crossing of ellipsoid and ray
-    *pos_ellipsoid = cam_pos + t * ray;
-}
-
-void PickPointOnEllipsoid(
-    const Ellipsoid3DWithCenter& ellipsoid,
-    const Eigen::Matrix<Scalar, 3, 1>& ray,
-    Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid)
-{
-    auto den_mat = ray.transpose() * ellipsoid.A * ray;
-    Scalar ratio = ellipsoid.right_side / den_mat[0];
-    SRK_ASSERT(ratio >= 0);
-
-    Scalar t = std::sqrt(ratio);
-    *pos_ellipsoid = ellipsoid.center + t * ray;
-}
-
-bool ValidateEllipsoid(const Ellipsoid3DWithCenter& maybe_ellipsoid)
-{
-    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, 3, 3>> eigen_solver(maybe_ellipsoid.A);
-    bool op = eigen_solver.info() == Eigen::Success;
-    if (!op)
-        return false;
-    const Eigen::Matrix<Scalar, 3, 1>& vs = eigen_solver.eigenvalues().eval();
-    const bool all_posotive = vs[0] > 0 && vs[1] > 0 && vs[2] > 0;
-    return all_posotive;
-}
-
-bool ValidateEllipse(const Ellipse2DWithCenter& maybe_ellipse)
-{
-    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<Scalar, 2, 2>> eigen_solver(maybe_ellipse.A);
-    bool op = eigen_solver.info() == Eigen::Success;
-    if (!op)
-        return false;
-    const Eigen::Matrix<Scalar, 2, 1>& vs = eigen_solver.eigenvalues().eval();
-    const bool all_posotive = vs[0] > 0 && vs[1] > 0;
-    return all_posotive;
-}
-
-Rect GetEllipseBounds(const Ellipse2DWithCenter& ellipse)
-{
-    Scalar a1 = ellipse.A(0, 0);
-    Scalar a2 = ellipse.A(0, 1);
-    Scalar a4 = ellipse.A(1, 1);
-    Scalar m1 = ellipse.center[0];
-    Scalar m2 = ellipse.center[1];
-
-    Scalar dx = std::sqrt(ellipse.right_side / (a1 - a2 * a2 / a4));
-    Scalar dy = std::sqrt(ellipse.right_side / (a4 - a2 * a2 / a1));
-
-    Rect result;
-    result.x = m1 - dx;
-    result.width = 2 * dx;
-    result.y = m2 - dy;
-    result.height = 2 * dy;
-    return result;
-}
-
 Rect GetEllipseBounds2(const RotatedEllipse2D& rotated_ellipse)
 {
     Scalar r1 = rotated_ellipse.world_from_ellipse.R(0, 0);
@@ -872,19 +778,11 @@ Rect GetEllipseBounds2(const RotatedEllipse2D& rotated_ellipse)
 }
 
 std::tuple<bool, RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
-    Scalar ellipsoid_cut_thr)
+    Scalar covar3D_to_ellipsoid_chi_square)
 {
     // check symmetry
     Scalar sym_diff = (cov - cov.transpose()).norm();
     SRK_ASSERT(IsCloseAbs(0, sym_diff, 0.001f));
-
-    Scalar uncert_det = cov.determinant();
-    bool check_det = false;
-    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValue(cov, ellipsoid_cut_thr, check_det);
-
-    // right side of the ellipse equation: (x-mu)A(x-mu)=right_side
-    Scalar right_side_old = -std::log(suriko::Sqr(cut_value)*suriko::Pow3(2 * Pi<Scalar>())*uncert_det);
-    Scalar right_side = 7.814f;
 
     //
     // A=V*D*inv(V)
@@ -944,6 +842,9 @@ std::tuple<bool, RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(co
         SRK_ASSERT(IsCloseAbs(0, should_zero, 0.001));
     }
 
+    // right side of the ellipse equation: (x-mu)A(x-mu)=right_side
+    Scalar right_side = covar3D_to_ellipsoid_chi_square;
+
     // order semi-axes from max to min
     auto& semi = result.semi_axes;
     semi[0] = std::sqrt(right_side * dd[major_col_ind]);
@@ -967,23 +868,16 @@ std::tuple<bool, RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(co
 // Instead we eigen-decompose Cov=V*D*inv(V), and inverse the diagonal matrix, which is more stable.
 // Thus skipping the intermediate step improves the stablility.
 bool Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
-    Scalar ellipsoid_cut_thr,
+    Scalar covar2D_to_ellipse_confidence,
     Eigen::Matrix<Scalar, 2, 1>* semi_axes,
     Eigen::Matrix<Scalar, 2, 2>* world_from_ellipse)
 {
+    SRK_ASSERT(covar2D_to_ellipse_confidence >= 0 && covar2D_to_ellipse_confidence < 1);
     static constexpr size_t kDim = 2;
 
     // check symmetry
     Scalar sym_diff = (cov - cov.transpose()).norm();
     SRK_ASSERT(IsCloseAbs(0, sym_diff, 0.001));
-
-    Scalar uncert_det = cov.determinant();
-    bool check_det = false;
-    Scalar cut_value = GetUncertaintyEllipsoidProbabilityCutValueNew<kDim>(cov, ellipsoid_cut_thr, check_det);
-
-    // right side of the ellipse equation: (x-mu)A(x-mu)=right_side
-    Scalar right_side_old = -std::log(suriko::Sqr(cut_value) * std::pow(2 * Pi<Scalar>(), Scalar{ kDim }) * uncert_det);
-    Scalar right_side = 5.991f;
 
     //
     // A=V*D*inv(V)
@@ -1036,6 +930,8 @@ bool Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
     bool is_spec_ortho = IsSpecialOrthogonal(R);
     SRK_ASSERT(is_spec_ortho); // further relying on inv(R)=Rt
 
+    Scalar right_side = 2 * std::log(1 / (1 - covar2D_to_ellipse_confidence));
+
     // note multiplication (not division) in a=sqrt(rs*lam) as we skip calculating inverse of covariance matrix
     // and directly calculate inverse of diagonal D matrix in Sig=V*D*inv(V)
     // order semi-axes from max to min
@@ -1048,13 +944,13 @@ bool Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
 }
 
 std::tuple<bool,RotatedEllipse2D> Get2DRotatedEllipseFromCovMat(
-    const Eigen::Matrix<Scalar, 2, 2>& cov,
+    const Eigen::Matrix<Scalar, 2, 2>& covar,
     const Eigen::Matrix<Scalar, 2, 1>& mean,
-    Scalar ellipsoid_cut_thr)
+    Scalar covar2D_to_ellipse_confidence)
 {
     Eigen::Matrix<Scalar, 2, 1> semi_axes;
     Eigen::Matrix<Scalar, 2, 2> world_from_ellipse;
-    if (!Get2DRotatedEllipseFromCovMat(cov, ellipsoid_cut_thr, &semi_axes, &world_from_ellipse))
+    if (!Get2DRotatedEllipseFromCovMat(covar, covar2D_to_ellipse_confidence, &semi_axes, &world_from_ellipse))
         return std::make_tuple(false, RotatedEllipse2D{});
 
     SE2Transform wfe{ world_from_ellipse , mean };
@@ -1137,224 +1033,6 @@ RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipse)
     result.semi_axes[0] = std::sqrt(ellipse.right_side / dd[0]);
     result.semi_axes[1] = std::sqrt(ellipse.right_side / dd[1]);
     return result;
-}
-
-bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
-    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
-    Ellipse2DWithCenter* result)
-{
-    const auto& u = cam_plane_u;
-    const auto& v = cam_plane_v;
-    
-    // find M which specifies the set of directions {d} towards the projected ellipse
-    // {d} = d such that d*M*d=0
-    Eigen::Matrix<Scalar, 3, 1> em = eye - ellipsoid.center;
-    Eigen::Matrix<Scalar, 3, 1> v2 = ellipsoid.A * em;
-    Eigen::Matrix<Scalar, 3, 3> M = 4 * (v2 * v2.transpose() - ellipsoid.A * (em.transpose() * v2 - ellipsoid.right_side));
-
-    // find k0, ..., k5 for sig*P*sig+q*sig+k5=0
-    Scalar k0 = (u.transpose() * M * u)[0];
-    Scalar k1 = (u.transpose() * M * v)[0];
-    Scalar k2 = (v.transpose() * M * v)[0];
-
-    Scalar lam_ne = lam - n.transpose() * eye;
-    Scalar k3 = 2 * lam_ne*(u.transpose() * M * n)[0];
-    Scalar k4 = 2 * lam_ne*(v.transpose() * M * n)[0];
-    
-    Scalar k5 = suriko::Sqr(lam_ne) * (n.transpose() * M * n)[0];
-
-    // transform it into out ellipse
-    Eigen::Matrix<Scalar, 2, 2>& P = result->A;
-    P(0, 0) = k0;
-    P(0, 1) = k1;
-    P(1, 0) = k1;
-    P(1, 1) = k2;
-    Eigen::Matrix<Scalar, 2, 1> q { k3, k4 };
-
-    // transform ellipse form x*A*x+q*x+c==0 into (x-m)A(x-m)=r
-    Eigen::Matrix<Scalar, 2, 1> center = P.colPivHouseholderQr().solve(-0.5 * q);
-    Scalar right_side = center.transpose() * P * center - k5;
-
-    // for convenience, make right side positive
-    if (right_side < 0)
-    {
-        right_side = -right_side;
-        P *= -1;
-    }
-
-    result->center = center;
-    result->right_side = right_side;
-    if (ValidateEllipse(*result))
-        return true;
-
-    // occur when ellipsoid 'behind' the camera
-    return false;
-}
-
-void ProjectEllipsoidOnCamera_FillEllipseOutlineDirectionsMat3x3(
-    const RotatedEllipsoid3D& rot_ellip,
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    Eigen::Matrix<Scalar, 3, 3>* M);
-
-bool ProjectEllipsoidOnCamera(const RotatedEllipsoid3D& rot_ellip,
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
-    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
-    Ellipse2DWithCenter* result)
-{
-    // eye (pos of camera) in the camera plane in world coordinates
-    Eigen::Matrix<Scalar, 3, 1> eye_on_cam_plane = eye + (lam - (n.transpose()*eye)[0])*n; // theta
-
-    // check if eye is inside the ellipsoid
-    SE3Transform ellip_from_world = SE3Inv(rot_ellip.world_from_ellipse);
-    suriko::Point3 eye_in_ellip = SE3Apply(ellip_from_world, eye);
-    Scalar ellip_pnt =
-        suriko::Sqr(eye_in_ellip[0]) / suriko::Sqr(rot_ellip.semi_axes[0]) +
-        suriko::Sqr(eye_in_ellip[1]) / suriko::Sqr(rot_ellip.semi_axes[1]) +
-        suriko::Sqr(eye_in_ellip[2]) / suriko::Sqr(rot_ellip.semi_axes[2]);
-    bool eye_inside_ellip = ellip_pnt <= RotatedEllipsoid3D::kRightSide;
-
-    // find M which specifies the set of directions {d} towards the projected ellipse
-    // {d} = d such that d*M*d=0
-    Eigen::Matrix<Scalar, 3, 3> M;
-    ProjectEllipsoidOnCamera_FillEllipseOutlineDirectionsMat3x3(rot_ellip, eye, &M);
-
-    const auto& u = cam_plane_u;
-    const auto& v = cam_plane_v;
-
-    // find k0, ..., k5 for sig*P*sig+q*sig+k5=0
-    Scalar k0 = (u.transpose() * M * u)[0];
-    Scalar k1 = (u.transpose() * M * v)[0];
-    Scalar k2 = (v.transpose() * M * v)[0];
-
-    Scalar lam_ne = lam - n.transpose() * eye;
-    Scalar k3 = 2 * lam_ne*(u.transpose() * M * n)[0];
-    Scalar k4 = 2 * lam_ne*(v.transpose() * M * n)[0];
-    
-    Scalar k5 = suriko::Sqr(lam_ne) * (n.transpose() * M * n)[0];
-
-    // transform it into out ellipse
-    Eigen::Matrix<Scalar, 2, 2>& P = result->A;
-    P(0, 0) = k0;
-    P(0, 1) = k1;
-    P(1, 0) = k1;
-    P(1, 1) = k2;
-    Eigen::Matrix<Scalar, 2, 1> q { k3, k4 };
-
-    // transform ellipse form x*A*x+q*x+c==0 into (x-m)A(x-m)=r
-    Eigen::Matrix<Scalar, 2, 1> center = P.colPivHouseholderQr().solve(-0.5 * q);
-    Scalar right_side = center.transpose() * P * center - k5;
-
-    // for convenience, make right side positive
-    if (right_side < 0)
-    {
-        right_side = -right_side;
-        P *= -1;
-    }
-
-    result->center = center;
-    result->right_side = right_side;
-    if (ValidateEllipse(*result))
-        return true;
-
-    // occur when ellipsoid 'behind' the camera
-    bool ok = eye_inside_ellip;
-    return false;
-}
-
-bool IntersectRotEllipsoidAndPlane(const RotatedEllipsoid3D& rot_ellip,
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
-    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
-    Ellipse2DWithCenter* result)
-{
-    // eye (pos of camera) in the camera plane in world coordinates
-    Eigen::Matrix<Scalar, 3, 1> eye_on_cam_plane = eye + (lam - (n.transpose()*eye)[0])*n; // theta
-
-    // check if eye is inside the ellipsoid
-    SE3Transform ellip_from_world = SE3Inv(rot_ellip.world_from_ellipse);
-    suriko::Point3 eye_in_ellip = SE3Apply(ellip_from_world, eye);
-    Scalar ellip_pnt =
-        suriko::Sqr(eye_in_ellip[0]) / suriko::Sqr(rot_ellip.semi_axes[0]) +
-        suriko::Sqr(eye_in_ellip[1]) / suriko::Sqr(rot_ellip.semi_axes[1]) +
-        suriko::Sqr(eye_in_ellip[2]) / suriko::Sqr(rot_ellip.semi_axes[2]);
-    bool eye_inside_ellip = ellip_pnt <= RotatedEllipsoid3D::kRightSide;
-
-    Eigen::Matrix<Scalar, 3, 1> Rt_u = rot_ellip.world_from_ellipse.R.transpose() * cam_plane_u;
-    Eigen::Matrix<Scalar, 3, 1> Rt_v = rot_ellip.world_from_ellipse.R.transpose() * cam_plane_v;
-
-    // the crossing of ellipsoid and plane is an ellipse: (s,t)P(s,t)+q*(s,t)+freeterm==0
-    Eigen::Matrix<Scalar, 2, 2>& P = result->A;
-
-    // s^2
-    P(0, 0) =
-        suriko::Sqr(Rt_u[0] / rot_ellip.semi_axes[0]) +
-        suriko::Sqr(Rt_u[1] / rot_ellip.semi_axes[1]) +
-        suriko::Sqr(Rt_u[2] / rot_ellip.semi_axes[2]);
-    // t^2
-    P(1, 1) =
-        suriko::Sqr(Rt_v[0] / rot_ellip.semi_axes[0]) +
-        suriko::Sqr(Rt_v[1] / rot_ellip.semi_axes[1]) +
-        suriko::Sqr(Rt_v[2] / rot_ellip.semi_axes[2]);
-
-    // s*t, divided by 2
-    Scalar coef_st_half =
-        Rt_u[0] * Rt_v[0] / suriko::Sqr(rot_ellip.semi_axes[0]) +
-        Rt_u[1] * Rt_v[1] / suriko::Sqr(rot_ellip.semi_axes[1]) +
-        Rt_u[2] * Rt_v[2] / suriko::Sqr(rot_ellip.semi_axes[2]);
-    P(0, 1) = P(1, 0) = coef_st_half;
-
-    //
-    Scalar lam_ne = lam - n.transpose() * eye;
-    Eigen::Matrix<Scalar, 3, 1> Rt_n = rot_ellip.world_from_ellipse.R.transpose() * n;
-    Eigen::Matrix<Scalar, 3, 1> Rt_eyemT = rot_ellip.world_from_ellipse.R.transpose() * (eye - rot_ellip.world_from_ellipse.T);
-
-    Scalar coef_s =
-        (Rt_n[0] * lam_ne + Rt_eyemT[0]) * Rt_u[0] / suriko::Sqr(rot_ellip.semi_axes[0]) +
-        (Rt_n[1] * lam_ne + Rt_eyemT[1]) * Rt_u[1] / suriko::Sqr(rot_ellip.semi_axes[1]) +
-        (Rt_n[2] * lam_ne + Rt_eyemT[2]) * Rt_u[2] / suriko::Sqr(rot_ellip.semi_axes[2]);
-    coef_s *= 2;
-
-    Scalar coef_t =
-        (Rt_n[0] * lam_ne + Rt_eyemT[0]) * Rt_v[0] / suriko::Sqr(rot_ellip.semi_axes[0]) +
-        (Rt_n[1] * lam_ne + Rt_eyemT[1]) * Rt_v[1] / suriko::Sqr(rot_ellip.semi_axes[1]) +
-        (Rt_n[2] * lam_ne + Rt_eyemT[2]) * Rt_v[2] / suriko::Sqr(rot_ellip.semi_axes[2]);
-    coef_t *= 2;
-
-    Eigen::Matrix<Scalar, 3, 1> Rt_eyepT = rot_ellip.world_from_ellipse.R.transpose() * (eye + rot_ellip.world_from_ellipse.T);
-
-    Scalar coef_free =
-        suriko::Sqr((-Rt_n[0] * lam_ne + Rt_eyepT[0]) / rot_ellip.semi_axes[0]) +
-        suriko::Sqr((-Rt_n[1] * lam_ne + Rt_eyepT[1]) / rot_ellip.semi_axes[1]) +
-        suriko::Sqr((-Rt_n[2] * lam_ne + Rt_eyepT[2]) / rot_ellip.semi_axes[2]);
-    coef_free -= 1;
-
-    Eigen::Matrix<Scalar, 2, 1> q { coef_s, coef_t };
-
-    // transform ellipse form x*A*x+q*x+c==0 into (x-m)A(x-m)=r
-    Eigen::Matrix<Scalar, 2, 1> center = P.colPivHouseholderQr().solve(-0.5 * q);
-    Scalar right_side = center.transpose() * P * center - coef_free;
-
-    // for convenience, make right side positive
-    if (right_side < 0)
-    {
-        right_side = -right_side;
-        P *= -1;
-    }
-
-    result->center = center;
-    result->right_side = right_side;
-    if (ValidateEllipse(*result))
-        return true;
-
-    // occur when ellipsoid 'behind' the camera
-    bool ok = eye_inside_ellip;
-    return false;
 }
 
 namespace internals

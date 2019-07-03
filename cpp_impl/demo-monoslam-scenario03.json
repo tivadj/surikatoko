@@ -20,7 +20,7 @@
     "viewer_shots_per_period": 160,
     "viewer_periods_count": 100,
     "// true to rotate camera, false to keep constant orientation": 0,
-    "viewer_const_view_dir": false,
+    "viewer_const_view_dir": true,
     
     "camera_image_size": [320, 240],
     "camera_princip_point": [160.0, 120.0],
@@ -28,9 +28,9 @@
     "camera_focal_length_mm": 1.95,
 
     "// process noise: max_deviation/shots=0.6/40=0.015 => w=0.015/3=0.05": 0,
-    "monoslam_process_noise_cam_lin_veloc_std_mm1": 0.05,
+    "monoslam_process_noise_cam_lin_veloc_std_mm": 0.075,
     "monoslam_process_noise_cam_ang_veloc_std_rad": 0.01,
-    "monoslam_measurm_noise_std_pix": 0.2,
+    "monoslam_measurm_noise_std_pix": 1,
     "monoslam_sal_pnt_init_inv_dist": 0.1,
     "monoslam_sal_pnt_init_inv_dist_std": 1.0
 }

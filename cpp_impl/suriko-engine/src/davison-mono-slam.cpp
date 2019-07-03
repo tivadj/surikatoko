@@ -386,13 +386,13 @@ void DavisonMonoSlam::CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azim
 template <typename EigenMat>
 bool CheckUncertCovMat(const EigenMat& pos_uncert, bool can_throw)
 {
-    constexpr Scalar ellipse_cut_thr = 0.05f;
+    constexpr Scalar covar_3d_to_ellipsoid_chi_square = 7.81473f;  // chi-square value determines confidence interval {chi-square,CI}={7.81473,95%}
 
     Eigen::Matrix<Scalar, kEucl3, 1> pnt_pos{ 0, 0, 0 };
 
     // Successfully extracted ellipsoid means 3D view can be rendered,
     // as well as 2D ellipse can be constructed in camera's plane by projection.
-    auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, ellipse_cut_thr);
+    auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pnt_pos, covar_3d_to_ellipsoid_chi_square);
     if (!op)
     {
         if (can_throw) SRK_ASSERT(op);
@@ -404,11 +404,9 @@ bool CheckUncertCovMat(const EigenMat& pos_uncert, bool can_throw)
 template <typename EigenMat>
 bool CheckEllipseIsExtractableFrom2DCovarMat(const EigenMat& covar_2D, bool can_throw)
 {
-    constexpr Scalar ellipse_cut_thr = 0.05f;
-
-    Eigen::Matrix<Scalar, kPixPosComps, 1> pnt_pos{ 0, 0 };
-
-    auto [op, rot_ellipse] = Get2DRotatedEllipseFromCovMat(covar_2D, pnt_pos, ellipse_cut_thr);
+    constexpr Scalar covar2D_to_ellipse_confidence = 0.95f;
+    Eigen::Matrix<Scalar, 2, 1> mean{0, 0};
+    auto [op, rot_ellipse] = Get2DRotatedEllipseFromCovMat(covar_2D, mean, covar2D_to_ellipse_confidence);
     if (can_throw) SRK_ASSERT(op);
     return op;
 }
@@ -933,7 +931,7 @@ void DavisonMonoSlam::ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind
             auto diag = innov_var.diagonal().array().eval();
             stats_logger_->CurStats().meas_residual_std = diag.sqrt();
         }
-        
+
         //EigenDynMat innov_var_inv = innov_var.inverse();
         auto& innov_var_inv = cache.innov_var_inv;
         static int innov_var_inv_impl = 1;
@@ -2655,135 +2653,29 @@ suriko::Point2f DavisonMonoSlam::ProjectCameraPoint(const suriko::Point3& pnt_ca
     return result;
 }
 
-RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(const Ellipsoid3DWithCenter& ellipsoid,
-    const CameraStateVars& cam_state) const
+std::tuple<bool, RotatedEllipse2D> DavisonMonoSlam::GetSalientPointProjectedUncertEllipse(FilterStageType filter_stage, SalPntId sal_pnt_id) const
 {
-    RotatedEllipsoid3D rot_ellipsoid = GetRotatedEllipsoid(ellipsoid);
-    return ApproxProjectEllipsoidOnCameraByBeaconPoints(rot_ellipsoid, cam_state);
+    auto [op_cov, corner] = GetSalientPointProjected2DPosWithUncertainty(filter_stage, sal_pnt_id);
+    static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
+    SRK_ASSERT(op_cov);
+    if (!op_cov) return std::make_tuple(false, RotatedEllipse2D{});
+
+    Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> cov = corner.cov;
+    if (filter_stage == FilterStageType::Predicted)
+    {
+        Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> Rk;
+        FillRk2x2(&Rk);
+        cov += Rk;
+    }
+
+    // an ellipse can always be extracted from 'good' covariance mat of error in position
+    // but here we allow bad covariance matrix
+    return Get2DRotatedEllipseFromCovMat(cov, corner.mean, covar2D_to_ellipse_confidence_);
 }
 
-RotatedEllipse2D DavisonMonoSlam::ApproxProjectEllipsoidOnCameraByBeaconPoints(const RotatedEllipsoid3D& rot_ellipsoid,
-    const CameraStateVars& cam_state) const
+std::tuple<bool, RotatedEllipse2D> DavisonMonoSlam::GetPredictedSalientPointProjectedUncertEllipse(SalPntId sal_pnt_id) const
 {
-    Eigen::Matrix<Scalar, kEucl3, kEucl3> cam_wfc;
-    RotMatFromQuat(Span(cam_state.orientation_wfc), &cam_wfc);
-
-    SE3Transform se3_cam_wfc{ cam_wfc, cam_state.pos_w };
-    SE3Transform se3_cam_cfw = SE3Inv(se3_cam_wfc);
-
-    // approximate ellipsoid projection by projection of couple of points
-
-    auto& mono_slam = *this;
-    auto project_on_cam = [&rot_ellipsoid, &se3_cam_cfw, &mono_slam](suriko::Point3 p_ellipse) ->suriko::Point2f
-    {
-        suriko::Point3 p_tracker = SE3Apply(rot_ellipsoid.world_from_ellipse, p_ellipse);
-        suriko::Point3 p_cam = SE3Apply(se3_cam_cfw, p_tracker);
-        
-        // project point onto camera plane Z=1, but do NOT convert into image pixel coordinates
-        suriko::Point2f result{ p_cam[0] / p_cam[2], p_cam[1] / p_cam[2] };
-        return result;
-    };
-
-    std::array<suriko::Point3, 6> beacon_points = {
-        suriko::Point3 {rot_ellipsoid.semi_axes[0], 0, 0},
-        suriko::Point3 {0, rot_ellipsoid.semi_axes[1], 0},
-        suriko::Point3 {-rot_ellipsoid.semi_axes[0], 0, 0},
-        suriko::Point3 {0, -rot_ellipsoid.semi_axes[1], 0},
-        suriko::Point3 {0, 0, rot_ellipsoid.semi_axes[2]},
-        suriko::Point3 {0, 0, -rot_ellipsoid.semi_axes[2]}
-    };
-
-    // for now, just form a circle which encompass all projected points
-    suriko::Point2f ellip_center = project_on_cam(suriko::Point3{ 0, 0, 0 });
-    Scalar rad = 0;
-
-    for (const auto& p : beacon_points)
-    {
-        suriko::Point2f corner = project_on_cam(p);
-        Scalar dist = (corner.Mat() - ellip_center.Mat()).norm();
-        rad = std::max(rad, dist);
-    }
-
-    RotatedEllipse2D result;
-    result.semi_axes = Eigen::Matrix<Scalar, 2, 1>{ rad, rad };
-    // axes of circle are always may be treated as aligned with the world axes
-    result.world_from_ellipse = SE2Transform(Eigen::Matrix<Scalar, 2, 2>::Identity(), ellip_center.Mat());
-    return result;
-}
-
-RotatedEllipse2D DavisonMonoSlam::ProjectEllipsoidOnCameraOrApprox(const RotatedEllipsoid3D& rot_ellip, const CameraStateVars& cam_state,
-    int* impl_with) const
-{
-    Eigen::Matrix<Scalar, 3, 3> cam_wfc;
-    RotMatFromQuat(gsl::span<const Scalar>(cam_state.orientation_wfc.data(), 4), &cam_wfc);
-
-    Eigen::Matrix<Scalar, 3, 1> eye = cam_state.pos_w;
-    Eigen::Matrix<Scalar, 3, 1> u_world = cam_wfc.leftCols<1>();
-    Eigen::Matrix<Scalar, 3, 1> v_world = cam_wfc.middleCols<1>(1);
-
-    // convert camera plane n*x=lam into world coordinates
-
-    // n_world=Rwc*n_cam=col<3rd>(Rwc), because n_cam=OZ=(0 0 1)
-    Eigen::Matrix<Scalar, 3, 1> n_world = cam_wfc.rightCols<1>();
-
-    Scalar lam_cam = suriko::kCamPlaneZ;
-    Scalar lam_world = cam_state.pos_w.transpose() * n_world + lam_cam;
-
-    // check if eye is inside the ellipsoid
-    SE3Transform ellip_from_world = SE3Inv(rot_ellip.world_from_ellipse);
-    suriko::Point3 eye_in_ellip = SE3Apply(ellip_from_world, eye);
-    Scalar ellip_pnt =
-        suriko::Sqr(eye_in_ellip[0]) / suriko::Sqr(rot_ellip.semi_axes[0]) +
-        suriko::Sqr(eye_in_ellip[1]) / suriko::Sqr(rot_ellip.semi_axes[1]) +
-        suriko::Sqr(eye_in_ellip[2]) / suriko::Sqr(rot_ellip.semi_axes[2]);
-    bool eye_inside_ellip = ellip_pnt <= RotatedEllipsoid3D::kRightSide;
-
-    Ellipse2DWithCenter ellipse_on_cam_plane;
-    bool found_ellipse_with_center = false;
-
-    int impl = -1;
-
-    if (eye_inside_ellip)
-    {
-        bool op2 = IntersectRotEllipsoidAndPlane(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
-        if (op2)
-        {
-            found_ellipse_with_center = true;
-            impl = 2;
-        }
-        else
-        {
-            // Eye _inside_ the uncertainty ellipsoid, behind the camera plane. Ellipsoid is so short, that it doesn't cross the camera plane.
-            // This feature should not be tracked.
-            // for now, return approximate ellipse
-        }
-    }
-    else
-    {
-        bool op = ProjectEllipsoidOnCamera(rot_ellip, eye, u_world, v_world, n_world, lam_world, &ellipse_on_cam_plane);
-        if (op)
-        {
-            found_ellipse_with_center = true;
-            impl = 1;
-        }
-    }
-
-    RotatedEllipse2D result_ellipse;
-    if (found_ellipse_with_center)
-    {
-        result_ellipse = GetRotatedEllipse2D(ellipse_on_cam_plane);
-    }
-    else
-    {
-        result_ellipse = ApproxProjectEllipsoidOnCameraByBeaconPoints(rot_ellip, cam_state);
-        impl = 3;
-    }
-
-    SRK_ASSERT(impl != -1);
-    if (impl_with != nullptr)
-        *impl_with = impl;
-
-    return result_ellipse;
+    return GetSalientPointProjectedUncertEllipse(FilterStageType::Predicted, sal_pnt_id);
 }
 
 void DavisonMonoSlam::Deriv_hd_by_cam_state_and_sal_pnt(
@@ -3624,6 +3516,9 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
     const EigenDynMat& src_estim_vars_covar,
     const TrackedSalientPoint& sal_pnt) const ->std::tuple<bool, MeanAndCov2D>
 {
+    // propagate (using derivatives) 3D uncertainty of a ([3x1] or [6x1]) salient point into the [2x1] 2D pixels uncertainty.
+    // [SfM_EKF_Civera formula 3.33]
+
     // fun(camera frame, salient point) -> pixel_coord, 13->2
     // collect 13x13 covariance matrix for
     // 3x1 rwc = camera position
@@ -3712,6 +3607,30 @@ auto DavisonMonoSlam::GetSalientPointProjected2DPosWithUncertainty(
         
         if (use_finite_deriv_J)
             J = finite_estim_J;
+    }
+
+    if (kSurikoDebug)
+    {
+        Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> s1 =
+            hd_by_cam_state.middleCols<kEucl3>(0) *
+            src_estim_vars_covar.block< kEucl3, kEucl3>(0, 0)*
+            hd_by_cam_state.middleCols<kEucl3>(0).transpose();
+
+        Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> s2 =
+            hd_by_cam_state.middleCols<kQuat4>(kEucl3) *
+            src_estim_vars_covar.block< kQuat4, kQuat4>(kEucl3, kEucl3)*
+            hd_by_cam_state.middleCols<kQuat4>(kEucl3).transpose();
+
+        Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> s3 =
+            hd_by_sal_pnt *
+            src_estim_vars_covar.block< kSalientPointComps, kSalientPointComps>(off, off)*
+            hd_by_sal_pnt.transpose();
+
+        Eigen::Matrix<Scalar, kPixPosComps, kPixPosComps> s_sum = s1 + s2 + s3;
+
+        // approximate contribution of camera position, camera orientation, salient point position into corner covariance
+        std::array<Scalar, 3> covar_contrib{s1.trace()/s_sum.trace(), s2.trace()/s_sum.trace(), s3.trace()/s_sum.trace()};
+        SRK_ASSERT(true);
     }
 
     // derive covariance of projected coord (in pixels)

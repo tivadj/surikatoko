@@ -24,6 +24,10 @@
     "camera_pixel_size_mm": [0.01, 0.01],
     "camera_focal_length_mm": 1.95,
 
+    "camera_enable_distortion": true,
+    "// distortion: k1k2=[0.06,0.01] eg.(320,240)->(384,288), k1k2=[0.09,0.04] eg.(320,240)->(480,360)": 0,
+    "camera_distort_mikhail_k1k2": [0.06, 0.01],
+
     "// process noise: world_size/steps=3/10=0.3 => w=0.3/3=0.1": 0,
     "// w=0.05 goes in different direction": 0,
     "monoslam_process_noise_cam_lin_veloc_std_mm": 0.15,

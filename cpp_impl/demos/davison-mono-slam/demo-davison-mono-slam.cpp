@@ -594,29 +594,21 @@ public:
         return result;
     }
 
-    std::tuple<bool,Recti> PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, Scalar ellisoid_cut_thr)
+    std::tuple<bool,Recti> PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id)
     {
-        auto [op_cov, corner] = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
-        static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
-        SRK_ASSERT(op_cov);
-        if (!op_cov) return std::make_tuple(false, Recti{});
-
-        // an ellipse can always be extracted from 'good' covariance mat of error in position
-        // but here we allow bad covariance matrix
-        auto [op_2D_ellip, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellisoid_cut_thr);
+        auto [op_2D_ellip, corner_ellipse] = mono_slam.GetPredictedSalientPointProjectedUncertEllipse(sal_pnt_id);
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
         SRK_ASSERT(op_2D_ellip);
         if (!op_2D_ellip) return std::make_tuple(false, Recti{});
 
         Rect corner_bounds = GetEllipseBounds2(corner_ellipse);
-        Recti corner_bounds_i = TruncateRect(corner_bounds);
+        Recti corner_bounds_i = EncompassRect(corner_bounds);
         return std::make_tuple(true, corner_bounds_i);
     }
 
-    std::optional<suriko::Point2f> MatchSalientTempl(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic,
-        Scalar ellisoid_cut_thr)
+    std::optional<suriko::Point2f> MatchSalientTempl(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic)
     {
-        auto [op, search_rect_unbounded] = PredictSalientPointSearchRect(mono_slam, sal_pnt_id, ellisoid_cut_thr);
+        auto [op, search_rect_unbounded] = PredictSalientPointSearchRect(mono_slam, sal_pnt_id);
         if (!op)
             return std::nullopt; // broken covariance matrix
 
@@ -711,7 +703,7 @@ public:
         {
             const TrackedSalientPoint& sal_pnt = mono_slam_->GetSalientPoint(sal_pnt_id);
 
-            std::optional<suriko::Point2f> match_pnt_center = MatchSalientTempl(*mono_slam_, sal_pnt_id, image, ellisoid_cut_thr_);
+            std::optional<suriko::Point2f> match_pnt_center = MatchSalientTempl(*mono_slam_, sal_pnt_id, image);
             bool is_lost = !match_pnt_center.has_value();
             if (is_lost)
                 continue;
@@ -1040,12 +1032,13 @@ DEFINE_bool(monoslam_debug_predicted_vars_cov, false, "");
 DEFINE_int32(monoslam_debug_max_sal_pnt_count, -1, "[default=-1(none)] number of salient points won't be greater than this value");
 DEFINE_bool(monoslam_sal_pnt_perfect_init_inv_dist, false, "");
 DEFINE_int32(monoslam_set_estim_state_covar_to_gt_impl, 2, "1=ignore correlations, 2=set correlations as if 'AddNewSalientPoint' is called on each salient point");
-DEFINE_double(monoslam_ellipsoid_cut_thr, 0.04, "probability cut threshold for uncertainty ellipsoid");
+DEFINE_double(monoslam_covar2D_to_ellipse_confidence, 0.95f, "");
 
 DEFINE_bool(ui_swallow_exc, true, "true to ignore (swallow) exceptions in UI");
 DEFINE_int32(ui_loop_prolong_period_ms, 3000, "");
 DEFINE_int32(ui_tight_loop_relaxing_delay_ms, 100, "");
 DEFINE_int32(ui_dots_per_uncert_ellipse, 12, "Number of dots to split uncertainty ellipse (4=rectangle)");
+DEFINE_double(ui_covar3D_to_ellipsoid_chi_square, 7.814f, "{confidence interval,chi-square}={68%,3.505},{95%,7.814},{99%,11.344}");
 
 DEFINE_bool(ctrl_multi_threaded_mode, false, "true for UI to work in a separated dedicated thread; false for UI to work inside worker's thread");
 DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
@@ -1397,7 +1390,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     //
     DavisonMonoSlam2DDrawer drawer;
     drawer.dots_per_uncert_ellipse_ = FLAGS_ui_dots_per_uncert_ellipse;
-    drawer.ellipse_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
+    drawer.covar3D_to_ellipsoid_chi_square_ = static_cast<Scalar>(FLAGS_ui_covar3D_to_ellipsoid_chi_square);
     drawer.ui_swallow_exc_ = FLAGS_ui_swallow_exc;
 
     // the origin of a tracker (sometimes cam0)
@@ -1437,10 +1430,10 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.sal_pnt_max_undetected_frames_count_ = FLAGS_monoslam_sal_pnt_max_undetected_frames_count;
     if (FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute >= 0)
         mono_slam.sal_pnt_negative_inv_rho_substitute_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute);
+    mono_slam.covar2D_to_ellipse_confidence_ = static_cast<Scalar>(FLAGS_monoslam_covar2D_to_ellipse_confidence);
 
     mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_monoslam_fix_estim_vars_covar_symmetry;
-    mono_slam.debug_ellipsoid_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
     if (FLAGS_monoslam_debug_max_sal_pnt_count != -1)
         mono_slam.debug_max_sal_pnt_coun_ = FLAGS_monoslam_debug_max_sal_pnt_count;
     if (demo_data_source == DemoDataSource::kVirtualScene)
@@ -1541,7 +1534,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     {
         auto corners_matcher = std::make_unique<ImageTemplCornersMatcher>(&mono_slam);
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_stop_on_sal_pnt_moved_too_far;
-        corners_matcher->ellisoid_cut_thr_ = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };
         if (FLAGS_monoslam_templ_min_corr_coeff > -1)
             corners_matcher->min_templ_corr_coeff_ = static_cast<Scalar>(FLAGS_monoslam_templ_min_corr_coeff);
@@ -1581,7 +1573,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     ui_params.wait_for_user_input_after_each_frame = FLAGS_ctrl_wait_after_each_frame;
     ui_params.mono_slam = &mono_slam;
     ui_params.tracker_origin_from_world = tracker_origin_from_world;
-    ui_params.ellipsoid_cut_thr = static_cast<Scalar>(FLAGS_monoslam_ellipsoid_cut_thr);
+    ui_params.covar3D_to_ellipsoid_chi_square = static_cast<Scalar>(FLAGS_ui_covar3D_to_ellipsoid_chi_square);
     ui_params.cam_orient_cfw_history = &cam_orient_cfw_history;
     ui_params.get_observable_frame_ind_fun = [&observable_frame_ind]() { return observable_frame_ind; };
     ui_params.worker_chat = worker_chat;

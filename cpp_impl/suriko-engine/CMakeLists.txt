@@ -41,7 +41,6 @@ set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/rt-config-autogen.h.in
         )
 set(lib_srcs
-        ${PROJECT_SOURCE_DIR}/src/auto-project-ellipsoid-on-camera.cpp
         ${PROJECT_SOURCE_DIR}/src/bundle-adj-kanatani.cpp
         ${PROJECT_SOURCE_DIR}/src/config-reader.cpp
         ${PROJECT_SOURCE_DIR}/src/davison-mono-slam.cpp

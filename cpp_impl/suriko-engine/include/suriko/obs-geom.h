@@ -97,6 +97,7 @@ std::ostream& operator<<(std::ostream& os, const Recti& r);
 std::optional<Recti> IntersectRects(const Recti& a, const Recti& b);
 Recti DeflateRect(const Recti& a, int left, int top, int right, int bottom);
 Recti TruncateRect(const Rect& a);
+Recti EncompassRect(const Rect& a);
 Recti ClampRectWhenFixedCenter(const Recti& r, suriko::Sizei min_size);
 
 //auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3;
@@ -354,57 +355,26 @@ struct RotatedEllipsoid3D
     SE3Transform world_from_ellipse;
 };
 
-void PickPointOnEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
-    const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert, Scalar cut_value,
-    const Eigen::Matrix<Scalar, 3, 1>& ray,
-    Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid);
-
 [[nodiscard]]
 std::tuple<bool,RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
-    Scalar ellipsoid_cut_thr);
+    Scalar covar3D_to_ellipsoid_chi_square);
 
 [[nodiscard]]
 bool Get2DRotatedEllipseFromCovMat(const Eigen::Matrix<Scalar, 2, 2>& cov,
-    Scalar ellipsoid_cut_thr,
+    Scalar covar2D_to_ellipse_confidence,
     Eigen::Matrix<Scalar, 2, 1>* semi_axes,
     Eigen::Matrix<Scalar, 2, 2>* world_from_ellipse);
 
 [[nodiscard]]
 std::tuple<bool,RotatedEllipse2D> Get2DRotatedEllipseFromCovMat(
-    const Eigen::Matrix<Scalar, 2, 2>& cov,
+    const Eigen::Matrix<Scalar, 2, 2>& covar,
     const Eigen::Matrix<Scalar, 2, 1>& mean,
-    Scalar ellipsoid_cut_thr);
+    Scalar covar2D_to_ellipse_confidence);
 
 bool GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid, bool can_throw, RotatedEllipsoid3D* result);
 RotatedEllipsoid3D GetRotatedEllipsoid(const Ellipsoid3DWithCenter& ellipsoid);
 
 RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipsoid);
-
-/// Camera axes are in XYZ=LUF (left, up, forward) mode. Camera is aligned with positive OZ direction.
-/// Camera plane (u,v) is defined by first two columns of camera orientation R (the third column is OZ direction).
-/// Ellipsoid must be in forefront of the camera, otherwise false is returned.
-/// source: "Perspective Projection of an Ellipsoid", David Eberly, GeometricTools, https://www.geometrictools.com/
-bool ProjectEllipsoidOnCamera(const Ellipsoid3DWithCenter& ellipsoid,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
-    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
-    Ellipse2DWithCenter* result);
-
-bool ProjectEllipsoidOnCamera(const RotatedEllipsoid3D& rot_ellip,
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
-    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
-    Ellipse2DWithCenter* result);
-
-bool IntersectRotEllipsoidAndPlane(const RotatedEllipsoid3D& rot_ellip,
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_u,
-    const Eigen::Matrix<Scalar, 3, 1>& cam_plane_v,
-    const Eigen::Matrix<Scalar, 3, 1>& n, Scalar lam,
-    Ellipse2DWithCenter* result);
 
 namespace internals
 {

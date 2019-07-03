@@ -188,20 +188,6 @@ void RenderSchematicCamera(const SE3Transform& cam_wfc, const CameraIntrinsicPar
     glPopMatrix();
 }
 
-void PickRandomPointOnEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
-    const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert, Scalar ellipsoid_cut_thr,
-    std::mt19937& gen, Eigen::Matrix<Scalar, 3, 1>* pos_ellipsoid)
-{
-    // choose random direction from the center of ellipsoid
-    std::uniform_real_distribution<Scalar> distr(-1, 1);
-    Eigen::Matrix<Scalar, 3, 1> ray;
-    ray[0] = distr(gen);
-    ray[1] = distr(gen);
-    ray[2] = distr(gen);
-    PickPointOnEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, ray, pos_ellipsoid);
-}
-
 void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_ellipse)
 {
     std::array<std::pair<size_t, Scalar>, 3> sorted_semi_axes;
@@ -287,11 +273,11 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
 void RenderPosUncertaintyMatAsEllipsoid(
     const Eigen::Matrix<Scalar, 3, 1>& pos,
     const Eigen::Matrix<Scalar, 3, 3>& pos_uncert,
-    Scalar ellipsoid_cut_thr,
+    Scalar covar3D_to_ellipsoid_chi_square,
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
-    auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pos, ellipsoid_cut_thr);
+    auto [op, rot_ellipsoid] = GetRotatedUncertaintyEllipsoidFromCovMat(pos_uncert, pos, covar3D_to_ellipsoid_chi_square);
     static_assert(std::is_same_v<decltype(rot_ellipsoid), RotatedEllipsoid3D>);
     if (!op)
     {
@@ -301,78 +287,6 @@ void RenderPosUncertaintyMatAsEllipsoid(
 
     // draw projection of ellipsoid
     RenderEllipsoid(rot_ellipsoid, dots_per_ellipse);
-}
-
-bool RenderUncertaintyEllipsoidBySampling(const Eigen::Matrix<Scalar, 3, 1>& cam_pos,
-    const Eigen::Matrix<Scalar, 3, 3>& cam_pos_uncert,
-    Scalar ellipsoid_cut_thr, size_t ellipsoid_points_count = 256)
-{
-    Eigen::LLT<Eigen::Matrix<Scalar, 3, 3>> lltOfA(cam_pos_uncert);
-    bool op2 = lltOfA.info() != Eigen::NumericalIssue;
-    SRK_ASSERT(op2);
-
-    std::random_device rd;  //Will be used to obtain a seed for the random number engine
-    std::mt19937 gen(rd()); //Standard mersenne_twister_engine seeded with rd()
-    gen.seed(1234);
-
-    Scalar var1 = std::max(cam_pos_uncert(0, 0), std::max(cam_pos_uncert(1, 1), cam_pos_uncert(2, 2)));
-    Scalar sig1 = std::sqrt(var1);
-    std::uniform_real_distribution<Scalar> distr(-3 * sig1, 3 * sig1);
-
-    Eigen::Matrix<Scalar, 3, 3> uncert_inv = cam_pos_uncert.inverse();
-    Scalar uncert_det = cam_pos_uncert.determinant();
-    std::vector<Eigen::Matrix<Scalar, 3, 1>> ellips_points;
-    for (size_t i = 0; i < ellipsoid_points_count; ++i)
-    {
-        // choose random direction from the center of ellipsoid
-        Eigen::Matrix<Scalar, 3, 1> ray;
-        ray[0] = distr(gen);
-        ray[1] = distr(gen);
-        ray[2] = distr(gen);
-
-        // cross ellipsoid with ray
-        Scalar b1 = -std::log(suriko::Sqr(ellipsoid_cut_thr)*suriko::Pow3(2 * Pi<Scalar>())*uncert_det);
-        Eigen::Matrix<Scalar, 1, 1> b2 = ray.transpose() * uncert_inv * ray;
-        Scalar t2 = b1 / b2[0];
-        //SRK_ASSERT(t2 >= 0) << "invalid covariance matrix";
-        if (t2 < 0)
-            return false;
-
-        Scalar t = std::sqrt(t2);
-
-        // crossing of ellipsoid and ray
-        Eigen::Matrix<Scalar, 3, 1> pos_world = cam_pos + t * ray;
-        ellips_points.push_back(pos_world);
-    }
-
-    // draw lines from each point on the ellipsoid to the closest point
-    for (size_t i = 0; i < ellips_points.size(); ++i)
-    {
-        auto& p1 = ellips_points[i];
-        Scalar closest_dist = 999;
-        size_t closest_point_ind = -1;
-        for (size_t j = 0; j < ellips_points.size(); ++j)
-        {
-            if (i == j) continue;
-            auto& p2 = ellips_points[j];
-
-            Scalar dist = (p2 - p1).norm();
-            if (dist < closest_dist)
-            {
-                closest_point_ind = j;
-                closest_dist = dist;
-            }
-        }
-
-        glLineWidth(1);
-        glBegin(GL_LINES);
-        glVertex3d(p1[0], p1[1], p1[2]);
-
-        auto& p2 = ellips_points[closest_point_ind];
-        glVertex3d(p2[0], p2[1], p2[2]);
-        glEnd();
-    }
-    return true;
 }
 
 void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
@@ -522,7 +436,7 @@ void RenderSalientTemplate(const DavisonMonoSlam* mono_slam, DavisonMonoSlam::Sa
     }
 }
 
-void RenderMap(const DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
+void RenderMap(const DavisonMonoSlam* mono_slam, Scalar covar3D_to_ellipsoid_chi_square,
     bool display_3D_uncertainties,
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
@@ -542,7 +456,7 @@ void RenderMap(const DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
         {
             if (display_3D_uncertainties)
             {
-                RenderPosUncertaintyMatAsEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
+                RenderPosUncertaintyMatAsEllipsoid(sal_pnt_pos, sal_pnt_pos_uncert, covar3D_to_ellipsoid_chi_square, dots_per_ellipse, ui_swallow_exc);
             }
 
             glBegin(GL_POINTS);
@@ -569,7 +483,7 @@ void RenderMap(const DavisonMonoSlam* mono_slam, Scalar ellipsoid_cut_thr,
     }
 }
 
-void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar ellipsoid_cut_thr,
+void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar covar3D_to_ellipsoid_chi_square,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type,
     bool display_3D_uncertainties,
@@ -619,7 +533,7 @@ void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_sl
 
         RenderAxes(0.5, 2); // axes of the tracker's origin (=cam0)
 
-        RenderMap(mono_slam, ellipsoid_cut_thr, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
+        RenderMap(mono_slam, covar3D_to_ellipsoid_chi_square, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
 
         // render history of camera's positions (schematic)
         std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
@@ -647,7 +561,7 @@ void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_sl
             Eigen::Matrix<Scalar, 3, 3> cam_orient_wfc;
             RotMatFromQuat(gsl::make_span<const Scalar>(cam_orient_quat_wfc.data(), 4), &cam_orient_wfc);
 
-            RenderPosUncertaintyMatAsEllipsoid(cam_pos, cam_pos_uncert, ellipsoid_cut_thr, dots_per_ellipse, ui_swallow_exc);
+            RenderPosUncertaintyMatAsEllipsoid(cam_pos, cam_pos_uncert, covar3D_to_ellipsoid_chi_square, dots_per_ellipse, ui_swallow_exc);
         }
 
         glPopMatrix();
@@ -749,7 +663,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
         mid_cam_disp_type = CamDisplayType::Schematic;
     }
 
-    RenderScene(ui_params, ui_params.mono_slam, cam_instrinsics_, ui_params.ellipsoid_cut_thr,
+    RenderScene(ui_params, ui_params.mono_slam, cam_instrinsics_, ui_params.covar3D_to_ellipsoid_chi_square,
                 display_trajectory,
                 mid_cam_disp_type,
                 display_3D_uncertainties,
@@ -1095,82 +1009,26 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
     const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
     SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
     cv::Scalar sal_pnt_color_bgr = OcvColorBgr(sal_pnt_color);
+    SrkColor search_rect_color = { 192, 192, 192 };
+    cv::Scalar search_rect_color_bgr = OcvColorBgr(search_rect_color);
 
-    // 1 = propagate (using derivatives) 3D uncertainty of a ([3x1] or [6x1]) salient point into the [2x1] 2D pixels uncertainty.
-    // The result of this approach is very bad, we get dot-like circles when the correct shape is the elongated ellipse.
-    // Perhaps the big errors are due to approximation of uncertainty using derivatives.
-    // 2 = construct 3D uncertainty ellipsoid and then try to project it into picture.
-    static int draw_sal_pnt_uncert_impl = 2;
-    if (draw_sal_pnt_uncert_impl == 1)
+    // we draw ellipse as a current representation of an area where a salient point is positioned
+    // we draw a rectangle of a search area, where a salient point is expected to be in the next frame
+    MarkUsedTrackerStateToVisualize();
+    if (auto [op, corner_ellipse] = mono_slam.GetSalientPointProjectedUncertEllipse(FilterStageType::Estimated, sal_pnt_id); op)
     {
-        MarkUsedTrackerStateToVisualize();
-        auto [op_cov, corner] = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Estimated, sal_pnt_id);
-        static_assert(std::is_same_v<decltype(corner), MeanAndCov2D>);
-        if (!op_cov)
-        {
-            if (ui_swallow_exc_) return;
-            SRK_ASSERT(op_cov);
-        }
-
-        auto [op_2D_ellip, corner_ellipse] = Get2DRotatedEllipseFromCovMat(corner.cov, corner.mean, ellipse_cut_thr_);
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
-        if (!op_2D_ellip)
-        {
-            if (ui_swallow_exc_) return;
-            SRK_ASSERT(op_2D_ellip);
-        }
-
-        DrawDistortedEllipseOnPicture(corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, LineType::Solid,nullptr, out_image_bgr);
+        SRK_ASSERT(op);
+        DrawDistortedEllipseOnPicture(corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, LineType::Solid, nullptr, out_image_bgr);
     }
-    else if (draw_sal_pnt_uncert_impl == 2)
+    if (auto [op, corner_ellipse] = mono_slam.GetPredictedSalientPointProjectedUncertEllipse(sal_pnt_id); op)
     {
-        Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
-        Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
-        bool op = mono_slam.GetSalientPointEstimated3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
-        if (!op)
-        {
-            if (ui_swallow_exc_) return;
-            SRK_ASSERT(op);
-        }
-
-        auto [op_ellip, rot_ellipsoid ]= GetRotatedUncertaintyEllipsoidFromCovMat(sal_pnt_pos_uncert, sal_pnt_pos, ellipse_cut_thr_);
-        static_assert(std::is_same_v<decltype(rot_ellipsoid), RotatedEllipsoid3D>);
-        if (!op_ellip)
-        {
-            if (ui_swallow_exc_) return;
-            SRK_ASSERT(op_ellip);
-        }
-
-        MarkUsedTrackerStateToVisualize();
-        CameraStateVars cam_state = mono_slam.GetCameraEstimatedVars();
-
-        // The set of ellipsoid 3D points, visible from given camera position, is in implicit form and to
-        // enumerate them is a problem, source: "Perspective Projection of an Ellipsoid", David Eberly, GeometricTools, https://www.geometrictools.com/
-        // If it is solved, we can just enumerate them and project-distort into pixels.
-        // Instead, we project those contour 3D points onto the camera (z=1) and get the ellipse,
-        // 3D points of which can be easily enumerated.
-
-        int impl_with = -1;
-        RotatedEllipse2D rotated_ellipse = mono_slam.ProjectEllipsoidOnCameraOrApprox(rot_ellipsoid, cam_state, &impl_with);
-
-        auto line_type = LineType::Solid;
-        if (impl_with == 1)
-            line_type = LineType::Solid;  // projected ellipsoid
-        else if (impl_with == 2)
-            line_type = LineType::Dashed;  // ellipsoid cuts camera plane
-        else if (impl_with == 3)
-            line_type = LineType::Dotted;  // projected beacon points
-
-        auto cam_coord_to_pix_fun = [&mono_slam](suriko::Point2f pos_camera) -> suriko::Point2f
-        {
-            // due to distortion, the pixel coordinates of contour will not form an ellipse
-            // hence usage of 2D ellipse drawing functions is inappropriate
-            // instead we just project 3D points onto the image
-            suriko::Point2f pnt_pix = mono_slam.ProjectCameraPoint(suriko::Point3(pos_camera[0], pos_camera[1], kCamPlaneZ));
-            return pnt_pix;
-        };
-
-        DrawDistortedEllipseOnPicture(rotated_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, line_type, cam_coord_to_pix_fun, out_image_bgr);
+        static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
+        SRK_ASSERT(op);
+        Rect corner_bounds = GetEllipseBounds2(corner_ellipse);
+        Recti r = EncompassRect(corner_bounds);
+        cv::rectangle(*out_image_bgr,
+            cv::Point{ r.x, r.y }, cv::Point{ r.Right(), r.Bottom() }, search_rect_color_bgr);
     }
 }
 
