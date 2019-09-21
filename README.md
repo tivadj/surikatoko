@@ -28,6 +28,7 @@ Almost spherical ellipsoids are drawn with two extra strokes on the flanks.
 
 3D world view. The view renders an uncertainty ellipsoid, associated with each salient point. The ellipsoids are not linked to any camera (as there may be multiple cameras observing the scene) and have no uncertainty, derived from uncertainty of camera position and orientation.
 2D camera view. As 3D position of every salient point is projected onto the camera, in the same way the uncertainty is propagated from 3D world coordinates into 2D picture coordinates. The resultant 2D ellipse brings uncertainty, associated with position and orientation of the camera. Thus 3D world view and 2D camera view show uncertainties which are visually different.
+The rectangle in the image where a salient point is expected to be in the next frame (and where it is searched) is drawn with gray color.
 Camera view shows only salient points which fit the current view, the 3D view renders all salient points.
 World view renders salient points' patches by back-projecting 2D blobs in the picture, back into the 3D world. Hence the patch is linked to the frame of a camera. The salient point itself is rendered as a dot (small solid rectangle) in the coordinates, estimated by Kalman Filter. Thus some salient point may have the 3D center and patch coordinates diverge and visually do not overlap. This indicates some inconsistencies in the filtering process.
 2D ellipse:

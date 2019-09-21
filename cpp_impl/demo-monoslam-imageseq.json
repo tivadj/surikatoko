@@ -15,6 +15,9 @@
     "monoslam_process_noise_cam_lin_veloc_std_mm": 0.01,
     "monoslam_process_noise_cam_ang_veloc_std_rad": 0.01,
     "monoslam_measurm_noise_std_pix": 1.0,
+    "monoslam_1pransac_corner_max_divergence_pix": 0.5,
+    "// {0.9, 4.60517}, {0.95, 5.99146}, {0.99, 9.21034}": 0,
+    "monoslam_1pransac_high_innov_chisq_thr_pix2": 9.21034,
     "monoslam_sal_pnt_init_inv_dist": 0.1,
     "monoslam_sal_pnt_init_inv_dist_std": 1,
 

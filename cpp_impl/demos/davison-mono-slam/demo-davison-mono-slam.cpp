@@ -27,7 +27,7 @@
 #include "suriko/davison-mono-slam.h"
 #include "suriko/virt-world/scene-generator.h"
 #include "suriko/quat.h"
-#include "../stat-helpers.h"
+#include "suriko/stat-helpers.h"
 #include "../visualize-helpers.h"
 
 #if defined(SRK_HAS_OPENCV)
@@ -228,7 +228,6 @@ class DemoCornersMatcher : public CornersMatcherBase
     FragmentMap& entire_map_;
     suriko::Sizei img_size_;
     const DavisonMonoSlam* mono_slam_;
-    bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
     std::vector<BlobInfo> detected_blobs_; // blobs detected in current frame
 public:
     SE3Transform tracker_origin_from_world_;
@@ -416,8 +415,6 @@ public:
         return detected_blobs_[blob_id.Ind].GTInvDepth;
     }
 
-    void SetSuppressObservations(bool value) { suppress_observations_ = value; }
-
     const std::vector<BlobInfo>& DetectedBlobs() const { return detected_blobs_; }
 };
 
@@ -425,13 +422,11 @@ public:
 
 class ImageTemplCornersMatcher : public CornersMatcherBase
 {
-    bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
     cv::Ptr<cv::ORB> detector_;
     DavisonMonoSlam* mono_slam_;
     std::vector<cv::KeyPoint> new_keypoints_;
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
-    Scalar ellisoid_cut_thr_;
     std::function<void(DavisonMonoSlam&, SalPntId, cv::Mat*)> draw_sal_pnt_fun_;
     std::function<void(std::string_view, cv::Mat)> show_image_fun_;
     std::optional<suriko::Sizei> min_search_rect_size_;
@@ -442,6 +437,14 @@ public:
     {
         int nfeatures = 50;
         detector_ = cv::ORB::create(nfeatures);
+    }
+
+
+    void AnalyzeFrame(size_t frame_ind, const Picture& image) override
+    {
+        new_keypoints_.clear();
+
+        if (suppress_observations_) return;
     }
 
     struct TemplateMatchResult
@@ -699,6 +702,8 @@ public:
         const std::set<SalPntId>& tracking_sal_pnts,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
+        if (suppress_observations_) return;
+
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
             const TrackedSalientPoint& sal_pnt = mono_slam_->GetSalientPoint(sal_pnt_id);
@@ -766,7 +771,7 @@ public:
             cv::drawKeypoints(image.gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         // remove keypoints which are close to 'matched' salient points
-        auto filter_out_close_to_existing = [this,&matched_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, Scalar exclude_radius,
+        auto filter_out_close_to_existing = [this,&tracking_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, Scalar exclude_radius,
             std::vector<cv::KeyPoint>* result)
         {
             for (size_t cand_ind = 0; cand_ind < keypoints.size(); ++cand_ind)
@@ -774,9 +779,16 @@ public:
                 const auto& cand = keypoints[cand_ind];
 
                 bool has_close_blob = false;
-                for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
+                for (SalPntId sal_pnt_id : tracking_sal_pnts)
                 {
-                    std::optional<suriko::Point2f> exist_pix_opt = mono_slam_->GetDetectedSalientTemplCenter(sal_pnt_id);
+                    const auto& sal_pnt = mono_slam_->GetSalientPoint(sal_pnt_id);
+                    bool ok =
+                        sal_pnt.track_status == SalPntTrackStatus::New || 
+                        sal_pnt.track_status == SalPntTrackStatus::Matched ||
+                        sal_pnt.track_status == SalPntTrackStatus::Unobserved;
+                    if (!ok) continue;
+
+                    std::optional<suriko::Point2f> exist_pix_opt = sal_pnt.templ_center_pix_;
                     if (!exist_pix_opt.has_value())
                         continue;
 
@@ -862,8 +874,6 @@ public:
 #endif
         return templ;
     }
-
-    void SetSuppressObservations(bool value) { suppress_observations_ = value; }
 };
 #endif
 
@@ -1014,7 +1024,7 @@ DEFINE_double(monoslam_sal_pnt_inv_dist_std_if_gt, 0, "");
 
 DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
 DEFINE_double(monoslam_sal_pnt_negative_inv_rho_substitute, -1, "");
-DEFINE_int32(monoslam_update_impl, 1, "");
+DEFINE_int32(monoslam_update_impl, 0, "");
 DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
 DEFINE_int32(monoslam_max_new_blobs_per_frame, 1, "");
 DEFINE_double(monoslam_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
@@ -1072,6 +1082,8 @@ bool ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_
     ms.SetProcessNoiseStd(process_noise_linear_velocity_std, process_noise_angular_velocity_std);
 
     opt_set(FloatParam<Scalar>(&cr, "monoslam_measurm_noise_std_pix"), &ms.measurm_noise_std_pix_);
+    mono_slam->one_point_ransac_corner_max_divergence_pix_ = FloatParam<Scalar>(&cr, "monoslam_1pransac_corner_max_divergence_pix");
+    mono_slam->one_point_ransac_high_innov_chi_square_thresh_pix2_ = FloatParam<Scalar>(&cr, "monoslam_1pransac_high_innov_chisq_thr_pix2");
     opt_set(FloatParam<Scalar>(&cr, "monoslam_sal_pnt_init_inv_dist"), &ms.sal_pnt_init_inv_dist_);
     opt_set(FloatParam<Scalar>(&cr, "monoslam_sal_pnt_init_inv_dist_std"), &ms.sal_pnt_init_inv_dist_std_);
 
@@ -1435,7 +1447,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.sal_pnt_negative_inv_rho_substitute_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute);
     mono_slam.covar2D_to_ellipse_confidence_ = static_cast<Scalar>(FLAGS_monoslam_covar2D_to_ellipse_confidence);
 
-    mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
+    if (FLAGS_monoslam_update_impl != 0)
+        mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_monoslam_fix_estim_vars_covar_symmetry;
     if (FLAGS_monoslam_debug_max_sal_pnt_count != -1)
         mono_slam.debug_max_sal_pnt_coun_ = FLAGS_monoslam_debug_max_sal_pnt_count;
@@ -1829,10 +1842,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                     }
 
                     const bool suppress_observations = (key == kKeyIgnoreDetection);
-
-                    auto a_corners_matcher = dynamic_cast<DemoCornersMatcher*>(&mono_slam.CornersMatcher());
-                    if (a_corners_matcher != nullptr)
-                        a_corners_matcher->SetSuppressObservations(suppress_observations);
+                    mono_slam.CornersMatcher().SetSuppressObservations(suppress_observations);
                 }
                 else
                 {

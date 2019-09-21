@@ -1,7 +1,7 @@
-#include "stat-helpers.h"
+#include "suriko/stat-helpers.h"
 #include "suriko/approx-alg.h"
 
-namespace suriko_demos
+namespace suriko
 {
 using namespace suriko;
 

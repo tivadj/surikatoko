@@ -33,6 +33,7 @@ set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/mat-serialization.h
         ${PROJECT_SOURCE_DIR}/include/suriko/templ-match.h
         ${PROJECT_SOURCE_DIR}/include/suriko/rt-config.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/stat-helpers.h
         ${PROJECT_SOURCE_DIR}/include/suriko/lin-alg.h
         ${PROJECT_SOURCE_DIR}/include/suriko/quat.h
         ${PROJECT_SOURCE_DIR}/include/suriko/multi-view-factorization.h
@@ -48,6 +49,7 @@ set(lib_srcs
         ${PROJECT_SOURCE_DIR}/src/mat-serialization.cpp
         ${PROJECT_SOURCE_DIR}/src/obs-geom.cpp
         ${PROJECT_SOURCE_DIR}/src/opengl-helpers.cpp
+        ${PROJECT_SOURCE_DIR}/src/stat-helpers.cpp
         ${PROJECT_SOURCE_DIR}/src/templ-match.cpp
         ${PROJECT_SOURCE_DIR}/src/quat.cpp
         ${PROJECT_SOURCE_DIR}/src/lin-alg.cpp

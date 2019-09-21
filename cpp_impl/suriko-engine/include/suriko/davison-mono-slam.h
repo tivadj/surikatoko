@@ -106,6 +106,14 @@ struct TemplMatchStats
     Scalar templ_sqrt_sum_sqr_diff_;  // the part of denominator in formula of a correlation coefficient (=sqrt(sum))
 };
 
+/// Hints the source from which template's center is derived.
+enum class SalPntTemplCenterDeriveFrom
+{
+    None,
+    ImageBlob,      ///< salient point is detected in the frame and corresponding image blob provides the template center
+    EstimatedState  ///< estimated state is projected onto the camera plane
+};
+
 // Internal
 suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei templ_size);
 
@@ -124,6 +132,7 @@ struct TrackedSalientPoint
 
     size_t initial_frame_ind_synthetic_only_;  // the frame ind where a salient point was first seen; used only in virtual scenarios
 #if defined(SRK_DEBUG)
+    SalPntTemplCenterDeriveFrom templ_center_derived_from_debug_ = SalPntTemplCenterDeriveFrom::None;
     std::optional<suriko::Point2i> templ_top_left_pix_debug_; // in pixels
     suriko::Point2f initial_templ_center_pix_debug_;          // in pixels
     suriko::Point2i initial_templ_top_left_pix_debug_;        // in pixels
@@ -159,11 +168,11 @@ struct TrackedSalientPoint
 #endif
     }
 
-    void SetUndetected()
+    void ResetTemplCenterPix()
     {
-        track_status = SalPntTrackStatus::Unobserved;
         templ_center_pix_ = std::nullopt;
 #if defined(SRK_DEBUG)
+        templ_center_derived_from_debug_ = SalPntTemplCenterDeriveFrom::None;
         templ_top_left_pix_debug_ = std::nullopt;
 #endif
     }
@@ -198,6 +207,8 @@ inline bool operator!=(SalPntId x, SalPntId y) { return !operator==(x,y); }
 /// an extra overhead we pursue to avoid.
 class CornersMatcherBase
 {
+protected:
+    bool suppress_observations_ = false; // true to make camera magically don't detect any salient points
 public:
     virtual ~CornersMatcherBase() = default;
 
@@ -222,6 +233,8 @@ public:
     }
 
     virtual std::optional<Scalar> GetSalientPointGroundTruthInvDepth(CornersMatcherBlobId blob_id) { return std::nullopt; };
+
+    void SetSuppressObservations(bool value) { suppress_observations_ = value; }
 };
 
 /// ax=f/dx and ay=f/dy 
@@ -417,7 +430,7 @@ public:
     // this much each component of 3x1 camera orientation angle-vector can change per one time step
     // measured in units of angle-vector rotation representation
     // used to init top-left 3x3 of Qk[6,6], uncertainty in camera dynamic model motion
-    Scalar process_noise_angular_velocity_std_ = 0.01;  // in radians, influence how much camera can rotate
+    Scalar process_noise_angular_velocity_std_ = 0.01f;  // in radians, influence how much camera can rotate
 
     Scalar measurm_noise_std_pix_ = 1;
 
@@ -477,7 +490,12 @@ public:
     /// 1. Stack all corners in one [2m,1] vector. Require inverting one [2m,2m] innovation matrix.
     /// 2. Process each corner individually. Require inverting m innovation matrices of size [2x2].
     /// 3. Process [x,y] component of each corner individually. Require inverting 2m scalars.
-    int mono_slam_update_impl_ = 0;
+    /// 4. 1-Point RANSAC
+    int mono_slam_update_impl_ = 1;
+
+    /// Threshold to collect low-innovation salient points in 1-point RANSAC algorithm.
+    std::optional<Scalar> one_point_ransac_corner_max_divergence_pix_;
+    std::optional<Scalar> one_point_ransac_high_innov_chi_square_thresh_pix2_;
 
     bool fix_estim_vars_covar_symmetry_ = false;
 private:
@@ -710,7 +728,15 @@ private:
     void RemoveMarkedDeletedSalientPointsDescriptors();
 
     void ProcessFrame_StackedObservationsPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
+    void ProcessFrame_StackedObservationsPerUpdateCore(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids, EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
     void ProcessFrame_OneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
+
+    void OnePointRansac_GetConsensusMatches(const std::vector<std::pair<SalPntId, suriko::Point2f>>& matched_sal_pnt_to_corner,
+        const EigenDynVec& src_estim_vars, const EigenDynMat& Pprev, Scalar corner_max_divergence_pix,
+        std::vector<std::pair<SalPntId, suriko::Point2f>>* low_innov_inliers);
+    std::tuple<size_t, size_t> ProcessFrame_OnePointRansacUpdateCore(size_t frame_ind, const std::vector<std::pair<SalPntId, suriko::Point2f>>& matched_sal_pnt_to_corner);
+    void ProcessFrame_OnePointRansacUpdate(size_t frame_ind, const std::vector<std::pair<SalPntId, suriko::Point2f>>& matched_sal_pnt_to_corner);
+
     void ProcessFrame_OneComponentOfOneObservationPerUpdate(size_t frame_ind, const std::vector<SalPntId>& latest_frame_sal_pnt_ids);
     void ComputeEstimSalientPointSearchRects(const std::vector<SalPntId>& latest_frame_sal_pnt_ids, const EigenDynMat& innov_var);
     void NormalizeCameraOrientationQuaternionAndCovariances(EigenDynVec* src_estim_vars, EigenDynMat* src_estim_vars_covar);
@@ -718,10 +744,13 @@ private:
     void EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar);
     void OnEstimVarsChanged(size_t frame_ind);
     void FinishFrameStats(size_t frame_ind);
+    size_t RecruitNewSalientPoints(size_t frame_ind, const Picture& image, const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts);
     void PredictStateAndCovariance();
 
     // Updates the centers of detected template.
     void ProcessFrameOnExit_UpdateSalientPoint(size_t frame_ind);
+
+    void SetNonObservedSalientPointCorner(const EigenDynVec& src_estim_vars);
 
     void AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_var_ind,
         const CameraStateVars& cam_state, suriko::Point2f corner_pix, std::optional<Scalar> pnt_inv_dist_gt);

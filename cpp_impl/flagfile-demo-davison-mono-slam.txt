@@ -1,6 +1,6 @@
 #--logtostderr
 --stderrthreshold=0
---v=5
+--v=4
 # vmodule doesn't work on Windows
 #--vmodule=bundle*=4
 
@@ -27,7 +27,7 @@
 #
 --monoslam_sal_pnt_negative_inv_rho_substitute=-1
 # 1=all, 2=one observation, 3=one component of one observation
---monoslam_update_impl=1
+--monoslam_update_impl=4
 --monoslam_covar2D_to_ellipse_confidence=0.95
 --monoslam_max_new_blobs_in_first_frame=-10
 --monoslam_max_new_blobs_per_frame=-1

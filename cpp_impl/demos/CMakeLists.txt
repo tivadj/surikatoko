@@ -40,8 +40,6 @@ function(AddDepsF dem)
 endfunction()
 
 set (test-helpers 
-    stat-helpers.h
-    stat-helpers.cpp
     visualize-helpers.h
     visualize-helpers.cpp
     )

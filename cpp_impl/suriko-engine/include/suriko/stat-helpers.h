@@ -1,7 +1,7 @@
 #pragma once
 #include "suriko/rt-config.h"
 
-namespace suriko_demos
+namespace suriko
 {
 /// Compute mean and standard deviation of a sequence.
 class MeanStdAlgo
