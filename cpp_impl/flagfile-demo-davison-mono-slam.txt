@@ -13,6 +13,9 @@
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
 --ctrl_collect_tracker_internals=true
+--ctrl_log_slam_images_dir=dump_out
+--ctrl_log_slam_images_cam0=false
+--ctrl_log_slam_images_scene3D=false
 # true to just test visualizer, no slam is done
 --ctrl_debug_skim_over=false
 

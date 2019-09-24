@@ -91,6 +91,8 @@ public:
 
     std::optional<int> RenderFrameAndProlongUILoopOnUserInput(std::function<bool(int key)> break_on);
 
+    void SetOnRenderOutputFilePath(const std::string& filename_prefix) const;
+
     /// Puts observer behind camera, so that the camera will be in front of observer.
     void SetCameraBehindTracker();
 private:

@@ -772,6 +772,11 @@ std::optional<int> SceneVisualizationPangolinGui::RenderFrameAndProlongUILoopOnU
     return key_;
 }
 
+void SceneVisualizationPangolinGui::SetOnRenderOutputFilePath(const std::string& filename_prefix) const
+{
+    display_cam->SaveOnRender(filename_prefix);
+}
+
 void SceneVisualizationPangolinGui::RunInSeparateThread()
 {
     const auto& ui_params = s_ui_params_;

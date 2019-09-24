@@ -13,6 +13,7 @@
 #include <chrono>
 #include <thread>
 #include <condition_variable>
+#include <sstream>
 #include <filesystem>
 #include <Eigen/Dense>
 #include <gflags/gflags.h>
@@ -958,6 +959,36 @@ bool WriteTrackerInternalsToFile(std::string_view file_name, const DavisonMonoSl
     return true;
 }
 
+std::string FormatImageFileNameNoExt(size_t frame_ind)
+{
+    constexpr int frame_ind_field_width = 6;  // file names in KITTI dataset have the length = 6
+    std::stringstream img_file_name;
+    img_file_name.fill('0');
+    img_file_name << std::setw(frame_ind_field_width) << frame_ind;
+    return img_file_name.str();
+}
+
+void EnsureAllSubdirsExist(const std::filesystem::path& dir)
+{
+    if (!std::filesystem::exists(dir))
+    {
+        bool create_dir_op = std::filesystem::create_directories(dir);
+        SRK_ASSERT(create_dir_op) << "Can't create dir (" << dir << ")";
+    }
+}
+
+void DumpOpenCVImage(const std::filesystem::path& root_dump_dir, size_t frame_ind, std::string_view cam_name, const cv::Mat& camera_image_bgr)
+{
+    std::string img_file_name  = FormatImageFileNameNoExt(frame_ind);
+
+    std::filesystem::path cam0_dump_dir = root_dump_dir / cam_name;
+    EnsureAllSubdirsExist(cam0_dump_dir);
+
+    std::filesystem::path img_path = cam0_dump_dir / (img_file_name + ".png");
+    bool op = cv::imwrite(img_path.string(), camera_image_bgr);
+    SRK_ASSERT(op) << "Can't write to file (" << img_path << ")";
+}
+
 std::optional<Scalar> GetMaxCamShift(const std::vector<SE3Transform>& gt_cam_orient_cfw)
 {
     std::optional<SE3Transform> prev_cam_wfc;
@@ -1055,6 +1086,9 @@ DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without r
 DEFINE_bool(ctrl_visualize_during_processing, true, "");
 DEFINE_bool(ctrl_visualize_after_processing, true, "");
 DEFINE_bool(ctrl_collect_tracker_internals, false, "");
+DEFINE_bool(ctrl_log_slam_images_cam0, false, "Whether to write images of camera to filesystem");
+DEFINE_bool(ctrl_log_slam_images_scene3D, false, "Whether to write images of 3D scene to filesystem");
+DEFINE_string(ctrl_log_slam_images_dir, "", "The directory where to output the images");
 
 bool ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_reader)
 {
@@ -1632,6 +1666,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     CheckDavisonMonoSlamConfigurationAndDump(mono_slam, gt_cam_orient_cfw);
 
+    std::filesystem::path root_dump_dir = std::filesystem::absolute(FLAGS_ctrl_log_slam_images_dir);
+
     //
     size_t frame_ind = -1;
     std::filesystem::directory_iterator dir_it;
@@ -1766,6 +1802,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 auto t2 = std::chrono::high_resolution_clock::now();
                 frame_OpenCV_gui_time = t2 - t1;
 
+                if (FLAGS_ctrl_log_slam_images_cam0)
+                    DumpOpenCVImage(root_dump_dir, frame_ind, "cam0", camera_image_bgr);
+
                 cv::imshow("front-camera", camera_image_bgr);
                 cv::waitKey(1); // allow to refresh an opencv view
             }
@@ -1806,6 +1845,16 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             // update UI
             if (FLAGS_ctrl_visualize_during_processing)
             {
+                if (FLAGS_ctrl_log_slam_images_scene3D)
+                {
+                    std::filesystem::path scene_dump_dir = root_dump_dir / "scene3D";
+                    EnsureAllSubdirsExist(scene_dump_dir);
+
+                    std::string img_file_name_no_ext = FormatImageFileNameNoExt(frame_ind);
+                    std::filesystem::path scene_out_file_path = scene_dump_dir / img_file_name_no_ext;
+                    pangolin_gui->SetOnRenderOutputFilePath(scene_out_file_path.string());
+                }
+
                 auto stop_wait_on_key = [](int key)
                 {
                     return key == kKeyIgnoreDetection || key == kKeyForward || key == pangolin::PANGO_KEY_ESCAPE;
