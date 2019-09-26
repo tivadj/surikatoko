@@ -164,7 +164,7 @@ void SceneVisualizationThread(UIThreadParams ui_params);
 class DavisonMonoSlam2DDrawer
 {
 public:
-    void DrawScene(const DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const;
+    void DrawScene(const DavisonMonoSlam& mono_slam, cv::Mat* out_image_bgr) const;
     
     void DrawEstimatedSalientPoint(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, cv::Mat* out_image_bgr) const;
 public:

@@ -75,8 +75,7 @@ suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei 
         static_cast<int>(center[1] - rad_y) };
 }
 
-DavisonMonoSlamInternalsLogger::DavisonMonoSlamInternalsLogger(DavisonMonoSlam* mono_slam)
-    :mono_slam_(mono_slam)
+DavisonMonoSlamInternalsLogger::DavisonMonoSlamInternalsLogger()
 {
 }
 
@@ -175,9 +174,102 @@ DavisonMonoSlam::DebugPathEnum DavisonMonoSlam::s_debug_path_ = DebugPathEnum::D
 
 DavisonMonoSlam::DavisonMonoSlam()
 {
+    process_noise_covar_.setZero();
     SetProcessNoiseStd(process_noise_linear_velocity_std_, process_noise_angular_velocity_std_);
 
     ResetCamera();
+}
+
+DavisonMonoSlam::DavisonMonoSlam(const DavisonMonoSlam& src) { CopyFrom(src); }
+
+void DavisonMonoSlam::CopyFrom(const DavisonMonoSlam& src)
+{
+    auto& d = *this;
+
+    // deep copy of salient points' info
+
+    d.sal_pnts_.clear();
+    for (const auto& p_src_sal_pnt : src.sal_pnts_)
+    {
+        auto dst_sal_pnt = std::make_unique<TrackedSalientPoint>();
+        *dst_sal_pnt = *p_src_sal_pnt;
+        d.sal_pnts_.push_back(std::move(dst_sal_pnt));
+    }
+
+    // other fields
+
+    d.estim_vars_ = src.estim_vars_;
+    d.estim_vars_covar_ = src.estim_vars_covar_;
+
+    d.predicted_estim_vars_ = src.predicted_estim_vars_;
+    d.predicted_estim_vars_covar_ = src.predicted_estim_vars_covar_;
+
+    d.estim_sal_pnts_count_ = src.estim_sal_pnts_count_;
+
+    d.in_multi_threaded_mode_ = src.in_multi_threaded_mode_;
+    d.seconds_per_frame_ = src.seconds_per_frame_;
+
+    d.process_noise_linear_velocity_std_ = src.process_noise_linear_velocity_std_;
+    d.process_noise_angular_velocity_std_ = src.process_noise_angular_velocity_std_;
+    d.process_noise_covar_ = src.process_noise_covar_;
+    d.measurm_noise_std_pix_ = src.measurm_noise_std_pix_;
+
+    d.cam_pos_x_std_m_ = src.cam_pos_x_std_m_;
+    d.cam_pos_y_std_m_ = src.cam_pos_y_std_m_;
+    d.cam_pos_z_std_m_ = src.cam_pos_z_std_m_;
+    d.cam_orient_q_comp_std_ = src.cam_orient_q_comp_std_;
+    d.cam_vel_std_ = src.cam_vel_std_;
+    d.cam_ang_vel_std_ = src.cam_ang_vel_std_;
+
+    d.sal_pnt_init_inv_dist_ = src.sal_pnt_init_inv_dist_;
+    d.sal_pnt_init_inv_dist_std_ = src.sal_pnt_init_inv_dist_std_;
+    d.sal_pnt_pos_x_std_if_gt_ = src.sal_pnt_pos_x_std_if_gt_;
+    d.sal_pnt_pos_y_std_if_gt_ = src.sal_pnt_pos_y_std_if_gt_;
+    d.sal_pnt_pos_z_std_if_gt_ = src.sal_pnt_pos_z_std_if_gt_;
+    d.sal_pnt_first_cam_pos_std_if_gt_ = src.sal_pnt_first_cam_pos_std_if_gt_;
+    d.sal_pnt_azimuth_std_if_gt_ = src.sal_pnt_azimuth_std_if_gt_;
+    d.sal_pnt_elevation_std_if_gt_ = src.sal_pnt_elevation_std_if_gt_;
+    d.sal_pnt_inv_dist_std_if_gt_ = src.sal_pnt_inv_dist_std_if_gt_;
+
+    d.force_xyz_sal_pnt_pos_diagonal_uncert_ = src.force_xyz_sal_pnt_pos_diagonal_uncert_;
+    d.sal_pnt_max_undetected_frames_count_ = src.sal_pnt_max_undetected_frames_count_;
+    d.sal_pnt_negative_inv_rho_substitute_ = src.sal_pnt_negative_inv_rho_substitute_;
+
+    d.sal_pnt_templ_size_ = src.sal_pnt_templ_size_;
+
+    d.closest_sal_pnt_templ_min_dist_pix_ = src.closest_sal_pnt_templ_min_dist_pix_;
+
+    d.covar2D_to_ellipse_confidence_ = src.covar2D_to_ellipse_confidence_;
+
+    d.debug_max_sal_pnt_coun_ = src.debug_max_sal_pnt_coun_;
+
+    d.cam_intrinsics_ = src.cam_intrinsics_;
+    d.cam_enable_distortion_ = src.cam_enable_distortion_;
+    d.cam_distort_params_ = src.cam_distort_params_;
+
+    d.gt_cami_from_world_fun_ = src.gt_cami_from_world_fun_;
+    d.gt_cami_from_tracker_fun_ = src.gt_cami_from_tracker_fun_;
+    d.gt_cami_from_tracker_new_ = src.gt_cami_from_tracker_new_;
+    d.gt_sal_pnt_in_camera_fun_ = src.gt_sal_pnt_in_camera_fun_;
+
+    d.sal_pnt_perfect_init_inv_dist_ = src.sal_pnt_perfect_init_inv_dist_;
+    d.set_estim_state_covar_to_gt_impl_ = src.set_estim_state_covar_to_gt_impl_;
+
+    d.mono_slam_update_impl_ = src.mono_slam_update_impl_;
+
+    d.one_point_ransac_corner_max_divergence_pix_ = src.one_point_ransac_corner_max_divergence_pix_;
+    d.one_point_ransac_high_innov_chi_square_thresh_pix2_ = src.one_point_ransac_high_innov_chi_square_thresh_pix2_;
+
+    d.fix_estim_vars_covar_symmetry_ = src.fix_estim_vars_covar_symmetry_;
+
+    d.corners_matcher_ = src.corners_matcher_;
+    d.stats_logger_ = src.stats_logger_;
+}
+
+DavisonMonoSlam& DavisonMonoSlam::operator=(const DavisonMonoSlam& src)
+{
+    this->CopyFrom(src);
+    return *this;
 }
 
 void DavisonMonoSlam::ResetCamera()
@@ -285,16 +377,23 @@ void DavisonMonoSlam::SetCameraStateCovarHelper()
     SetCameraStateCovar(&predicted_estim_vars_covar_);
 }
 
-void DavisonMonoSlam::SetProcessNoiseStd(Scalar process_noise_linear_velocity_std, Scalar process_noise_angular_velocity_std)
+void DavisonMonoSlam::SetProcessNoiseStd(
+    std::optional<Scalar> process_noise_linear_velocity_std,
+    std::optional <Scalar> process_noise_angular_velocity_std)
 {
-    process_noise_linear_velocity_std_ = process_noise_linear_velocity_std;
-    process_noise_angular_velocity_std_ = process_noise_angular_velocity_std;
+    if (process_noise_linear_velocity_std.has_value())
+    {
+        process_noise_linear_velocity_std_ = process_noise_linear_velocity_std.value();
+        for (int i = 0; i < kVelocComps; ++i)
+            process_noise_covar_(i, i) = suriko::Sqr(process_noise_linear_velocity_std_);
+    }
+    if (process_noise_angular_velocity_std.has_value())
+    {
+        process_noise_angular_velocity_std_ = process_noise_angular_velocity_std.value();
 
-    process_noise_covar_.setZero();
-    for (int i = 0; i < kVelocComps; ++i)
-        process_noise_covar_(i, i) = suriko::Sqr(process_noise_linear_velocity_std_);
-    for (int i = 0; i < kAngVelocComps; ++i)
-        process_noise_covar_(kVelocComps + i, kVelocComps + i) = suriko::Sqr(process_noise_angular_velocity_std_);
+        for (int i = 0; i < kAngVelocComps; ++i)
+            process_noise_covar_(kVelocComps + i, kVelocComps + i) = suriko::Sqr(process_noise_angular_velocity_std_);
+    }
 }
 
 void AzimElevFromEuclidCoords(suriko::Point3 hw, Scalar* azim_theta, Scalar* elev_phi)
@@ -756,7 +855,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     corners_matcher_->AnalyzeFrame(frame_ind, image);
 
     std::vector<std::pair<SalPntId, CornersMatcherBlobId>> matched_sal_pnts;
-    corners_matcher_->MatchSalientPoints(frame_ind, image, GetSalientPoints(), &matched_sal_pnts);
+    corners_matcher_->MatchSalientPoints(*this, GetSalientPoints(), frame_ind, image, &matched_sal_pnts);
 
     std::vector<std::pair<SalPntId, suriko::Point2f>> matched_sal_pnt_to_corner;
 
@@ -1715,7 +1814,7 @@ size_t DavisonMonoSlam::RecruitNewSalientPoints(size_t frame_ind, const Picture&
 {
     // eagerly try allocate new salient points
     std::vector<CornersMatcherBlobId> new_blobs;
-    this->corners_matcher_->RecruitNewSalientPoints(frame_ind, image, GetSalientPoints(), matched_sal_pnts, &new_blobs);
+    this->corners_matcher_->RecruitNewSalientPoints(*this, GetSalientPoints(), matched_sal_pnts, frame_ind, image, &new_blobs);
     if (new_blobs.empty())
         return 0;
 
@@ -1728,9 +1827,6 @@ size_t DavisonMonoSlam::RecruitNewSalientPoints(size_t frame_ind, const Picture&
             SalientPointsCount() >= debug_max_sal_pnt_coun_.value()) break;
 
         Point2f coord = corners_matcher_->GetBlobCoord(blob_id);
-        Scalar x = coord.X();
-        Scalar y = coord.Y();
-        bool b1 = x > 120 && x < 123 && y > 112 && y < 116;
 
         std::optional<Scalar> pnt_inv_dist_gt;
         if (sal_pnt_perfect_init_inv_dist_)
@@ -1739,7 +1835,7 @@ size_t DavisonMonoSlam::RecruitNewSalientPoints(size_t frame_ind, const Picture&
         }
 
         TemplMatchStats templ_stats{};
-        Picture templ_img = corners_matcher_->GetBlobTemplate(blob_id, image);
+        Picture templ_img = corners_matcher_->GetBlobTemplate(blob_id, image, sal_pnt_templ_size_);
         if (!templ_img.gray.empty())
         {
             // calculate the statistics of this template (mean and variance), used for matching templates
@@ -4142,9 +4238,9 @@ Eigen::Matrix<Scalar, kAngVelocComps, 1> DavisonMonoSlam::EstimVarsCamAngularVel
     return estim_vars_.middleRows< kAngVelocComps>(kEucl3 + kQuat4 + kVelocComps);
 }
 
-void DavisonMonoSlam::SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher)
+void DavisonMonoSlam::SetCornersMatcher(std::shared_ptr<CornersMatcherBase> corners_matcher)
 {
-    corners_matcher_.swap(corners_matcher);
+    corners_matcher_ = corners_matcher;
 }
 
 CornersMatcherBase& DavisonMonoSlam::CornersMatcher()
@@ -4152,9 +4248,9 @@ CornersMatcherBase& DavisonMonoSlam::CornersMatcher()
     return *corners_matcher_.get();
 }
 
-void DavisonMonoSlam::SetStatsLogger(std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger)
+void DavisonMonoSlam::SetStatsLogger(std::shared_ptr<DavisonMonoSlamInternalsLogger> stats_logger)
 {
-    stats_logger_.swap(stats_logger);
+    stats_logger_ = stats_logger;
 }
 
 DavisonMonoSlamInternalsLogger* DavisonMonoSlam::StatsLogger() const

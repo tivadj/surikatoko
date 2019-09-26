@@ -199,6 +199,8 @@ inline bool operator<(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_interna
 inline bool operator==(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_internal == y.sal_pnt_as_bits_internal; }
 inline bool operator!=(SalPntId x, SalPntId y) { return !operator==(x,y); }
 
+class DavisonMonoSlam;
+
 /// We separate the tracking of existing salient points, for which the position in the latest
 /// frame is known, from occasional search for extra salient points.
 /// The first is the hot path in workflow when camera doesn't move much. The number of salient
@@ -215,20 +217,26 @@ public:
     virtual void AnalyzeFrame(size_t frame_ind, const Picture& image) {}
     virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const Picture& image) {}
 
-    virtual void MatchSalientPoints(size_t frame_ind,
-        const Picture& image,
+    virtual void MatchSalientPoints(
+        const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
+        size_t frame_ind,
+        const Picture& image,
         std::vector<std::pair<SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) {}
 
-    virtual void RecruitNewSalientPoints(size_t frame_ind,
-        const Picture& image,
+    virtual void RecruitNewSalientPoints(
+        const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
+        size_t frame_ind,
+        const Picture& image,
         std::vector<CornersMatcherBlobId>* new_blob_ids) {}
 
     virtual suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
-    
-    virtual Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image) {
+
+    /// Gets rectangle around the given blob of requested size.
+    /// @param templ_size the size of requested image portion
+    virtual Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image, suriko::Sizei templ_size) {
         return Picture{};
     }
 
@@ -359,13 +367,12 @@ class DavisonMonoSlam;
 class DavisonMonoSlamInternalsLogger
 {
     using Clock = std::chrono::high_resolution_clock;
-    DavisonMonoSlam* mono_slam_ = nullptr;
     DavisonMonoSlamTrackerInternalsSlice cur_stats_;
     DavisonMonoSlamTrackerInternalsHist hist_;
     Clock::time_point frame_start_time_point_;
     Clock::time_point frame_finish_time_point_;
 public:
-    DavisonMonoSlamInternalsLogger(DavisonMonoSlam* mono_slam);
+    DavisonMonoSlamInternalsLogger();
     virtual ~DavisonMonoSlamInternalsLogger() = default;
 
     virtual void StartNewFrameStats();
@@ -411,14 +418,13 @@ private:
     EigenDynVec estim_vars_; // x[13+N*6], camera position plus all salient points
     EigenDynMat estim_vars_covar_; // P[13+N*6, 13+N*6], state's covariance matrix
 
-    std::shared_mutex predicted_estim_vars_mutex_;
+    std::shared_mutex predicted_estim_vars_mutex_;  // NOTE: this field prevents this tracker from copying
     EigenDynVec predicted_estim_vars_; // x[13+N*6]
     EigenDynMat predicted_estim_vars_covar_; // P[13+N*6, 13+N*6]
 
     std::vector<std::unique_ptr<TrackedSalientPoint>> sal_pnts_; // the set of descriptors of salient points (including deleted salient points)
     size_t estim_sal_pnts_count_ = 0;  // number of salient points in error covariance matrix; this doesn't include deleted salient points
 
-    Eigen::Matrix<Scalar, kProcessNoiseComps, kProcessNoiseComps> process_noise_covar_; // Qk[6,6] process noise covariance matrix
 public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
     Scalar seconds_per_frame_ = 1; // in seconds, elapsed time between two consecutive frames
@@ -431,6 +437,8 @@ public:
     // measured in units of angle-vector rotation representation
     // used to init top-left 3x3 of Qk[6,6], uncertainty in camera dynamic model motion
     Scalar process_noise_angular_velocity_std_ = 0.01f;  // in radians, influence how much camera can rotate
+
+    Eigen::Matrix<Scalar, kProcessNoiseComps, kProcessNoiseComps> process_noise_covar_; // Qk[6,6] process noise covariance matrix
 
     Scalar measurm_noise_std_pix_ = 1;
 
@@ -499,8 +507,8 @@ public:
 
     bool fix_estim_vars_covar_symmetry_ = false;
 private:
-    std::unique_ptr<CornersMatcherBase> corners_matcher_;
-    std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger_;
+    std::shared_ptr<CornersMatcherBase> corners_matcher_;
+    std::shared_ptr<DavisonMonoSlamInternalsLogger> stats_logger_;
 private:
     struct
     {
@@ -535,6 +543,10 @@ private:
     } quat_normalization_cache_;
 public:
     DavisonMonoSlam();
+    DavisonMonoSlam(const DavisonMonoSlam& src);
+    void CopyFrom(const DavisonMonoSlam& src);
+    DavisonMonoSlam& operator=(const DavisonMonoSlam& src);
+
     void ResetCamera();
     void SetCameraVelocity(std::optional<suriko::Point3> cam_vel_tracker, std::optional<suriko::Point3> cam_ang_vel_c);
     void SetCameraStateCovarHelper();
@@ -542,7 +554,7 @@ private:
     void SetCameraState(EigenDynVec* src_estim_vars);
     void SetCameraStateCovar(EigenDynMat* src_estim_vars_covar);
 public:
-    void SetProcessNoiseStd(Scalar process_noise_linear_velocity_std, Scalar process_noise_angular_velocity_std);
+    void SetProcessNoiseStd(std::optional<Scalar> process_noise_linear_velocity_std, std::optional <Scalar> process_noise_angular_velocity_std);
 
     void ProcessFrame(size_t frame_ind, const Picture& image);
 
@@ -602,10 +614,10 @@ public:
     /// This returns null if the salient point is in the infinity and finite coordinates of a template can't be calculated.
     std::optional<SalPntRectFacet> ProtrudeSalientTemplateIntoWorld(SalPntId sal_pnt_id) const;
 
-    void SetCornersMatcher(std::unique_ptr<CornersMatcherBase> corners_matcher);
+    void SetCornersMatcher(std::shared_ptr<CornersMatcherBase> corners_matcher);
     CornersMatcherBase& CornersMatcher();
 
-    void SetStatsLogger(std::unique_ptr<DavisonMonoSlamInternalsLogger> stats_logger);
+    void SetStatsLogger(std::shared_ptr<DavisonMonoSlamInternalsLogger> stats_logger);
     DavisonMonoSlamInternalsLogger* StatsLogger() const;
 
     static void SetDebugPath(DebugPathEnum debug_path);

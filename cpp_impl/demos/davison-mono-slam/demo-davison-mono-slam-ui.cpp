@@ -1014,33 +1014,44 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
     const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
     SrkColor sal_pnt_color = GetSalientPointColor(sal_pnt);
     cv::Scalar sal_pnt_color_bgr = OcvColorBgr(sal_pnt_color);
-    SrkColor search_rect_color = { 192, 192, 192 };
-    cv::Scalar search_rect_color_bgr = OcvColorBgr(search_rect_color);
 
     // we draw ellipse as a current representation of an area where a salient point is positioned
-    // we draw a rectangle of a search area, where a salient point is expected to be in the next frame
     MarkUsedTrackerStateToVisualize();
-    if (auto [op, corner_ellipse] = mono_slam.GetSalientPointProjectedUncertEllipse(FilterStageType::Estimated, sal_pnt_id); op)
+    auto [op_corner, corner_ellipse] = mono_slam.GetSalientPointProjectedUncertEllipse(FilterStageType::Estimated, sal_pnt_id);
+    if (op_corner)
     {
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
-        SRK_ASSERT(op);
         DrawDistortedEllipseOnPicture(corner_ellipse, dots_per_uncert_ellipse_, sal_pnt_color_bgr, LineType::Solid, nullptr, out_image_bgr);
     }
-    if (auto [op, corner_ellipse] = mono_slam.GetPredictedSalientPointProjectedUncertEllipse(sal_pnt_id); op)
+
+    // we draw a rectangle of a search area, where a salient point is expected to be in the next frame
+    if (auto [op, predict_pos_ellipse] = mono_slam.GetPredictedSalientPointProjectedUncertEllipse(sal_pnt_id); op)
     {
-        static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
-        SRK_ASSERT(op);
-        Rect corner_bounds = GetEllipseBounds2(corner_ellipse);
-        Recti r = EncompassRect(corner_bounds);
+        static_assert(std::is_same_v<decltype(predict_pos_ellipse), RotatedEllipse2D>);
+        Rect corner_bounds = GetEllipseBounds2(predict_pos_ellipse);
+        Recti predict_pos_rect = EncompassRect(corner_bounds);
+
+        // highlight salient points outside of predicted search rect
+        SrkColor search_rect_color = { 192, 192, 192 };
+        if (op_corner)
+        {
+            Point2i corner{ corner_ellipse.world_from_ellipse.T[0], corner_ellipse.world_from_ellipse.T[1] };
+            bool is_in =
+                corner.x > predict_pos_rect.x && corner.x < predict_pos_rect.Right() &&
+                corner.y > predict_pos_rect.y && corner.y < predict_pos_rect.Bottom();
+            if (!is_in)
+                search_rect_color = SrkColor{ 255,255,0 };
+        }
+
+        cv::Scalar search_rect_color_bgr = OcvColorBgr(search_rect_color);
+
         cv::rectangle(*out_image_bgr,
-            cv::Point{ r.x, r.y }, cv::Point{ r.Right(), r.Bottom() }, search_rect_color_bgr);
+            cv::Point{ predict_pos_rect.x, predict_pos_rect.y }, cv::Point{ predict_pos_rect.Right(), predict_pos_rect.Bottom() }, search_rect_color_bgr);
     }
 }
 
-void DavisonMonoSlam2DDrawer::DrawScene(const DavisonMonoSlam& mono_slam, const cv::Mat& background_image_bgr, cv::Mat* out_image_bgr) const
+void DavisonMonoSlam2DDrawer::DrawScene(const DavisonMonoSlam& mono_slam, cv::Mat* out_image_bgr) const
 {
-    background_image_bgr.copyTo(*out_image_bgr);
-
     for (SalPntId sal_pnt_id : mono_slam.GetSalientPoints())
     {
         DrawEstimatedSalientPoint(mono_slam, sal_pnt_id, out_image_bgr);

@@ -310,9 +310,11 @@ public:
         }
     }
 
-    void MatchSalientPoints(size_t frame_ind,
-        const Picture& image,
+    void MatchSalientPoints(
+        const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
+        size_t frame_ind,
+        const Picture& image,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
         if (suppress_observations_)
@@ -345,10 +347,12 @@ public:
         }
     }
 
-    void RecruitNewSalientPoints(size_t frame_ind,
-        const Picture& image,
+    void RecruitNewSalientPoints(
+        const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
+        size_t frame_ind,
+        const Picture& image,
         std::vector<CornersMatcherBlobId>* new_blob_ids) override
     {
         if (suppress_observations_)
@@ -424,7 +428,6 @@ public:
 class ImageTemplCornersMatcher : public CornersMatcherBase
 {
     cv::Ptr<cv::ORB> detector_;
-    DavisonMonoSlam* mono_slam_;
     std::vector<cv::KeyPoint> new_keypoints_;
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
@@ -433,8 +436,7 @@ public:
     std::optional<suriko::Sizei> min_search_rect_size_;
     std::optional<Scalar> min_templ_corr_coeff_;
 public:
-    ImageTemplCornersMatcher(DavisonMonoSlam* mono_slam)
-        :mono_slam_(mono_slam)
+    ImageTemplCornersMatcher()
     {
         int nfeatures = 50;
         detector_ = cv::ORB::create(nfeatures);
@@ -460,7 +462,7 @@ public:
 #endif
     };
 
-    TemplateMatchResult MatchSalientPointTemplCenterInRect(const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
+    TemplateMatchResult MatchSalientPointTemplCenterInRect(const DavisonMonoSlam& mono_slam, const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
     {
         Point2i search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
         const int search_radius_left = search_rect.width / 2;
@@ -488,17 +490,17 @@ public:
         Scalar templ_sqrt_sum_sqr_diff = sal_pnt.templ_stats.templ_sqrt_sum_sqr_diff_;
         const auto& templ_gray = sal_pnt.initial_templ_gray_;
 
-        auto match_templ_at = [this, &templ_gray, &pic,
+        auto match_templ_at = [this, &templ_gray, &pic, &mono_slam,
             &max_corr_coeff, &best_match_info, templ_mean, templ_sqrt_sum_sqr_diff, &match_templ_call_order](Point2i search_center)
         {
 #if defined(SRK_DEBUG)
             match_templ_call_order++;
 #endif
-            Point2i pic_roi_top_left = mono_slam_->TemplateTopLeftInt(suriko::Point2f{ search_center.x, search_center.y });
+            Point2i pic_roi_top_left = mono_slam.TemplateTopLeftInt(suriko::Point2f{ search_center.x, search_center.y });
 
             auto pic_roi = suriko::Recti{ pic_roi_top_left.x, pic_roi_top_left.y,
-                mono_slam_->sal_pnt_templ_size_.width,
-                mono_slam_->sal_pnt_templ_size_.height
+                mono_slam.sal_pnt_templ_size_.width,
+                mono_slam.sal_pnt_templ_size_.height
             };
             
             std::optional<Scalar> corr_coeff_opt = CalcCorrCoeff(pic, pic_roi, templ_gray, templ_mean, templ_sqrt_sum_sqr_diff);
@@ -598,7 +600,7 @@ public:
         return result;
     }
 
-    std::tuple<bool,Recti> PredictSalientPointSearchRect(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id)
+    std::tuple<bool,Recti> PredictSalientPointSearchRect(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id)
     {
         auto [op_2D_ellip, corner_ellipse] = mono_slam.GetPredictedSalientPointProjectedUncertEllipse(sal_pnt_id);
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
@@ -610,7 +612,7 @@ public:
         return std::make_tuple(true, corner_bounds_i);
     }
 
-    std::optional<suriko::Point2f> MatchSalientTempl(DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic)
+    std::optional<suriko::Point2f> MatchSalientTempl(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic)
     {
         auto [op, search_rect_unbounded] = PredictSalientPointSearchRect(mono_slam, sal_pnt_id);
         if (!op)
@@ -640,7 +642,7 @@ public:
 
         const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
-        TemplateMatchResult match_result = MatchSalientPointTemplCenterInRect(sal_pnt, pic, search_rect);
+        TemplateMatchResult match_result = MatchSalientPointTemplCenterInRect(mono_slam, sal_pnt, pic, search_rect);
         if (!match_result.success)
             return std::nullopt;
 
@@ -673,7 +675,7 @@ public:
             static bool debug_matching = false;
             if (debug_matching)
             {
-                auto [op, predicted_center] = mono_slam_->GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
+                auto [op, predicted_center] = mono_slam.GetSalientPointProjected2DPosWithUncertainty(FilterStageType::Predicted, sal_pnt_id);
                 static_assert(std::is_same_v<decltype(predicted_center), MeanAndCov2D>);
                 SRK_ASSERT(op);
                 VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
@@ -698,18 +700,20 @@ public:
         return match_result.center;
     }
 
-    void MatchSalientPoints(size_t frame_ind,
-        const Picture& image,
+    void MatchSalientPoints(
+        const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
+        size_t frame_ind,
+        const Picture& image,
         std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
     {
         if (suppress_observations_) return;
 
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
-            const TrackedSalientPoint& sal_pnt = mono_slam_->GetSalientPoint(sal_pnt_id);
+            const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
-            std::optional<suriko::Point2f> match_pnt_center = MatchSalientTempl(*mono_slam_, sal_pnt_id, image);
+            std::optional<suriko::Point2f> match_pnt_center = MatchSalientTempl(mono_slam, sal_pnt_id, image);
             bool is_lost = !match_pnt_center.has_value();
             if (is_lost)
                 continue;
@@ -741,10 +745,12 @@ public:
         }
     }
 
-    void RecruitNewSalientPoints(size_t frame_ind,
-        const Picture& image,
+    void RecruitNewSalientPoints(
+        const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
         const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
+        size_t frame_ind,
+        const Picture& image,
         std::vector<CornersMatcherBlobId>* new_blob_ids) override
     {
         std::vector<cv::KeyPoint> keypoints;
@@ -764,7 +770,7 @@ public:
         detector_->compute(image.gray, keypoints, descr_per_row);
 
         std::vector<cv::KeyPoint> sparse_keypoints;
-        Scalar closest_templ_min_dist = mono_slam_->ClosestSalientPointTemplateMinDistance();
+        Scalar closest_templ_min_dist = mono_slam.ClosestSalientPointTemplateMinDistance();
         FilterOutClosest(keypoints, closest_templ_min_dist, &sparse_keypoints);
 
         cv::Mat sparse_img;
@@ -772,7 +778,7 @@ public:
             cv::drawKeypoints(image.gray, sparse_keypoints, sparse_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         // remove keypoints which are close to 'matched' salient points
-        auto filter_out_close_to_existing = [this,&tracking_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, Scalar exclude_radius,
+        auto filter_out_close_to_existing = [&mono_slam, &tracking_sal_pnts](const std::vector<cv::KeyPoint>& keypoints, Scalar exclude_radius,
             std::vector<cv::KeyPoint>* result)
         {
             for (size_t cand_ind = 0; cand_ind < keypoints.size(); ++cand_ind)
@@ -782,7 +788,7 @@ public:
                 bool has_close_blob = false;
                 for (SalPntId sal_pnt_id : tracking_sal_pnts)
                 {
-                    const auto& sal_pnt = mono_slam_->GetSalientPoint(sal_pnt_id);
+                    const auto& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
                     bool ok =
                         sal_pnt.track_status == SalPntTrackStatus::New || 
                         sal_pnt.track_status == SalPntTrackStatus::Matched ||
@@ -849,21 +855,21 @@ public:
         return suriko::Point2f{ kp.pt.x, kp.pt.y };
     }
 
-    Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image) override
+    Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image, suriko::Sizei templ_size) override
     {
         const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
 
-        int rad_x_int = mono_slam_->sal_pnt_templ_size_.width / 2;
-        int rad_y_int = mono_slam_->sal_pnt_templ_size_.height / 2;
+        int rad_x_int = templ_size.width / 2;
+        int rad_y_int = templ_size.height / 2;
 
         int center_x = (int)kp.pt.x;
         int center_y = (int)kp.pt.y;
-        cv::Rect templ_bounds{ center_x - rad_x_int, center_y - rad_y_int, mono_slam_->sal_pnt_templ_size_.width, mono_slam_->sal_pnt_templ_size_.height };
+        cv::Rect templ_bounds{ center_x - rad_x_int, center_y - rad_y_int, templ_size.width, templ_size.height };
 
         cv::Mat templ_gray;
         image.gray(templ_bounds).copyTo(templ_gray);
-        SRK_ASSERT(templ_gray.rows == mono_slam_->sal_pnt_templ_size_.height);
-        SRK_ASSERT(templ_gray.cols == mono_slam_->sal_pnt_templ_size_.width);
+        SRK_ASSERT(templ_gray.rows == templ_size.height);
+        SRK_ASSERT(templ_gray.cols == templ_size.width);
 
         Picture templ{};
         templ.gray = templ_gray;
@@ -1568,7 +1574,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
-        auto corners_matcher = std::make_unique<DemoCornersMatcher>(&mono_slam, gt_cam_orient_cfw, entire_map, cam_intrinsics.image_size);
+        auto corners_matcher = std::make_shared<DemoCornersMatcher>(&mono_slam, gt_cam_orient_cfw, entire_map, cam_intrinsics.image_size);
         corners_matcher->SetTemplCenterDetectionNoiseStd(static_cast<float>(FLAGS_monoslam_templ_center_detection_noise_std_pix));
         corners_matcher->tracker_origin_from_world_ = tracker_origin_from_world;
 
@@ -1579,11 +1585,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         if (FLAGS_monoslam_match_blob_prob > 0)
             corners_matcher->match_blob_prob_ = (float)FLAGS_monoslam_match_blob_prob;
 
-        mono_slam.SetCornersMatcher(std::move(corners_matcher));
+        mono_slam.SetCornersMatcher(corners_matcher);
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
-        auto corners_matcher = std::make_unique<ImageTemplCornersMatcher>(&mono_slam);
+        auto corners_matcher = std::make_shared<ImageTemplCornersMatcher>();
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_stop_on_sal_pnt_moved_too_far;
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };
         if (FLAGS_monoslam_templ_min_corr_coeff > -1)
@@ -1598,12 +1604,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             cv::imshow(wnd_name.data(), image_bgr);
 #endif
         };
-        mono_slam.SetCornersMatcher(std::move(corners_matcher));
+        mono_slam.SetCornersMatcher(corners_matcher);
     }
 
     if (FLAGS_ctrl_collect_tracker_internals)
     {
-        mono_slam.SetStatsLogger(std::make_unique<DavisonMonoSlamInternalsLogger>(&mono_slam));
+        mono_slam.SetStatsLogger(std::make_shared<DavisonMonoSlamInternalsLogger>());
     }
 
     auto unused_params = config_reader.GetUnusedParams();
@@ -1677,11 +1683,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         LOG(INFO) << "imageseq_dir=" << scene_imageseq_dir;
         dir_it = std::filesystem::directory_iterator(scene_imageseq_dir);
     }
-
     bool iterate_frames = true;
     while(iterate_frames)  // for each frame
     {
         ++frame_ind;
+
         Picture image;
         cv::Mat image_bgr;
 
@@ -1793,7 +1799,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
                 auto t1 = std::chrono::high_resolution_clock::now();
 
-                drawer.DrawScene(mono_slam, image_bgr, &camera_image_bgr);
+                image_bgr.copyTo(camera_image_bgr);  // background
+                drawer.DrawScene(mono_slam, &camera_image_bgr);
 
                 std::stringstream strbuf;
                 strbuf << "f=" << frame_ind;
