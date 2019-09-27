@@ -17,7 +17,7 @@ public:
 
 TEST_F(ObsGeomTest, SkewSymmetricMatConstruction)
 {
-	Eigen::Matrix<Scalar, 3, 1> v(1,2,3);
+    Point3 v{ 1,2,3 };
 	Eigen::Matrix<Scalar, 3, 3> skew_mat;
 	SkewSymmetricMat(v, &skew_mat);
 
@@ -28,8 +28,8 @@ TEST_F(ObsGeomTest, SkewSymmetricMatConstruction)
 
 TEST_F(ObsGeomTest, RotMatFromAxisAngle)
 {
-	Eigen::Matrix<Scalar, 3, 1> dir(1,1,1);
-	dir *= static_cast<Scalar>(2*M_PI/3) / dir.norm();
+    Point3 dir(1,1,1);
+	dir *= static_cast<Scalar>(2*M_PI/3) / Norm(dir);
 	Eigen::Matrix<Scalar, 3, 3> R120;
 	bool op = RotMatFromAxisAngle(dir, &R120);
 	ASSERT_TRUE(op);
@@ -45,14 +45,14 @@ TEST_F(ObsGeomTest, RotMatFromAxisAngle)
 
 TEST_F(ObsGeomTest, AxisAngle_To_RotMat_And_Back)
 {
-	Eigen::Matrix<Scalar, 3, 1> dir(1,1,1);
-	dir *= static_cast<Scalar>(M_PI / 4) / dir.norm(); // len=pi/4
+    Point3 dir{ 1,1,1 };
+	dir *= static_cast<Scalar>(M_PI / 4) / Norm(dir); // len=pi/4
 
 	Eigen::Matrix<Scalar, 3, 3> rot_mat;
 	bool op = RotMatFromAxisAngle(dir, &rot_mat);
 	ASSERT_TRUE(op);
 
-	Eigen::Matrix<Scalar, 3, 1> dir_back;
+    Point3 dir_back;
 	op = AxisAngleFromRotMat(rot_mat, &dir_back);
 	ASSERT_TRUE(op);
 
@@ -63,7 +63,7 @@ TEST_F(ObsGeomTest, AxisAngle_To_RotMat_And_Back)
 
 TEST_F(ObsGeomTest, AxisAngleCornerCases)
 {
-	Eigen::Matrix<Scalar, 3, 1> dir(0,0,0);
+    Point3 dir(0,0,0);
 	Eigen::Matrix<Scalar, 3, 3> rot_mat;
 	bool op = RotMatFromAxisAngle(dir, &rot_mat);
 	EXPECT_FALSE(op);
@@ -71,12 +71,12 @@ TEST_F(ObsGeomTest, AxisAngleCornerCases)
 
 TEST_F(ObsGeomTest, UnityDirAndAngleCornerCases)
 {
-	Eigen::Matrix<Scalar, 3, 1> unity_dir(0,0,0);
+    Point3 unity_dir(0,0,0);
 	Eigen::Matrix<Scalar, 3, 3> rot_mat;
 	bool op = RotMatFromUnityDirAndAngle(unity_dir, 100, &rot_mat);
 	EXPECT_FALSE(op) <<"dir.length != 0 is unchecked";
 
-	unity_dir << 1, 1, 1;
+    unity_dir = Point3{ 1, 1, 1 };
 	op = RotMatFromUnityDirAndAngle(unity_dir, 0, &rot_mat);
 	EXPECT_FALSE(op) << "ang != 0 is unchecked";
 }

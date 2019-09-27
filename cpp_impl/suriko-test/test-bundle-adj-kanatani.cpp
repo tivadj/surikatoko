@@ -54,7 +54,7 @@ TEST_F(BAKanataniTest, NormalizationSimple)
 
     // check cam0
     const SE3Transform& cam0_CifromC0 = inverse_orient_cams[0];
-    EXPECT_NEAR(0, cam0_CifromC0.T.norm(), atol_) << "cam0 is the new center of the world";
+    EXPECT_NEAR(0, Norm(cam0_CifromC0.T), atol_) << "cam0 is the new center of the world";
     
     std::string msg;
     bool op = IsIdentity(cam0_CifromC0.R, 0, atol_);
@@ -81,7 +81,7 @@ TEST_F(BAKanataniTest, NormalizationSimple)
         Point3 pnt_expect = pnts3D_cam0[i];
         size_t salient_point_id = pnts3D[i].first;
         Point3 pnt3D_cam0 = map.GetSalientPoint(salient_point_id);
-        EXPECT_TRUE((pnt_expect.Mat() - pnt3D_cam0.Mat()).norm() < atol_) << "cam0 3D point mismatch i=" << i << " P1=" << pnt_expect.Mat() << " P2=" << pnt3D_cam0.Mat();
+        EXPECT_TRUE(Norm(pnt_expect - pnt3D_cam0) < atol_) << "cam0 3D point mismatch i=" << i << " P1=" << pnt_expect << " P2=" << pnt3D_cam0;
     }
 
     // check points in cam1
@@ -101,7 +101,7 @@ TEST_F(BAKanataniTest, NormalizationSimple)
         Point3 p3D_cam0 = map.GetSalientPoint(salient_point_id);
         
         Point3 pnt_actual = SE3Apply(cam1_from_cam0, p3D_cam0);
-        EXPECT_TRUE((pnt_expect.Mat() - pnt_actual.Mat()).norm() < atol_) << "cam1 3D point mismatch i=" << i << " P1=" << pnt_expect.Mat() << " P2=" << pnt_actual.Mat();
+        EXPECT_TRUE(Norm(pnt_expect - pnt_actual) < atol_) << "cam1 3D point mismatch i=" << i << " P1=" << pnt_expect << " P2=" << pnt_actual;
     }
 
     sn.RevertNormalization();
@@ -111,7 +111,7 @@ TEST_F(BAKanataniTest, NormalizationSimple)
     {
         SE3Transform expect = inverse_orient_cams_before_norm[i];
         SE3Transform actual = inverse_orient_cams[i];
-        Scalar d1 = (expect.T - actual.T).norm();
+        Scalar d1 = Norm(expect.T - actual.T);
         Scalar d2 = (expect.R - actual.R).norm();
         EXPECT_TRUE(d1 < atol_);
         EXPECT_TRUE(d2 < atol_);
@@ -123,7 +123,7 @@ TEST_F(BAKanataniTest, NormalizationSimple)
         Point3 pnt_expect = pnts3D[i].second;
         size_t salient_point_id = pnts3D[i].first;
         Point3 pnt_actual = map.GetSalientPoint(salient_point_id);
-        EXPECT_TRUE((pnt_expect.Mat() - pnt_actual.Mat()).norm() < atol_) << "cam0 3D point mismatch i=" << i << " P1=" << pnt_expect.Mat() << " P2=" << pnt_actual.Mat();
+        EXPECT_TRUE(Norm(pnt_expect - pnt_actual) < atol_) << "cam0 3D point mismatch i=" << i << " P1=" << pnt_expect << " P2=" << pnt_actual;
     }
 }
 

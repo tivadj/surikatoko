@@ -9,7 +9,10 @@ void LoadSE3TransformIntoOpengGLMat(const SE3Transform& cam_wfc, gsl::span<doubl
 {
     Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::ColMajor>> opengl_mat(opengl_mat_by_col.data());
     opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R.cast<double>();
-    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T.cast<double>();
+    opengl_mat.topRightCorner<3, 1>() = Eigen::Matrix<double, 3, 1> {
+        static_cast<double>(cam_wfc.T[0]),
+        static_cast<double>(cam_wfc.T[1]),
+        static_cast<double>(cam_wfc.T[2]) };
     opengl_mat.bottomLeftCorner<1, 3>().setZero();
     opengl_mat(3, 3) = 1;
 }

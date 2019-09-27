@@ -6,6 +6,7 @@ add_executable(suriko-test
         test-config-reader.cpp
         test-eigen-helpers.cpp
         test-geom.cpp
+        test-infrastructure.cpp
         test-obs-geom.cpp
         test-quaternion.cpp)
 

@@ -60,7 +60,7 @@ private:
     struct PointInFrameInfo
     {
         size_t FrameInd;
-        Eigen::Matrix<Scalar, 3, 1> CoordMeter;
+        Point3 CoordMeter;
         SE3Transform FrameFromBase;
     };
 

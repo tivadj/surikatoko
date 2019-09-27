@@ -280,16 +280,16 @@ struct MikhailRadialDistortionParams
 /// Position and orientation of an object in 3D space.
 struct FramePosOrient
 {
-    Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // in world frame
+    Point3 pos_w; // in world frame
     Eigen::Matrix<Scalar, kQuat4, 1> orientation_wfc;
 };
 
 struct CameraStateVars
 {
-    Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // in world frame
+    Point3 pos_w; // in world frame
     Eigen::Matrix<Scalar, kQuat4, 1> orientation_wfc;
-    Eigen::Matrix<Scalar, kVelocComps, 1> velocity_w; // in world frame
-    Eigen::Matrix<Scalar, kAngVelocComps, 1> angular_velocity_c; // in camera frame
+    Point3 velocity_w; // in world frame
+    Point3 angular_velocity_c; // in camera frame
 };
 
 SE3Transform CamWfc(const CameraStateVars& cam_state);
@@ -309,8 +309,8 @@ struct MeanAndCov2D
 /// Represents 3D point with optional known distance to it (when point is in infinity).
 struct Dir3DAndDistance
 {
-    Eigen::Matrix<Scalar, kEucl3, 1> unity_dir;  // unity direction to the point
-    std::optional<Scalar> dist;             // distance to the point or null for a point in infinity
+    Point3 unity_dir;            // unity direction to the point
+    std::optional<Scalar> dist;  // distance to the point or null for a point in infinity
 };
 
 struct SalPntRectFacet
@@ -567,7 +567,7 @@ public:
     CameraStateVars GetCameraPredictedVars();
     CameraStateVars GetCameraPredictedVars() const;
 
-    void GetCameraEstimatedPosAndOrientationWithUncertainty(Eigen::Matrix<Scalar, kEucl3,1>* pos_mean, 
+    void GetCameraEstimatedPosAndOrientationWithUncertainty(Point3* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
         Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat) const;
 
@@ -576,11 +576,11 @@ public:
     std::optional<suriko::Point2f> GetDetectedSalientTemplCenter(SalPntId sal_pnt_id) const;
 
     bool GetSalientPointEstimated3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
-        Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
+        Point3* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     bool GetSalientPointPredicted3DPosWithUncertaintyNew(SalPntId sal_pnt_id,
-        Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
+        Point3* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     auto GetSalientPointProjected2DPosWithUncertainty(FilterStageType filter_stage, SalPntId sal_pnt_id) const
@@ -628,9 +628,9 @@ public:
 private:
     struct SalPntProjectionIntermidVars
     {
-        Eigen::Matrix<Scalar, kEucl3, 1> hc; // euclidean position of salient point in camera coordinates
+        Point3 hc; // euclidean position of salient point in camera coordinates
 #if defined(SPHER_SAL_PNT_REPRES)
-        Eigen::Matrix<Scalar, kEucl3, 1> first_cam_sal_pnt_unity_dir; // unity direction from first camera to the salient point in world coordinates
+        Point3 first_cam_sal_pnt_unity_dir; // unity direction from first camera to the salient point in world coordinates
 #endif
     };
 
@@ -639,7 +639,7 @@ private:
     /// The distance is in the inverse format.
     struct SphericalSalientPoint
     {
-        Eigen::Matrix<Scalar, kEucl3, 1> first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
+        Point3 first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
 
         // polar coordinates of the salient point in the camera where the feature was seen for the first time
         Scalar azimuth_theta_w = kNan; // theta=azimuth, rotates clockwise around worldOY, zero corresponds to worldOZ direction
@@ -655,8 +655,8 @@ private:
 
         //suriko::Point2f corner_pix;  // in the first camera
 
-        Eigen::Matrix<Scalar, kEucl3, 1> hc;  // A.58
-        Eigen::Matrix<Scalar, kEucl3, 1> hw;  // A.59
+        Point3 hc;  // A.58
+        Point3 hw;  // A.59
         Eigen::Matrix<Scalar, kEucl3, kEucl3> Rwfc;  // 
     };
 
@@ -673,10 +673,10 @@ private:
     struct MorphableSalientPoint
     {
 #if defined(XYZ_SAL_PNT_REPRES)
-        Eigen::Matrix<Scalar, kEucl3, 1> pos_w; // the salient point's position
+        Point3 pos_w; // the salient point's position
 #endif
 #if defined(SPHER_SAL_PNT_REPRES)
-        Eigen::Matrix<Scalar, kEucl3, 1> first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
+        Point3 first_cam_pos_w; // the position of the camera (in world frame) the salient point was first seen
         
         // polar coordinates of the salient point in the camera where the feature was seen for the first time
         Scalar azimuth_theta_w = kNan; // theta=azimuth, rotates clockwise around worldOY, zero corresponds to worldOZ direction
@@ -694,9 +694,9 @@ private:
     }
 
     /// Spherical salient point can't be transformed into XYZ representation when the point is in infinity.
-    static bool ConvertXyzFromSphericalSalientPoint(const SphericalSalientPoint& sal_pnt_vars, Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean);
+    static bool ConvertXyzFromSphericalSalientPoint(const SphericalSalientPoint& sal_pnt_vars, Point3* pos_mean);
 
-    static bool ConvertSphericalFromXyzSalientPoint(const Eigen::Matrix <Scalar, kXyzSalientPointComps, 1>& sal_pnt_pos_w,
+    static bool ConvertSphericalFromXyzSalientPoint(const Point3& sal_pnt_pos_w,
         const SE3Transform& first_cam_tfc,
         SphericalSalientPoint* spher_sal_pnt);
 
@@ -715,12 +715,12 @@ private:
     CameraStateVars GetCameraStateVars(FilterStageType filter_stage) const;
 
     void GetCameraPosAndOrientationWithUncertainty(FilterStageType filter_stage,
-        Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
+        Point3* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert,
         Eigen::Matrix<Scalar, kQuat4, 1>* orient_quat) const;
 
     bool GetSalientPoint3DPosWithUncertaintyHelper(FilterStageType filter_stage, SalPntId sal_pnt_id,
-        Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
+        Point3* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     void FillRk(size_t obs_sal_pnt_count, EigenDynMat* Rk) const;
@@ -841,7 +841,7 @@ private:
         const EigenDynMat& src_estim_vars_covar,
         const TrackedSalientPoint& sal_pnt,
         bool can_throw,
-        Eigen::Matrix<Scalar, kEucl3, 1>* pos_mean,
+        Point3* pos_mean,
         Eigen::Matrix<Scalar, kEucl3, kEucl3>* pos_uncert) const;
 
     /// Ensures that given salient point can be correctly handled (rendering, position prediction etc).
@@ -853,7 +853,7 @@ private:
 
     std::optional<SalPntRectFacet> ProtrudeSalientPointTemplIntoWorld(const EigenDynVec& src_estim_vars, const TrackedSalientPoint& sal_pnt) const;
 
-    void BackprojectPixelIntoCameraPlane(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu, Eigen::Matrix<Scalar, kEucl3, 1>* pos_camera) const;
+    Point3 BackprojectPixelIntoCameraPlane(const Eigen::Matrix<Scalar, kPixPosComps, 1>& hu) const;
 
     //
 
@@ -915,7 +915,7 @@ private:
         Eigen::Matrix<Scalar, kPixPosComps, kSalientPointComps>* hd_by_sal_pnt) const;
 
     void Deriv_azim_theta_elev_phi_by_hw(
-        const Eigen::Matrix<Scalar, kEucl3, 1>& hw,
+        const Point3& hw,
         Eigen::Matrix<Scalar, 1, kEucl3>* azim_theta_by_hw,
         Eigen::Matrix<Scalar, 1, kEucl3>* elev_phi_by_hw) const;
 
@@ -935,15 +935,15 @@ private:
     void Deriv_q3_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4, kEucl3>* result) const;
     void Deriv_q1_by_w(Scalar deltaT, Eigen::Matrix<Scalar, kQuat4, kEucl3>* result) const;
     
-    static void CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azimuth_theta, Scalar elevation_phi, Scalar* hx, Scalar* hy, Scalar* hz);
+    static Point3 CameraCoordinatesEuclidUnityDirFromPolarAngles(Scalar azimuth_theta, Scalar elevation_phi);
     
     // projection
 
     Eigen::Matrix<Scalar, kPixPosComps, 1> ProjectCameraSalientPoint(
-        const Eigen::Matrix<Scalar, kEucl3, 1>& pnt_camera,
+        const Point3& pnt_camera,
         SalPntProjectionIntermidVars *proj_hist) const;
 
-    std::optional<Eigen::Matrix<Scalar, kEucl3, 1>> InternalSalientPointToCamera(
+    std::optional<Point3> InternalSalientPointToCamera(
         const MorphableSalientPoint& sal_pnt_vars,
         const CameraStateVars& cam_state,
         bool scaled_by_inv_dist,

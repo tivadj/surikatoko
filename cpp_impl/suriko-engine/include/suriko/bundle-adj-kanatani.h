@@ -232,10 +232,10 @@ private:
         const suriko::Point3& salient_point, const suriko::Point2f& corner_pix,
         Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount>* frame_pqr_deriv, gsl::not_null<size_t*> out_frame_vars_count) const;
 
-    Scalar FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2f& corner_pix,
+    Scalar FirstDerivFromPqrDerivative(Scalar f0, const Point3& pqr, const suriko::Point2f& corner_pix,
         Scalar gradp_byvar, Scalar gradq_byvar, Scalar gradr_byvar) const;
 
-    Scalar SecondDerivFromPqrDerivative(const Eigen::Matrix<Scalar, 3, 1>& pqr,
+    Scalar SecondDerivFromPqrDerivative(const Point3& pqr,
         Scalar gradp_byvar1, Scalar gradq_byvar1, Scalar gradr_byvar1,
         Scalar gradp_byvar2, Scalar gradq_byvar2, Scalar gradr_byvar2) const;
 

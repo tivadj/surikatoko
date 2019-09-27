@@ -19,7 +19,13 @@ struct NoopOut // allows putting messages after assert, like ASSERT(false) << "f
     NoopOut& operator <<([[maybe_unused]] T x) { return *this; }
 };
 }
-#define SRK_ASSERT(expr) NoopOut()
+// The macro:
+// SRK_ASSERT(get_false()) << "leo";
+// Expands into (with added square brackets to show operators precedence).
+// (get_false()) ? (void)0 : [NoopOut() << "leo"];
+// First get_false is executed, then <<.
+// The result of expression [true ? (void)0 : Noop&] is Noop&.
+#define SRK_ASSERT(expr) (expr) ? (void)0 : NoopOut()
 #endif
 
 namespace suriko {

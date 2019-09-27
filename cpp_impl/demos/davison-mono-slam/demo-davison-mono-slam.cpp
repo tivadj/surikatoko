@@ -84,7 +84,7 @@ auto DemoGetSalPntFramgmentId(const FragmentMap& entire_map, DavisonMonoSlam::Sa
 void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps_per_side_x, size_t steps_per_side_y,
     suriko::Point3 eye_offset, 
     suriko::Point3 center_offset,
-    const Eigen::Matrix<Scalar, 3, 1>& up,
+    const Point3& up,
     std::vector<SE3Transform>* inverse_orient_cams)
 {
     std::array<suriko::Point3,5> look_at_base_points = {
@@ -109,18 +109,18 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
         suriko::Point3 base2 = look_at_base_points[base_point_ind+1];
         size_t steps_per_side = viewer_steps_per_side[base_point_ind];
 
-        Eigen::Matrix<Scalar, 3, 1> step = (base2.Mat() - base1.Mat()) / steps_per_side;
+        Point3 step = (base2 - base1) / steps_per_side;
 
         // to avoid repeating the adjacent point of two consecutive segments, for each segment,
         // the last point is not included because
         // it will be included as the first point of the next segment
         for (size_t step_ind = 0; step_ind < steps_per_side; ++step_ind)
         {
-            suriko::Point3 cur_point = suriko::Point3(base1.Mat() + step * step_ind);
+            suriko::Point3 cur_point = base1 + step * step_ind;
 
             auto wfc = LookAtLufWfc(
-                cur_point.Mat() + eye_offset.Mat(),
-                cur_point.Mat() + center_offset.Mat(),
+                cur_point + eye_offset,
+                cur_point + center_offset,
                 up);
 
             SE3Transform RT = SE3Inv(wfc);
@@ -184,18 +184,18 @@ bool GetSyntheticCameraInitialMovement(const std::vector<SE3Transform>& gt_cam_o
     // camera's velocity
     // Tw1=Tw0+v01_w
     // v01_w=velocity from camera-0 to camera-1 in world coordinates
-    auto init_shift_world = suriko::Point3{ world_from_c1.T - world_from_c0.T };
-    auto init_shift_tracker = suriko::Point3{ c0_from_world.R * init_shift_world.Mat() };
+    auto init_shift_world = world_from_c1.T - world_from_c0.T;
+    auto init_shift_tracker = c0_from_world.R * init_shift_world;
     *cam_vel_tracker = init_shift_tracker;
 
     // camera's angular velocity
     // Rw1=Rw0*R01, R01=delta, which rotates from camera-1 to camera-0.
     SE3Transform c0_from_c1 = SE3AFromB(c0_from_world, c1_from_world);
 
-    Eigen::Matrix<Scalar, 3, 1> axisangle_c0_from_c1;
+    Point3 axisangle_c0_from_c1;
     bool op = AxisAngleFromRotMat(c0_from_c1.R, &axisangle_c0_from_c1);
     if (!op)
-        axisangle_c0_from_c1.fill(0);
+        Fill(0, &axisangle_c0_from_c1);
     *cam_ang_vel_c = suriko::Point3{ axisangle_c0_from_c1[0], axisangle_c0_from_c1[1], axisangle_c0_from_c1[2] };
     return true;
 }
@@ -247,7 +247,7 @@ public:
         entire_map_(entire_map),
         img_size_(img_size)
     {
-        tracker_origin_from_world_.T.setZero();
+        Fill(0, &tracker_origin_from_world_.T);
         tracker_origin_from_world_.R.setIdentity();
     }
 
@@ -298,7 +298,7 @@ public:
 
             DavisonMonoSlam::SalPntId sal_pnt_id = DemoGetSalPntId(fragment);
 
-            const Scalar depth = pnt_camera.Mat().norm();
+            const Scalar depth = Norm(pnt_camera);
             SRK_ASSERT(!IsClose(0, depth)) << "salient points with zero depth are prohibited";
 
             BlobInfo blob_info;
@@ -1004,8 +1004,8 @@ std::optional<Scalar> GetMaxCamShift(const std::vector<SE3Transform>& gt_cam_ori
         auto wfc = SE3Inv(cfw);
         if (prev_cam_wfc.has_value())
         {
-            Eigen::Matrix<Scalar, 3, 1> cam_shift = wfc.T - prev_cam_wfc.value().T;
-            auto dist = cam_shift.norm();
+            Point3 cam_shift = wfc.T - prev_cam_wfc.value().T;
+            auto dist = Norm(cam_shift);
             if (!between_frames_max_cam_shift.has_value() ||
                 dist > between_frames_max_cam_shift.value())
                 between_frames_max_cam_shift = dist;
@@ -1294,7 +1294,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
         suriko::Point3 viewer_eye_offset{ viewer_eye_offset_a[0], viewer_eye_offset_a[1], viewer_eye_offset_a[2] };
         suriko::Point3 viewer_center_offset{ viewer_center_offset_a[0], viewer_center_offset_a[1], viewer_center_offset_a[2] };
-        Eigen::Matrix<Scalar, 3, 1> viewer_up{ viewer_up_a[0], viewer_up_a[1], viewer_up_a[2] };
+        Point3 viewer_up{ viewer_up_a[0], viewer_up_a[1], viewer_up_a[2] };
 
         std::string virtual_scenario = config_reader.GetValue<std::string>("virtual_scenario").value_or("");
         if (virtual_scenario.empty())
@@ -1384,7 +1384,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             std::normal_distribution<Scalar> cam_orient_noise_dis(0, world_noise_R_std);
             for (SE3Transform& cam_orient : gt_cam_orient_cfw)
             {
-                Eigen::Matrix<Scalar, 3, 1> dir;
+                Point3 dir;
                 if (AxisAngleFromRotMat(cam_orient.R, &dir))
                 {
                     Scalar d1 = cam_orient_noise_dis(gen);
@@ -1462,7 +1462,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     {
         // tracker coordinates system = world coordinate system
         tracker_origin_from_world.R.setIdentity();
-        tracker_origin_from_world.T.setZero();
+        Fill(0, &tracker_origin_from_world.T);
     }
 
     DavisonMonoSlam::DebugPathEnum debug_path = DavisonMonoSlam::DebugPathEnum::DebugNone;
@@ -1545,10 +1545,9 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             SE3Transform camera_from_world = SE3Compose(camera_from_tracker, tracker_from_world);
             suriko::Point3 pnt_camera = SE3Apply(camera_from_world, pnt_world);
 
-            Eigen::Matrix<Scalar, 3, 1> pnt_mat = pnt_camera.Mat();
             Dir3DAndDistance p;
-            p.unity_dir = pnt_mat.normalized();
-            p.dist = pnt_mat.norm();
+            p.unity_dir = Normalized(pnt_camera);
+            p.dist = Norm(pnt_camera);
             return p;
         };
     }
@@ -1771,11 +1770,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                         // the world axes are drawn on the image to provide richer context about the structure of the scene
                         // (drawing just salient points would be vague)
                         const SE3Transform& rt_cfw = gt_cam_orient_cfw[frame_ind];
-                        auto project_fun = [&rt_cfw, &mono_slam](const suriko::Point3& sal_pnt_world) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+                        auto project_fun = [&rt_cfw, &mono_slam](const suriko::Point3& sal_pnt_world) -> Point3
                         {
                             suriko::Point3 pnt_cam = SE3Apply(rt_cfw, sal_pnt_world);
                             suriko::Point2f pnt_pix = mono_slam.ProjectCameraPoint(pnt_cam);
-                            return Eigen::Matrix<suriko::Scalar, 3, 1>(pnt_pix[0], pnt_pix[1], 1);
+                            return AsHomog(pnt_pix);
                         };
                         constexpr Scalar f0 = 1;
                         suriko_demos::Draw2DProjectedAxes(f0, project_fun, out_image_bgr);
@@ -1991,12 +1990,15 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     cv::waitKey(0); // 0=wait forever
 #endif
 
-        //
-    const DavisonMonoSlamTrackerInternalsHist& internal_stats = mono_slam.StatsLogger()->BuildStats();
+    //
+    if (mono_slam.StatsLogger() != nullptr)
+    {
+        const DavisonMonoSlamTrackerInternalsHist& internal_stats = mono_slam.StatsLogger()->BuildStats();
 
-    bool dump_op = WriteTrackerInternalsToFile("davison_tracker_internals.json", internal_stats);
-    if (FLAGS_ctrl_collect_tracker_internals && !dump_op)
-        LOG(ERROR) << "Can't dump the tracker's internals";
+        bool dump_op = WriteTrackerInternalsToFile("davison_tracker_internals.json", internal_stats);
+        if (FLAGS_ctrl_collect_tracker_internals && !dump_op)
+            LOG(ERROR) << "Can't dump the tracker's internals";
+    }
 
     return 0;
 }
@@ -2004,7 +2006,13 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
 int main(int argc, char* argv[])
 {
-    int result = 0;
-    result = suriko_demos_davison_mono_slam::DavisonMonoSlamDemo(argc, argv);
+    auto t1 = std::chrono::high_resolution_clock::now();
+
+    int result = suriko_demos_davison_mono_slam::DavisonMonoSlamDemo(argc, argv);
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> exec_time = t2 - t1;
+    VLOG(4) << "exec time=" << std::chrono::duration_cast<std::chrono::milliseconds>(exec_time).count() << "ms";
+
     return result;
 }

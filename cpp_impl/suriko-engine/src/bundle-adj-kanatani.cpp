@@ -56,7 +56,7 @@ bool Enable(DebugPath var_ind)
 }
 
 /// Apply infinitesimal correction w to rotation matrix.
-void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, const Eigen::Matrix<Scalar, kWVarsCount, 1>& w_delta,
+void IncrementRotMat(const Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>& R, const Point3& w_delta,
     Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount>* Rnew)
 {
     constexpr int updateR_impl = 1; // 1=Kanatani (default)
@@ -112,7 +112,7 @@ void AddDeltaToFrameInplace(gsl::span<const Scalar> frame_vars_delta, Eigen::Mat
     Scalar direct_tz = frame_vars_delta[6];
     rt.T[2] += direct_tz;
 
-    Eigen::Map<const Eigen::Matrix<Scalar, kWVarsCount, 1>> direct_w_delta(&frame_vars_delta[7]);
+    Point3 direct_w_delta = ToPoint3(Eigen::Map<const Eigen::Matrix<Scalar, kWVarsCount, 1>>{ &frame_vars_delta[7] });
 
     Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> newR;
     IncrementRotMat(rt.R, direct_w_delta, &newR);
@@ -149,12 +149,12 @@ SE3Transform SceneNormalizer::NormalizeRT(const SE3Transform& camk_from_world, c
 
     SE3Transform result;
     result.R = Rkw * R0w.transpose();
-    result.T = world_scale * (Tkw - Rkw * R0w.transpose() * T0w);
+    result.T = (Tkw - Rkw * R0w.transpose() * T0w) * world_scale;
     if (kSurikoDebug)
     {
         auto back_rt = RevertRT(result, cam0_from_world, world_scale);
         Scalar diffR = (Rkw - back_rt.R).norm();
-        Scalar diffT = (Tkw - back_rt.T).norm();
+        Scalar diffT = Norm(Tkw - back_rt.T);
         SRK_ASSERT(IsClose(0.0f, diffR, 1e-3f, 1e-3f)) << "Error in normalization or reverting of R, diffR=" << diffR;
         SRK_ASSERT(IsClose(0.0f, diffT, 1e-3f, 1e-3f)) << "Error in normalization or reverting of T, diffT=" << diffT;
     }
@@ -178,21 +178,21 @@ SE3Transform SceneNormalizer::RevertRT(const SE3Transform& camk_from_cam1, const
 
 suriko::Point3 SceneNormalizer::NormalizeOrRevertPoint(const suriko::Point3& x3D, const SE3Transform& inverse_orient_cam0, Scalar world_scale, NormalizeAction action, bool check_back_conv)
 {
-    suriko::Point3 result(0, 0, 0);
+    suriko::Point3 result{ 0, 0, 0 };
     if (action == NormalizeAction::Normalize)
     {
         // RT for frame0 transform 3D point from world into coordinates of first camera
         result = SE3Apply(inverse_orient_cam0, x3D); // = R0*X + T0
-        result.Mat() *= world_scale;
+        result *= world_scale;
     } else if (action == NormalizeAction::Revert)
     {
-        Eigen::Matrix<Scalar, 3, 1> X3Dtmp = x3D.Mat() * (1 / world_scale);
-        result.Mat() = inverse_orient_cam0.R.transpose() * (X3Dtmp - inverse_orient_cam0.T);
+        Point3 X3Dtmp = x3D * (1 / world_scale);
+        result = inverse_orient_cam0.R.transpose() * (X3Dtmp - inverse_orient_cam0.T);
     }
     if (check_back_conv)
     {
         auto back_pnt = NormalizeOrRevertPoint(result, inverse_orient_cam0, world_scale, Opposite(action), false);
-        Scalar diff = (back_pnt.Mat() - x3D.Mat()).norm();
+        Scalar diff = Norm(back_pnt - x3D);
         SRK_ASSERT(IsClose(0.0f, diff, 1e-3f, 1e-3f)) << "Error in normalization or reverting, diff=" <<diff;
     }
     return result;
@@ -206,7 +206,7 @@ bool SceneNormalizer::NormalizeWorldInplaceInternal()
     const SE3Transform& cam1_from_world = (*inverse_orient_cams_)[1];
 
     const auto& cam0_from1 = SE3AFromB(cam0_from_world, cam1_from_world);
-    const Eigen::Matrix<Scalar, 3, 1>& initial_camera_shift = cam0_from1.T;
+    const Point3& initial_camera_shift = cam0_from1.T;
 
     // make y-component of the first camera shift a unity (formula 27) T1y==1
     Scalar initial_camera_shift_y = initial_camera_shift[unity_comp_ind_];
@@ -305,12 +305,12 @@ bool CheckWorldIsNormalized(const std::vector<SE3Transform>& inverse_orient_cams
         }
         return false;
     }
-    const auto diffT = rt0.T - Eigen::Matrix<Scalar,3,1>::Zero();
-    if (diffT.norm() >= atol)
+    const auto diffT = rt0.T;
+    if (Norm(diffT) >= atol)
     {
         if (err_msg != nullptr) {
             std::stringstream buf;
-            buf << "T0=zeros(3) but was {}" <<rt0.T;
+            buf << "T0=zeros(3) but was" << rt0.T;
             *err_msg = buf.str();
         }
         return false;
@@ -467,8 +467,7 @@ Scalar ReprojErrorWithOverlap(Scalar f0,
 
             // the evaluation below is due to BA3DRKanSug2010 formula 4
             suriko::Point3 x3D_cam = SE3Apply(*pInverse_orient_cam, x3D);
-            suriko::Point3 x_img_h = suriko::Point3((*pK) * x3D_cam.Mat());
-            // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
+            suriko::Point3 x_img_h = (*pK) * x3D_cam;
 
             bool zero_z = IsClose(0.0f, x_img_h[2], 1e-5f);
             SRK_ASSERT(!zero_z) << "homog 2D point can't have Z=0";
@@ -1002,8 +1001,8 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivTranslationDirect(
 
 auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivRotation(size_t frame_ind, const SE3Transform& direct_orient_cam, size_t wind, Scalar finite_diff_eps) const -> Scalar
 {
-    Eigen::Matrix<Scalar, kWVarsCount, 1> direct_w_delta;
-    direct_w_delta.fill(0);
+    Point3 direct_w_delta;
+    Fill(0, &direct_w_delta);
     direct_w_delta[wind] -= finite_diff_eps;
 
     Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> direct_Rnew;
@@ -1016,7 +1015,7 @@ auto BundleAdjustmentKanatani::GetFiniteDiffFirstPartialDerivRotation(size_t fra
     Scalar e1 = ReprojErrorWithOverlap(f0_, *map_, *inverse_orient_cams_, *track_rep_, shared_intrinsic_cam_mat_, intrinsic_cam_mats_, nullptr, &patch1);
 
     //
-    direct_w_delta.fill(0);
+    Fill(0, &direct_w_delta);
     direct_w_delta[wind] += finite_diff_eps;
     IncrementRotMat(direct_orient_cam.R, direct_w_delta, &direct_Rnew);
 
@@ -1188,8 +1187,8 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
                 const Eigen::Matrix<Scalar, 3, 3>& K = *GetSharedOrIndividualIntrinsicCamMat(frame_ind);
 
                 suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
-                Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
-                const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+                Point3 x3D_pix = K * x3D_cam;
+                const Point3& pqr = x3D_pix;
 
                 Eigen::Matrix<Scalar, 3, 4> P;
                 P << K * inverse_orient_cam.R, K * inverse_orient_cam.T;
@@ -1298,8 +1297,8 @@ void BundleAdjustmentKanatani::ComputeCloseFormReprErrorDerivatives(std::vector<
             const suriko::Point3& salient_point = map_->GetSalientPoint(point_track.SalientPointId.value());
 
             suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
-            Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
-            const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+            Point3 x3D_pix = K * x3D_cam;
+            const Point3& pqr = x3D_pix;
 
             Eigen::Matrix<Scalar, kMaxFrameVarsCount, PqrCount> frame_pqr_deriv;
             size_t actual_frame_vars_count = 0;
@@ -1465,8 +1464,8 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
     Scalar v0 = K(1, 2);
 
     suriko::Point3 x3D_cam = SE3Apply(inverse_orient_cam, salient_point);
-    Eigen::Matrix<Scalar, 3, 1> x3D_pix = K * x3D_cam.Mat();
-    const Eigen::Matrix<Scalar, 3, 1>& pqr = x3D_pix;
+    Point3 x3D_pix = K * x3D_cam;
+    const Point3& pqr = x3D_pix;
 
     MarkOptVarsOrderDependency();
     size_t inside_frame = 0;
@@ -1509,16 +1508,16 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
     inside_frame += kTVarsCount;
 
     // 1st derivative of error with respect to direct W (axis angle representation of rotation)
-    Eigen::Matrix<Scalar, kWVarsCount, 1> rot1 = fx * direct_orient_cam.R.col(0) + u0 * direct_orient_cam.R.col(2);
-    Eigen::Matrix<Scalar, kWVarsCount, 1> rot2 = fy * direct_orient_cam.R.col(1) + v0 * direct_orient_cam.R.col(2);
-    Eigen::Matrix<Scalar, kWVarsCount, 1> rot3 = static_cast<Scalar>(f0_) * direct_orient_cam.R.col(2);
+    Point3 rot1 = ToPoint3(fx * direct_orient_cam.R.col(0) + u0 * direct_orient_cam.R.col(2));
+    Point3 rot2 = ToPoint3(fy * direct_orient_cam.R.col(1) + v0 * direct_orient_cam.R.col(2));
+    Point3 rot3 = ToPoint3(f0_ * direct_orient_cam.R.col(2));
 
-    Eigen::Matrix<Scalar, kPointVarsCount, 1> t_to_salient_point = salient_point.Mat() - direct_orient_cam.T;
+    Point3 t_to_salient_point = salient_point - direct_orient_cam.T;
 
     Eigen::Matrix<Scalar, kWVarsCount, PqrCount> wvars_pqr_deriv;
-    wvars_pqr_deriv.col(kPCompInd) = rot1.cross(t_to_salient_point);
-    wvars_pqr_deriv.col(kQCompInd) = rot2.cross(t_to_salient_point);
-    wvars_pqr_deriv.col(kRCompInd) = rot3.cross(t_to_salient_point);
+    wvars_pqr_deriv.col(kPCompInd) = Mat(Cross(rot1, t_to_salient_point));
+    wvars_pqr_deriv.col(kQCompInd) = Mat(Cross(rot2, t_to_salient_point));
+    wvars_pqr_deriv.col(kRCompInd) = Mat(Cross(rot3, t_to_salient_point));
 
     pqr_deriv.middleRows<kWVarsCount>(inside_frame) = wvars_pqr_deriv;
     inside_frame += kWVarsCount;
@@ -1526,7 +1525,7 @@ void BundleAdjustmentKanatani::ComputeFramePqrDerivatives(const Eigen::Matrix<Sc
 }
 
 // formula 8, returns scalar or vector depending on gradp_byvar type
-Scalar BundleAdjustmentKanatani::FirstDerivFromPqrDerivative(Scalar f0, const Eigen::Matrix<Scalar, 3, 1>& pqr, const suriko::Point2f& corner_pix,
+Scalar BundleAdjustmentKanatani::FirstDerivFromPqrDerivative(Scalar f0, const Point3& pqr, const suriko::Point2f& corner_pix,
     Scalar gradp_byvar, Scalar gradq_byvar, Scalar gradr_byvar) const
 {
     SRK_ASSERT(!IsClose(0, pqr[2])) << "z != 0 because z is in denominator";
@@ -1538,7 +1537,7 @@ Scalar BundleAdjustmentKanatani::FirstDerivFromPqrDerivative(Scalar f0, const Ei
 }
 
 // formula 9
-Scalar BundleAdjustmentKanatani::SecondDerivFromPqrDerivative(const Eigen::Matrix<Scalar, 3, 1>& pqr,
+Scalar BundleAdjustmentKanatani::SecondDerivFromPqrDerivative(const Point3& pqr,
     Scalar gradp_byvar1, Scalar gradq_byvar1, Scalar gradr_byvar1,
     Scalar gradp_byvar2, Scalar gradq_byvar2, Scalar gradr_byvar2) const
 {
@@ -2014,7 +2013,7 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
 
         suriko::Point3& salient_point = map_->GetSalientPoint(corner_track.SalientPointId.value());
         if (kDebugCorrectSalientPoints)
-            salient_point.Mat() += delta_point;
+            salient_point += ToPoint3(delta_point);
     }
     SRK_ASSERT(pnt_ind + 1 == points_count);
 
@@ -2048,7 +2047,7 @@ void BundleAdjustmentKanatani::ApplyCorrections(const Eigen::Matrix<Scalar, Eige
         }
         cur_offset += kTVarsCount;
 
-        Eigen::Map<const Eigen::Matrix<Scalar, kWVarsCount, 1>> direct_deltaW(&corrections_with_gaps[cur_offset]);
+        Point3 direct_deltaW = ToPoint3(Eigen::Map<const Eigen::Matrix<Scalar, kWVarsCount, 1>> {&corrections_with_gaps[cur_offset]});
         Eigen::Matrix<Scalar, kWVarsCount, kWVarsCount> new_directR;
         IncrementRotMat(direct_orient_cam.R, direct_deltaW, &new_directR);
 

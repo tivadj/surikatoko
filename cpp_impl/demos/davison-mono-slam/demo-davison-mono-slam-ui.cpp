@@ -212,8 +212,8 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
         suriko::Point3 p2 = SE3Apply(rot_ellipsoid.world_from_ellipse, suriko::Point3{ -semi_major, 0, 0 });
 
         glBegin(GL_LINES);
-        glVertex3d(p1.X(), p1.Y(), p1.Z());
-        glVertex3d(p2.X(), p2.Y(), p2.Z());
+        glVertex3d(p1[0], p1[1], p1[2]);
+        glVertex3d(p2[0], p2[1], p2[2]);
         glEnd();
         return;
     }
@@ -230,12 +230,12 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
 
         // ellipse OX is on largest, ellipse OY on the 2nd-largest
 
-        Eigen::Matrix<Scalar, 3, 1> ws;
+        Point3 ws;
         ws[sorted_semi_axes[Largest].first] = eucl[0];  // ellipse OX
         ws[sorted_semi_axes[Middle].first] = eucl[1];  // ellipse OY
         ws[sorted_semi_axes[Smallest].first] = 0;
 
-        auto pos_world = SE3Apply(rot_ellipsoid.world_from_ellipse, suriko::Point3{ ws });
+        auto pos_world = SE3Apply(rot_ellipsoid.world_from_ellipse, ws);
         glVertex3d(pos_world[0], pos_world[1], pos_world[2]);
     }
     glEnd();
@@ -263,7 +263,7 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
             ws[sorted_semi_axes[Smallest].first] = eucl[1];  // ellipse OY
             ws[sorted_semi_axes[Largest].first] = 0;
 
-            auto pos_world = SE3Apply(rot_ellipsoid.world_from_ellipse, ws);
+            auto pos_world = SE3Apply(rot_ellipsoid.world_from_ellipse, ToPoint3(ws));
             glVertex3d(pos_world[0], pos_world[1], pos_world[2]);
         }
         glEnd();
@@ -271,7 +271,7 @@ void RenderEllipsoid(const RotatedEllipsoid3D& rot_ellipsoid, size_t dots_per_el
 }
 
 void RenderPosUncertaintyMatAsEllipsoid(
-    const Eigen::Matrix<Scalar, 3, 1>& pos,
+    const Point3& pos,
     const Eigen::Matrix<Scalar, 3, 3>& pos_uncert,
     Scalar covar3D_to_ellipsoid_chi_square,
     size_t dots_per_ellipse,
@@ -295,7 +295,7 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
     bool display_trajectory,
     CamDisplayType mid_cam_disp_type)
 {
-    Eigen::Matrix<Scalar, 3, 1> cam_pos_world_prev;
+    Point3 cam_pos_world_prev;
     bool cam_pos_world_prev_inited = false;
 
     for (size_t i = 0; i < gt_cam_orient_cfw.size(); ++i)
@@ -304,7 +304,7 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
         const SE3Transform& cam_wfc = SE3Inv(cam_cfw);
 
         // get position of the camera in the world: cam_to_world*(0,0,0,1)=cam_pos
-        const Eigen::Matrix<Scalar, 3, 1>& cam_pos_world = cam_wfc.T;
+        const Point3& cam_pos_world = cam_wfc.T;
 
         if (display_trajectory && cam_pos_world_prev_inited)
         {
@@ -449,7 +449,7 @@ void RenderMap(const DavisonMonoSlam* mono_slam, Scalar covar3D_to_ellipsoid_chi
         glColor3fv(GLColorRgb(sal_pnt_color).data());
 
         MarkUsedTrackerStateToVisualize();
-        Eigen::Matrix<Scalar, 3, 1> sal_pnt_pos;
+        Point3 sal_pnt_pos;
         Eigen::Matrix<Scalar, 3, 3> sal_pnt_pos_uncert;
         bool got_3d_pos = mono_slam->GetSalientPointEstimated3DPosWithUncertaintyNew(sal_pnt_id, &sal_pnt_pos, &sal_pnt_pos_uncert);
         if (got_3d_pos)
@@ -553,7 +553,7 @@ void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_sl
 
         if (display_3D_uncertainties)
         {
-            Eigen::Matrix<Scalar, 3, 1> cam_pos;
+            Point3 cam_pos;
             Eigen::Matrix<Scalar, 3, 3> cam_pos_uncert;
             Eigen::Matrix<Scalar, 4, 1> cam_orient_quat_wfc;
             mono_slam->GetCameraEstimatedPosAndOrientationWithUncertainty(&cam_pos, &cam_pos_uncert, &cam_orient_quat_wfc);
@@ -917,7 +917,7 @@ void SceneVisualizationPangolinGui::SetCameraBehindTracker()
     static Scalar behind_cam_dist = 5;
 
     Eigen::Matrix<Scalar, 4, 4, Eigen::ColMajor> model_view =
-        internals::SE3Mat(Eigen::Matrix<Scalar, 3, 1>{0, 0, behind_cam_dist})*
+        internals::SE3Mat(std::nullopt, Point3{0, 0, behind_cam_dist})*
         internals::SE3Mat(cam_cft.R, cam_cft.T)*
         internals::SE3Mat(tfw.R, tfw.T);
     auto model_view_span = gsl::make_span(model_view.data(), model_view.size());

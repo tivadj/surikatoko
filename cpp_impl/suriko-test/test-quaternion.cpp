@@ -104,7 +104,7 @@ TEST_F(QuaternionTest, ZeroAxisAngleToQuat)
 
 TEST_F(QuaternionTest, RotMatToQuat)
 {
-	Eigen::Matrix<Scalar, 3, 1> v(1,2,3);
+    Point3 v(1,2,3);
 	Eigen::Matrix<Scalar, 3, 3> R;
     bool op = RotMatFromAxisAngle(v, &R);
     ASSERT_TRUE(op);

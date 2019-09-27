@@ -8,8 +8,12 @@
 
 namespace suriko
 {
-//auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2 { return suriko::Point2(m); }
-//auto ToPoint(const Eigen::Matrix<Scalar,3,1>& m) -> suriko::Point3 { return suriko::Point3(m); }
+Point3 Normalized(const Point3& p)
+{
+    Point3 dir = p;
+    CHECK(Normalize(&dir));
+    return dir;
+}
 
 bool operator == (const Recti& lhs, const Recti& rhs)
 {
@@ -125,8 +129,7 @@ auto SE2Apply(const SE2Transform& rt, const suriko::Point2f& x)->suriko::Point2f
 auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3
 {
     // 0-copy
-    suriko::Point3 result(0,0,0);
-    result.Mat() = rt.R * x.Mat() + rt.T;
+    suriko::Point3 result = rt.R * x + rt.T;
     return result;
     // 1-copy
 //    Eigen::Matrix<Scalar,3,1> result= rt.R * x.Mat() + rt.T;
@@ -506,7 +509,7 @@ bool IsSpecialOrthogonal(const Eigen::Matrix<Scalar,2,2>& R, std::string* msg) {
     return true;
 }
 
-void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat)
+void SkewSymmetricMat(const Point3& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat)
 {
     *skew_mat << 
         0, -v[2], v[1],
@@ -514,13 +517,13 @@ void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen:
         -v[1], v[0], 0;
 }
 
-auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input) -> bool
+auto RotMatFromUnityDirAndAngle(const Point3& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input) -> bool
 {
     // skip precondition checking in Release mode on user request (check_input=false)
     if (check_input || kSurikoDebug)
     {
         // direction must be a unity vector
-        Scalar dir_len = unity_dir.norm();
+        Scalar dir_len = Norm(unity_dir);
         if (!IsClose(1, dir_len))
             return false;  // provide valid unity_dir
 
@@ -547,17 +550,17 @@ auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Sc
     return true;
 }
 
-auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool
+auto RotMatFromAxisAngle(const Point3& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool
 {
-    Scalar ang = axis_angle.norm();
+    Scalar ang = Norm(axis_angle);
     if (IsClose(0, ang)) return false;
 
-    Eigen::Matrix<Scalar, 3, 1> unity_dir = axis_angle / ang;
+    Point3 unity_dir = axis_angle / ang;
     const bool check_input = false;
     return RotMatFromUnityDirAndAngle(unity_dir, ang, rot_mat, check_input);
 }
 
-auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input) -> bool
+auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Point3*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input) -> bool
 {
     // skip precondition checking in Release mode on user request (check_input=false)
     if (check_input || kSurikoDebug)
@@ -582,16 +585,16 @@ auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Mat
 
     // direction vector is already close to unity, but due to rounding errors it diverges
     // TODO: check where the rounding error appears
-    Scalar dirlen = udir.norm();
+    Scalar dirlen = Norm(udir);
     udir *= 1 / dirlen;
 
     *ang = std::acos(cos_ang);
     return true;
 }
 
-auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> dir) -> bool
+auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Point3*> dir) -> bool
 {
-    Eigen::Matrix<Scalar, 3, 1> unity_dir;
+    Point3 unity_dir;
     Scalar ang;
     bool op = LogSO3(rot_mat, &unity_dir, &ang);
     if (!op) return false;
@@ -608,7 +611,7 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 
     // copy the input, because we may flip sign later
     Mat33 Q = proj_mat.leftCols(3);
-    Matrix<Scalar,3,1> q = proj_mat.rightCols(1);
+    Point3 q = ToPoint3(proj_mat.rightCols(1));
 
     // ensure that R will have positive determinant
     int P_sign = 1;
@@ -622,7 +625,7 @@ auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_po
 
     // find translation T
     Mat33 Q_inv = Q.inverse();
-    Matrix<Scalar,3,1> t = -Q_inv * q;
+    Point3 t = -Q_inv * q;
 
     // find rotation R
     Mat33 QQt = Q * Q.transpose();
@@ -724,23 +727,23 @@ Eigen::Matrix<Scalar, Eigen::Dynamic, 1> sol = jacobi_svd.solve(B);
 }
 
 SE3Transform LookAtLufWfc(
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    const Eigen::Matrix<Scalar, 3, 1>& center,
-    const Eigen::Matrix<Scalar, 3, 1>& up)
+    const Point3& eye,
+    const Point3& center,
+    const Point3& up)
 {
     // align OZ with view direction
-    Eigen::Matrix<Scalar, 3, 1> forward_dir = center - eye;
-    forward_dir.normalize();
+    Point3 forward_dir = center - eye;
+    CHECK(Normalize(&forward_dir));
 
     // align OY to match up vector
     // cam_up = up - proj(up onto forward_dir)
-    Eigen::Matrix<Scalar, 3, 1> cam_up_dir = up - forward_dir * up.dot(forward_dir); // new OY
-    cam_up_dir.normalize();
+    Point3 cam_up_dir = up - forward_dir * Dot(up, forward_dir); // new OY
+    CHECK(Normalize(&cam_up_dir));
 
     SE3Transform world_from_cam;
-    world_from_cam.R.middleCols<1>(0) = cam_up_dir.cross(forward_dir);
-    world_from_cam.R.middleCols<1>(1) = cam_up_dir;
-    world_from_cam.R.middleCols<1>(2) = forward_dir;
+    world_from_cam.R.middleCols<1>(0) = Mat(Cross(cam_up_dir, forward_dir));
+    world_from_cam.R.middleCols<1>(1) = Mat(cam_up_dir);
+    world_from_cam.R.middleCols<1>(2) = Mat(forward_dir);
     world_from_cam.T = eye;
     return world_from_cam;
 }
@@ -777,7 +780,7 @@ Rect GetEllipseBounds2(const RotatedEllipse2D& rotated_ellipse)
     return result;
 }
 
-std::tuple<bool, RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
+std::tuple<bool, RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Point3& mean,
     Scalar covar3D_to_ellipsoid_chi_square)
 {
     // check symmetry
@@ -1037,19 +1040,16 @@ RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipse)
 
 namespace internals
 {
-    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, const Eigen::Matrix<Scalar, 3, 1>* translation)
+    Eigen::Matrix<Scalar, 4, 4> SE3Mat(std::optional<Eigen::Matrix<Scalar, 3, 3>> rot_mat, std::optional<Point3> translation)
     {
-        Eigen::Matrix<Scalar, 4, 4> result;
-        Eigen::Matrix<Scalar, 3, 3> identity3 = Eigen::Matrix<Scalar, 3, 3>::Identity();
-        if (rot_mat == nullptr)
-            rot_mat = &identity3;
-    
-        Eigen::Matrix<Scalar, 3, 1> zero_translation(0, 0, 0);
-        if (translation == nullptr)
-            translation = &zero_translation;
+        if (!rot_mat.has_value())
+            rot_mat = rot_mat = Eigen::Matrix<Scalar, 3, 3>::Identity();
+        if (!translation.has_value())
+            translation = Point3{ 0, 0, 0 };
 
-        result.topLeftCorner(3, 3) = *rot_mat;
-        result.topRightCorner(3, 1) = *translation;
+        Eigen::Matrix<Scalar, 4, 4> result;
+        result.topLeftCorner(3, 3) = rot_mat.value();
+        result.topRightCorner(3, 1) = Mat(translation.value());
         result(3, 0) = 0;
         result(3, 1) = 0;
         result(3, 2) = 0;
@@ -1057,22 +1057,7 @@ namespace internals
         return result;
     }
 
-    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, const Eigen::Matrix<Scalar, 3, 1>& translation)
-    {
-        return SE3Mat(&rot_mat, &translation);
-    }
-
-    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat)
-    {
-        return SE3Mat(&rot_mat, nullptr);
-    }
-
-    Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 1>& translation)
-    {
-        return SE3Mat(nullptr, &translation);
-    }
-
-    Eigen::Matrix<Scalar, 3, 3> RotMat(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang)
+    Eigen::Matrix<Scalar, 3, 3> RotMat(const Point3& unity_dir, Scalar ang)
     {
         Eigen::Matrix<Scalar, 3, 3> result;
         if (!RotMatFromUnityDirAndAngle(unity_dir, ang, &result))
@@ -1082,7 +1067,7 @@ namespace internals
 
     Eigen::Matrix<Scalar, 3, 3> RotMat(Scalar unity_dir_x, Scalar unity_dir_y, Scalar unity_dir_z, Scalar ang)
     {
-        Eigen::Matrix<Scalar, 3, 1> unity_dir(unity_dir_x, unity_dir_y, unity_dir_z);
+        Point3 unity_dir(unity_dir_x, unity_dir_y, unity_dir_z);
         return RotMat(unity_dir, ang);
     }
 }

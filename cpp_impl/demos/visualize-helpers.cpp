@@ -9,7 +9,7 @@ namespace suriko_demos
 using namespace suriko;
 
 #if defined(SRK_HAS_OPENCV)
-void Draw2DProjectedAxes(suriko::Scalar f0, std::function<Eigen::Matrix<suriko::Scalar, 3, 1>(const suriko::Point3&)> projector, cv::Mat* camera_image_rgb)
+void Draw2DProjectedAxes(suriko::Scalar f0, std::function<Point3(const suriko::Point3&)> projector, cv::Mat* camera_image_rgb)
 {
     // show center of coordinates as red dot
     std::vector<suriko::Point3> axes_pnts = {
@@ -27,8 +27,7 @@ void Draw2DProjectedAxes(suriko::Scalar f0, std::function<Eigen::Matrix<suriko::
     std::vector<cv::Point2i> axes_pnts2D(axes_pnts.size());
     for (size_t i = 0; i < axes_pnts.size(); ++i)
     {
-        //Eigen::Matrix<Scalar, 3, 1> p = ProjectPnt(K, cam_inverse_orient, axes_pnts[i]);
-        Eigen::Matrix<Scalar, 3, 1> p = projector(axes_pnts[i]);
+        Point3 p = projector(axes_pnts[i]);
         axes_pnts2D[i] = cv::Point2i(
             static_cast<int>(p[0] / p[2] * f0),
             static_cast<int>(p[1] / p[2] * f0));

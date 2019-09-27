@@ -19,7 +19,7 @@
 #include "suriko/approx-alg.h"
 #include "suriko/multi-view-factorization.h"
 #include "suriko/virt-world/scene-generator.h"
-#include "stat-helpers.h"
+#include "suriko/stat-helpers.h"
 #include "visualize-helpers.h"
 
 #if defined(SRK_HAS_OPENCV)
@@ -43,9 +43,9 @@ auto ProjectPnt(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_in
     Point3 pnt_camera = SE3Apply(cam_inverse_orient, coord);
 
     // perform general projection 3D->2D
-    Eigen::Matrix<Scalar, 3, 1> pnt_img = pnt_camera.Mat() / pnt_camera[2];
+    Point3 pnt_img = pnt_camera / pnt_camera[2];
 
-    Eigen::Matrix<Scalar, 3, 1> pnt_pix = K * pnt_img;
+    Point3 pnt_pix = K * pnt_img;
     return pnt_pix;
 }
 
@@ -78,16 +78,16 @@ void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps
         suriko::Point3 base2 = look_at_base_points[base_point_ind+1];
         size_t steps_per_side = viewer_steps_per_side[base_point_ind];
 
-        Eigen::Matrix<Scalar, 3, 1> step = (base2.Mat() - base1.Mat()) / steps_per_side;
+        Point3 step = (base2 - base1) / steps_per_side;
         
         for (size_t step_ind=0; step_ind<steps_per_side; ++step_ind)
         {
-            suriko::Point3 cur_point = suriko::Point3(base1.Mat() + step * step_ind);
+            suriko::Point3 cur_point = base1 + step * step_ind;
 
             auto wfc = LookAtLufWfc(
-                cur_point.Mat() + Eigen::Matrix<Scalar, 3, 1>(viewer_offsetX, viewer_offsetY, ascentZ),
-                cur_point.Mat(),
-                Eigen::Matrix<Scalar, 3, 1>(0, 0, 1));
+                cur_point + Point3{ viewer_offsetX, viewer_offsetY, ascentZ },
+                cur_point,
+                Point3{ 0, 0, 1 });
 
             // convert XYZ=LUF (left-up-forward) to XYZ=RDF (right-down-forward)
             wfc.R *= RotMat(0, 0, 1, M_PI);
@@ -125,7 +125,10 @@ void DrawPhysicalCamera(const SE3Transform& cam_wfc)
     std::array<double, 4 * 4> opengl_mat_by_col{};
     Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::ColMajor>> opengl_mat(opengl_mat_by_col.data());
     opengl_mat.topLeftCorner<3, 3>() = cam_wfc.R.cast<double>();
-    opengl_mat.topRightCorner<3, 1>() = cam_wfc.T.cast<double>();
+    opengl_mat.topRightCorner<3, 1>() = Eigen::Matrix<double, 3, 1>{
+        static_cast<double>(cam_wfc.T[0]),
+        static_cast<double>(cam_wfc.T[1]),
+        static_cast<double>(cam_wfc.T[2]) };
     opengl_mat(3, 3) = 1;
 
     glPushMatrix();
@@ -177,7 +180,7 @@ void DrawPhysicalCamera(const SE3Transform& cam_wfc)
 
 void DrawCameras(const std::vector<SE3Transform>& cam_orient_cfw, bool draw_camera_each_frame = false)
 {
-    Eigen::Matrix<Scalar, 3, 1> cam_pos_world_prev;
+    Point3 cam_pos_world_prev;
     bool cam_pos_world_prev_inited = false;
 
     for (const auto& cam_cfw : cam_orient_cfw)
@@ -185,7 +188,7 @@ void DrawCameras(const std::vector<SE3Transform>& cam_orient_cfw, bool draw_came
         const SE3Transform& cam_wfc = SE3Inv(cam_cfw);
 
         // get position of the camera in the world: cam_to_world*(0,0,0,1)=cam_pos
-        const Eigen::Matrix<Scalar, 3, 1>& cam_pos_world = cam_wfc.T;
+        const Point3& cam_pos_world = cam_wfc.T;
 
         if (cam_pos_world_prev_inited)
         {
@@ -216,7 +219,7 @@ void DrawMap(const FragmentMap& fragment_map)
     {
         if (!point.coord.has_value()) continue;
         const suriko::Point3& p = point.coord.value();
-        glVertex3d(p.Mat()[0], p.Mat()[1], p.Mat()[2]);
+        glVertex3d(p[0], p[1], p[2]);
     }
     glEnd();
 }
@@ -305,7 +308,7 @@ public:
         for (const SalientPointFragment& fragment : entire_map_.SalientPoints())
         {
             const Point3& salient_point = fragment.coord.value();
-            Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K_, rt_cfw, salient_point);
+            Point3 pnt_homog = ProjectPnt(K_, rt_cfw, salient_point);
             SRK_ASSERT(!IsClose(0, pnt_homog[2], 10e-5)) << "points in infinity are unsupported";
 
             auto pnt_pix = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
@@ -340,7 +343,7 @@ public:
 
             CornerData& corner_data = corner_track->AddCorner(frame_ind);
             corner_data.pixel_coord = pix;
-            corner_data.image_coord = K_inv_ * pix.AsHomog();
+            corner_data.image_coord = K_inv_ * AsHomog(pix);
         }
     }
 };
@@ -446,7 +449,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
         std::normal_distribution<Scalar> cam_orient_noise_dis(0, FLAGS_noise_R_std);
         for (SE3Transform& cam_orient : gt_cam_orient_cfw)
         {
-            Eigen::Matrix<Scalar, 3, 1> dir;
+            Point3 dir;
             if (AxisAngleFromRotMat(cam_orient.R, &dir))
             {
                 Scalar d1 = cam_orient_noise_dis(gen);
@@ -532,7 +535,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
 
 #if defined(SRK_HAS_OPENCV)
         camera_image_rgb.setTo(0);
-        auto project_fun = [&K, &rt_cfw](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+        auto project_fun = [&K, &rt_cfw](const suriko::Point3& sal_pnt) -> Point3
         {
             return ProjectPnt(K, rt_cfw, sal_pnt);
         };
@@ -547,7 +550,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
         for (const SalientPointFragment& fragment : entire_map.SalientPoints())
         {
             const Point3& salient_point = fragment.coord.value();
-            Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, rt_cfw, salient_point);
+            Point3 pnt_homog = ProjectPnt(K, rt_cfw, salient_point);
 
             auto pnt_pix = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
 
@@ -593,7 +596,7 @@ int MultiViewFactorizationDemo(int argc, char* argv[])
 
                 CornerData& corner_data = corner_track->AddCorner(frame_ind);
                 corner_data.pixel_coord = pix;
-                corner_data.image_coord = K_inv * pix.AsHomog();
+                corner_data.image_coord = K_inv * AsHomog(pix);
             }
         }
 

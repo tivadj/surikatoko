@@ -16,7 +16,7 @@
 #include "suriko/mat-serialization.h"
 #include "suriko/approx-alg.h"
 #include "suriko/virt-world/scene-generator.h"
-#include "stat-helpers.h"
+#include "suriko/stat-helpers.h"
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/imgproc.hpp> // cv::circle
@@ -37,9 +37,9 @@ auto ProjectPnt(const Eigen::Matrix<Scalar, 3, 3>& K, const SE3Transform& cam_in
     Point3 pnt_camera = SE3Apply(cam_inverse_orient, coord);
 
     // perform general projection 3D->2D
-    Eigen::Matrix<Scalar, 3, 1> pnt_img = pnt_camera.Mat() / pnt_camera[2];
+    Point3 pnt_img = pnt_camera / pnt_camera[2];
 
-    Eigen::Matrix<Scalar, 3, 1> pnt_pix = K * pnt_img;
+    Point3 pnt_pix = K * pnt_img;
     return pnt_pix;
 }
 
@@ -187,7 +187,7 @@ int CircleGridDemo(int argc, char* argv[])
 
 #if defined(SRK_HAS_OPENCV)
         camera_image_rgb.setTo(0);
-        auto project_fun = [&K, &RT_cfw](const suriko::Point3& sal_pnt) -> Eigen::Matrix<suriko::Scalar, 3, 1>
+        auto project_fun = [&K, &RT_cfw](const suriko::Point3& sal_pnt) -> Point3
         {
             return ProjectPnt(K, RT_cfw, sal_pnt);
         };
@@ -201,7 +201,7 @@ int CircleGridDemo(int argc, char* argv[])
             CornerTrack& track = track_rep.GetPointTrackById(frag_ind);
             CHECK_EQ(track.SyntheticVirtualPointId.value(), frag.synthetic_virtual_point_id.value());
 
-            Eigen::Matrix<Scalar, 3, 1> pnt_homog = ProjectPnt(K, RT_cfw, frag.coord.value());
+            Point3 pnt_homog = ProjectPnt(K, RT_cfw, frag.coord.value());
             auto pnt_div_f0 = Eigen::Matrix<Scalar, 2, 1>(pnt_homog[0] / pnt_homog[2], pnt_homog[1] / pnt_homog[2]);
             auto pnt_pix = suriko::Point2f(pnt_div_f0 * f0);
             track.AddCorner(ang_ind, pnt_pix);
@@ -229,7 +229,7 @@ int CircleGridDemo(int argc, char* argv[])
         {
             SE3Transform& rt = inverse_orient_cam_per_frame_noise[i];
 
-            Eigen::Matrix<Scalar, 3, 1> unity_dir;
+            Point3 unity_dir;
             Scalar ang;
             if (!LogSO3(rt.R, &unity_dir, &ang))
             {
@@ -246,7 +246,7 @@ int CircleGridDemo(int argc, char* argv[])
             unity_dir[0] += dw1;
             unity_dir[1] += dw2;
             unity_dir[2] += dw3;
-            unity_dir.normalize();
+            CHECK(Normalize(&unity_dir));
 
             bool op = RotMatFromUnityDirAndAngle(unity_dir, ang, &rt.R);
             if (!op)
@@ -265,7 +265,7 @@ int CircleGridDemo(int argc, char* argv[])
             bool op = map_noise.GetSalientPointByVirtualPointIdInternal(sal_pnt.synthetic_virtual_point_id.value(), &sal_pnt_noise);
             SRK_ASSERT(op);
 
-            Scalar pnt_diff = (sal_pnt.coord.value().Mat() - sal_pnt_noise->coord.value().Mat()).norm();
+            Scalar pnt_diff = Norm(sal_pnt.coord.value() - sal_pnt_noise->coord.value());
             stat_pnt.Next(pnt_diff);
         }
         LOG(INFO) << "avg_pnt_diff=" << stat_pnt.Mean() << " std_pnt_diff=" << stat_pnt.Std();

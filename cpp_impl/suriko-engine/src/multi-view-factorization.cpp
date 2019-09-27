@@ -112,7 +112,7 @@ bool MultiViewIterativeFactorizer::FindRelativeMotionMultiPoints(size_t anchor_f
     
     Eigen::Matrix<Scalar, 12, 1> r_and_t_ok;
     r_and_t_ok.block(0, 0, 9, 1) = Eigen::Map<const Eigen::Matrix<Scalar, 9, 1>, Eigen::ColMajor>(this->tmp_cam_new_from_anchor_.R.data());
-    r_and_t_ok.block(9, 0, 3, 1) = Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>>(this->tmp_cam_new_from_anchor_.T.data());
+    r_and_t_ok.block(9, 0, 3, 1) = Mat(this->tmp_cam_new_from_anchor_.T);
 
     // estimage camera position[R, T] given distances to all 3D points pj in frame1
     // NOTE: this algo (candidate RT via SVD + projection on SO3) is unreliable because it creates solution which may be far from ground truth
@@ -127,20 +127,20 @@ bool MultiViewIterativeFactorizer::FindRelativeMotionMultiPoints(size_t anchor_f
         size_t track_id = common_track_ids[i];
         
         const CornerTrack& corner_track = track_rep_.GetPointTrackById(track_id);
-        Eigen::Matrix<Scalar, 3, 1> c1 = corner_track.GetCornerData(anchor_frame_ind).value().image_coord;
-        Eigen::Matrix<Scalar, 3, 1> c2 = corner_track.GetCornerData(target_frame_ind).value().image_coord;
+        Point3 c1 = corner_track.GetCornerData(anchor_frame_ind).value().image_coord;
+        Point3 c2 = corner_track.GetCornerData(target_frame_ind).value().image_coord;
 
-        Eigen::Matrix<Scalar, 3, 1> c2_homog = c2;
+        Point3 c2_homog = c2;
         if (norm)
-            c2_homog /= c2_homog.norm();
+            c2_homog *= 1/Norm(c2_homog);
 
         Eigen::Matrix<Scalar, 3, 3> c2_skew;
         SkewSymmetricMat(c2_homog, &c2_skew);
 
         // manual Kronecker product
-        Eigen::Matrix<Scalar, 3, 1> c1_homog = c1;
+        Point3 c1_homog = c1;
         if (norm)
-            c1_homog /= c1_homog.norm();
+            c1_homog *= 1/Norm(c1_homog);
         for (size_t c1_comp_ind = 0; c1_comp_ind < 3; ++c1_comp_ind)
         {
             A.block<3, 3>(i * 3, c1_comp_ind * 3) = c1_homog[c1_comp_ind] * c2_skew;
@@ -184,7 +184,7 @@ bool MultiViewIterativeFactorizer::FindRelativeMotionMultiPoints(size_t anchor_f
     Eigen::Matrix<Scalar, 3, 3> r22 = Rtmp * Rtmp.transpose();
     Scalar det = Rtmp.determinant();
 
-    bool op = ProjectOntoSO3(SE3Transform(R_noisy, T_noisy), cam_frame_from_anchor);
+    bool op = ProjectOntoSO3(SE3Transform(R_noisy, ToPoint3(T_noisy)), cam_frame_from_anchor);
     return op;
 }
 
@@ -206,7 +206,7 @@ size_t MultiViewIterativeFactorizer::CollectFrameInfoListForPoint(size_t track_i
     {
         if (!corner_data.has_value())
             return;
-        const Eigen::Matrix<Scalar, 3, 1>& x_meter = corner_data.value().image_coord;
+        const Point3& x_meter = corner_data.value().image_coord;
 
         if (!base_frame_ind.has_value())
             base_frame_ind = frame_ind;
@@ -228,23 +228,23 @@ Scalar MultiViewIterativeFactorizer::Estimate3DPointDepthFromFrames(const std::v
     Scalar alpha_den = 0;
 
     size_t base_frame_ind = pnt_per_frame_infos[0].FrameInd;
-    Eigen::Matrix<Scalar, 3, 1> x1 = pnt_per_frame_infos[0].CoordMeter;
+    Point3 x1 = pnt_per_frame_infos[0].CoordMeter;
 
     for (size_t i = 1; i < pnt_per_frame_infos.size(); ++i)
     {
         const PointInFrameInfo& info = pnt_per_frame_infos[i];
 
-        Eigen::Matrix<Scalar, 3, 1> xi = info.CoordMeter;
+        Point3 xi = info.CoordMeter;
         Eigen::Matrix<Scalar, 3, 3> xi_skew;
         SkewSymmetricMat(xi, &xi_skew);
 
         SE3Transform framei_from_base = info.FrameFromBase;
 
-        Eigen::Matrix<Scalar, 3, 1> h1 = xi_skew * framei_from_base.T;
-        Eigen::Matrix<Scalar, 3, 1> h2 = xi_skew * framei_from_base.R * x1;
+        Point3 h1 = xi_skew * framei_from_base.T;
+        Point3 h2 = xi_skew * framei_from_base.R * x1;
 
-        alpha_num += h1.dot(h2);
-        alpha_den += h1.squaredNorm();
+        alpha_num += Dot(h1, h2);
+        alpha_den += Sqr(Norm(h1));
     }
 
     Scalar alpha = -alpha_num / alpha_den;
@@ -285,7 +285,7 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
         SE3Transform gt_cam_new_from_anchor = gt_cam_orient_f1f2_(anchor_frame_ind, new_frame_ind);
         Scalar diff_value =
             (gt_cam_new_from_anchor.R - cam_new_from_anchor.R).norm() +
-            (gt_cam_new_from_anchor.T - cam_new_from_anchor.T).norm();
+            Norm(gt_cam_new_from_anchor.T - cam_new_from_anchor.T);
         if (diff_value > 1)
             VLOG(4) << "diverged cam localiz, diff_value=" << diff_value << " frame_ind=" << new_frame_ind;
         else
@@ -336,7 +336,7 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
 
             //
 
-            Eigen::Matrix<Scalar, 3, 1> x3D_base = track.GetCornerData(base_frame_ind).value().image_coord;
+            Point3 x3D_base = track.GetCornerData(base_frame_ind).value().image_coord;
             x3D_base *= depth_base;
 
             const SE3Transform& base_from_world = cam_orient_cfw_[base_frame_ind];
@@ -346,7 +346,7 @@ bool MultiViewIterativeFactorizer::IntegrateNewFrameCorners(const SE3Transform& 
             if (track.SyntheticVirtualPointId.has_value() && gt_salient_point_by_virtual_point_id_fun_ != nullptr)
             {
                 suriko::Point3 expect_x3D_world = gt_salient_point_by_virtual_point_id_fun_(track.SyntheticVirtualPointId.value());
-                Scalar diff_value = (expect_x3D_world.Mat() - x3D_world.Mat()).norm();
+                Scalar diff_value = Norm(expect_x3D_world - x3D_world);
                 if (diff_value > 1)
                     VLOG(4) << "diverged pnt reconstr, diff_value=" << diff_value << " synth_id=" << track.SyntheticVirtualPointId.value() ;
                 else
@@ -450,8 +450,7 @@ bool MultiViewIterativeFactorizer::ReprojError(Scalar f0,
 
             // the evaluation below is due to BA3DRKanSug2010 formula 4
             suriko::Point3 x3D_cam = SE3Apply(*pInverse_orient_cam, x3D);
-            suriko::Point3 x_img_h = suriko::Point3((*pK) * x3D_cam.Mat());
-            // TODO: replace Point3 ctr with ToPoint factory method, error: call to 'ToPoint' is ambiguous
+            suriko::Point3 x_img_h = (*pK) * x3D_cam;
 
             bool zero_z = IsCloseAbs(0, x_img_h[2], 1e-5);
             if (zero_z)

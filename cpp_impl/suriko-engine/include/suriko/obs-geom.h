@@ -24,8 +24,6 @@ public:
     const Eigen::Matrix<Scalar,2,1>& Mat() const { return mat_; };
           Eigen::Matrix<Scalar,2,1>& Mat()       { return mat_; };
 
-    Eigen::Matrix<Scalar, 3, 1> AsHomog() const { return Eigen::Matrix<Scalar, 3, 1> {mat_(0), mat_(1), 1}; }
-
     Scalar X() const { return mat_[0]; }
     Scalar Y() const { return mat_[1]; }
 
@@ -39,33 +37,89 @@ struct Point2i
     auto Mat() const { return Eigen::Matrix<int, 2, 1> { x, y}; }
 };
 
-//auto ToPoint(const Eigen::Matrix<Scalar,2,1>& m) -> suriko::Point2;
+// 2 = (default) Point3 is an alias to Eigen::Matrix<F,3,1>
+// 3 = Point3 wraps Eigen::Matrix<F,3,1> (seems to be slower that just the alias; used to test if code compiles with alternative impl of Point3)
+#ifndef PRIMITIVES_IMPL
+#define PRIMITIVES_IMPL 2
+#endif
 
-class Point3 {
-    Eigen::Matrix<Scalar,3,1> mat_;
+#if PRIMITIVES_IMPL == 2 
+
+using Point3 = Eigen::Matrix<Scalar, 3, 1>;  // alias to Eigen::Matrix<F, 3, 1>
+
+template <typename M>
+[[nodiscard]] auto ToPoint3(M m) { return m; }
+
+template <typename M>
+[[nodiscard]] auto Mat(M m) { return m; }
+
+template <typename M> 
+[[nodiscard]] Scalar Norm(M m) { return m.norm(); }
+
+template <typename M>
+[[nodiscard]] bool Normalize(M* p) { p->normalize(); return true; }
+
+template <typename M1, typename M2>
+[[nodiscard]] Eigen::Matrix<Scalar, 3, 1> Cross(M1 x, M2 y) { return x.cross(y); }
+
+template <typename M1, typename M2>
+[[nodiscard]] Scalar Dot(M1 x, M2 y) { return x.dot(y); }
+
+template <typename M>
+void Fill(Scalar s, M* m) { m->fill(s); }
+
+#elif PRIMITIVES_IMPL == 3
+
+struct MatPoint3 {
+    Eigen::Matrix<Scalar, 3, 1> mat_;
 public:
-    Point3() = default;
-    Point3(const Eigen::Matrix<Scalar, 3, 1> &m) : mat_(m) { }
-
+    MatPoint3() = default;
+//private:
+    explicit MatPoint3(const Eigen::Matrix<Scalar, 3, 1>& m) : mat_(m) { }
+public:
     template <typename F0, typename F1, typename F2>
-    Point3(const F0 &x, const F1 &y, const F2 &z) {
-        mat_(0) = static_cast<Scalar>(x);
-        mat_(1) = static_cast<Scalar>(y);
-        mat_(2) = static_cast<Scalar>(z);
-    }
+    MatPoint3(const F0& x, const F1& y, const F2& z) :
+        mat_{ static_cast<Scalar>(x), static_cast<Scalar>(y), static_cast<Scalar>(z) }
+    {}
 
-    const Eigen::Matrix<Scalar,3,1>& Mat() const { return mat_; };
-          Eigen::Matrix<Scalar,3,1>& Mat()       { return mat_; };
+    Scalar  operator[] (size_t i) const { return mat_(i); }
+    Scalar& operator[] (size_t i) { return mat_(i); }
+    MatPoint3 operator -(const MatPoint3& p) const { return MatPoint3{mat_ - p.mat_ }; }
+    MatPoint3 operator -() const { return MatPoint3{ -mat_ }; }
+    MatPoint3 operator +(const MatPoint3& p) const { return MatPoint3{mat_ + p.mat_ }; }
+    MatPoint3& operator +=(const MatPoint3& p) { mat_ += p.mat_; return *this; }
+    MatPoint3 operator *(Scalar s) const { return MatPoint3{mat_* s }; }
+    MatPoint3& operator *=(Scalar s) { mat_ *= s; return *this; }
+    MatPoint3 operator /(Scalar s) const { return MatPoint3{ mat_ / s }; }
 
-    Scalar  operator[] (size_t i) const { return mat_(i); };
-    Scalar& operator[] (size_t i)       { return mat_(i); };
-    Scalar  X() const { return mat_[0]; }
-    Scalar& X()       { return mat_[0]; }
-    Scalar  Y() const { return mat_[1]; }
-    Scalar& Y()       { return mat_[1]; }
-    Scalar  Z() const { return mat_[2]; }
-    Scalar& Z()       { return mat_[2]; }
+    template <typename M>
+    friend MatPoint3 ToPoint3(M m);
 };
+
+using Point3 = MatPoint3;  // wrap of Eigen::Matrix<F,3,1>
+
+template <typename M>
+[[nodiscard]] MatPoint3 ToPoint3(M m) { return MatPoint3{ m }; }
+
+[[nodiscard]] inline Eigen::Matrix<Scalar, 3, 1> Mat(const MatPoint3& p) { return p.mat_; }
+
+[[nodiscard]] inline Scalar Norm(const MatPoint3& p) { return p.mat_.norm(); }
+[[nodiscard]] inline bool Normalize(MatPoint3* p) { p->mat_.normalize(); return true; }
+[[nodiscard]] inline Scalar Dot(const MatPoint3& x, const MatPoint3& y) { return x.mat_.dot(y.mat_); }
+[[nodiscard]] inline MatPoint3 Cross(const MatPoint3& x, const MatPoint3& y) { return MatPoint3{ x.mat_.cross(y.mat_) }; }
+inline void Fill(Scalar s, MatPoint3* p) { p->mat_.fill(s); }
+
+[[nodiscard]] inline MatPoint3 operator *(const Eigen::Matrix<Scalar, 3, 3>& R, const MatPoint3& p) { return MatPoint3{ R * p.mat_ }; }
+[[nodiscard]] inline MatPoint3 operator *(Scalar s, const MatPoint3& p) { return MatPoint3{ s * p.mat_ }; }
+inline std::ostream& operator <<(std::ostream& s, const MatPoint3& m) { return s << m.mat_; }
+
+#endif
+
+inline Point3 AsHomog(const Point2f& p) { return Point3 {p[0], p[1], 1}; }
+
+// Utility methods. Work on any implementation of Point3.
+
+Point3 Normalized(const Point3& p);
 
 struct Sizei
 {
@@ -122,16 +176,16 @@ struct SE2Transform
 /// Inverse camera movement transforms 3D points from world frame into camera frame.
 struct SE3Transform
 {
-    Eigen::Matrix<Scalar, 3, 1> T;
+    Point3 T;
     Eigen::Matrix<Scalar, 3, 3> R;
 
     SE3Transform() = default;
-    SE3Transform(const Eigen::Matrix<Scalar, 3, 3>& R, const Eigen::Matrix<Scalar, 3, 1>& T) : R(R), T(T) {}
+    SE3Transform(const Eigen::Matrix<Scalar, 3, 3>& R, const Point3& T) : R(R), T(T) {}
     
     static SE3Transform NoTransform() { 
         return SE3Transform(
             Eigen::Matrix<Scalar, 3, 3>::Identity(),
-            Eigen::Matrix<Scalar, 3, 1>::Zero());
+            Point3{ 0, 0, 0 });
     }
 };
 
@@ -190,8 +244,8 @@ private:
 
 struct CornerData
 {
-    suriko::Point2f pixel_coord;
-    Eigen::Matrix<Scalar, 3, 1> image_coord;
+    Point2f pixel_coord;
+    Point3 image_coord;
 };
 
 class CornerTrack
@@ -250,15 +304,15 @@ public:
 };
 
 /// Constructs 3x3 skew symmetric matrix from 3-element vector.
-void SkewSymmetricMat(const Eigen::Matrix<Scalar, 3, 1>& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat);
+void SkewSymmetricMat(const Point3& v, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> skew_mat);
 
 /// Creates the rotation matrix around the vector @n by angle @ang in radians.
 /// This uses the Rodrigues formula.
 [[nodiscard]]
-auto RotMatFromUnityDirAndAngle(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input = true) -> bool;
+auto RotMatFromUnityDirAndAngle(const Point3& unity_dir, Scalar ang, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat, bool check_input = true) -> bool;
 
 [[nodiscard]]
-auto RotMatFromAxisAngle(const Eigen::Matrix<Scalar, 3, 1>& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool;
+auto RotMatFromAxisAngle(const Point3& axis_angle, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> rot_mat) -> bool;
 
 /// Checks if Rt*R=I.
 [[nodiscard]]
@@ -276,10 +330,10 @@ bool IsIdentity(const Eigen::Matrix<Scalar, 3, 3>& M, Scalar rtol, Scalar atol, 
 
 /// Logarithm of SO(3) : R[3x3]->(n, ang) where n = rotation vector, ang = angle in radians.
 [[nodiscard]]
-auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input = true) -> bool;
+auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Point3*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input = true) -> bool;
 
 [[nodiscard]]
-auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Eigen::Matrix<Scalar, 3, 1>*> dir) -> bool;
+auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Point3*> dir) -> bool;
 
 //template <class F>
 //class SalientPointTracker
@@ -312,15 +366,15 @@ auto Triangulate3DPointByLeastSquares(const std::vector<suriko::Point2f> &xs2D,
 /// Result transformation converts camera points into world (thus WFC=world from camera).
 [[nodiscard]]
 SE3Transform LookAtLufWfc(
-    const Eigen::Matrix<Scalar, 3, 1>& eye,
-    const Eigen::Matrix<Scalar, 3, 1>& center,
-    const Eigen::Matrix<Scalar, 3, 1>& up);
+    const Point3& eye,
+    const Point3& center,
+    const Point3& up);
 
 /// (x-c)*A*(x-c)=r where x[3x1], c[3x1], A[3,3], r=scalar
 struct Ellipsoid3DWithCenter
 {
     Eigen::Matrix<Scalar, 3, 3> A;
-    Eigen::Matrix<Scalar, 3, 1> center; // c
+    Point3 center; // c
     Scalar right_side; // r
 };
 
@@ -356,7 +410,7 @@ struct RotatedEllipsoid3D
 };
 
 [[nodiscard]]
-std::tuple<bool,RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Eigen::Matrix<Scalar, 3, 1>& mean,
+std::tuple<bool,RotatedEllipsoid3D> GetRotatedUncertaintyEllipsoidFromCovMat(const Eigen::Matrix<Scalar, 3, 3>& cov, const Point3& mean,
     Scalar covar3D_to_ellipsoid_chi_square);
 
 [[nodiscard]]
@@ -378,13 +432,10 @@ RotatedEllipse2D GetRotatedEllipse2D(const Ellipse2DWithCenter& ellipsoid);
 
 namespace internals
 {
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>* rot_mat, const Eigen::Matrix<Scalar, 3, 1>* translation);
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, const Eigen::Matrix<Scalar, 3, 1>& translation);
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat);
-Eigen::Matrix<Scalar, 4, 4> SE3Mat(const Eigen::Matrix<Scalar, 3, 1>& translation);
+[[nodiscard]] Eigen::Matrix<Scalar, 4, 4> SE3Mat(std::optional<Eigen::Matrix<Scalar, 3, 3>> rot_mat, std::optional<Point3> translation);
 
 /// Generates rotation matrix from direction and angle to rotate. For zero angle it returns the identity matrix.
-Eigen::Matrix<Scalar, 3, 3> RotMat(const Eigen::Matrix<Scalar, 3, 1>& unity_dir, Scalar ang);
+Eigen::Matrix<Scalar, 3, 3> RotMat(const Point3& unity_dir, Scalar ang);
 Eigen::Matrix<Scalar, 3, 3> RotMat(Scalar unity_dir_x, Scalar unity_dir_y, Scalar unity_dir_z, Scalar ang);
 
 template <typename F>
