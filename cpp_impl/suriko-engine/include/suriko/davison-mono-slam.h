@@ -427,16 +427,24 @@ private:
 
 public:
     bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
-    Scalar seconds_per_frame_ = 1; // in seconds, elapsed time between two consecutive frames
+
+    // Civera used delta_t=1; Davison used delta_t=0.033333333 in original MonoSlam
+    // Working configurations:
+    // Davison:dT=0.033333333 noise_lin_vel=0.3  noise_ang_vel=0.3
+    // Civera: dT=1           noise_lin_vel=0.01 noise_ang_vel=0.01
+    // When we change sample rate from fps=30 (dt=0.033) to fps=1 (dt=1) for the same video,
+    // we declare that it takes more time to pass the same distance, hence the slower speed of movement,
+    // hence the variance of linear and angular velocity becomes smaller.
+    Scalar seconds_per_frame_ = 0.033333333f;  //!< in seconds, elapsed time between two consecutive frames
 
     // drastically affects performance: it increases uncertainty regions of salient points, hence the search regions, used for salient points correspondence, are increased
     // used to init bot-right 3x3 of Qk[6,6], uncertainty in camera dynamic model motion
-    Scalar process_noise_linear_velocity_std_ = 1;  // in mm, this much camera can move per one time step
+    Scalar process_noise_linear_velocity_std_ = 0.3f;  // in mm, this much camera can move per one time step
 
     // this much each component of 3x1 camera orientation angle-vector can change per one time step
     // measured in units of angle-vector rotation representation
     // used to init top-left 3x3 of Qk[6,6], uncertainty in camera dynamic model motion
-    Scalar process_noise_angular_velocity_std_ = 0.01f;  // in radians, influence how much camera can rotate
+    Scalar process_noise_angular_velocity_std_ = 0.6f;  // in radians, influence how much camera can rotate
 
     Eigen::Matrix<Scalar, kProcessNoiseComps, kProcessNoiseComps> process_noise_covar_; // Qk[6,6] process noise covariance matrix
 

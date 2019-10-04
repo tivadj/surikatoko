@@ -12,8 +12,14 @@
     "camera_enable_distortion": true,
     "camera_distort_mikhail_k1k2": [0.06333, 0.0139],
     
-    "monoslam_process_noise_cam_lin_veloc_std_mm": 0.01,
-    "monoslam_process_noise_cam_ang_veloc_std_rad": 0.01,
+    "// Davison used delta_t=0.033333333 in original MonoSlam; Civera used delta_t=1": 0,
+    "// Working configurations:": 0,
+    "// dT=0.033333333 noise_lin_vel=0.3  noise_ang_vel=0.3 ": 0,
+    "// dT=1           noise_lin_vel=0.01 noise_ang_vel=0.01": 0,
+    "monoslam_seconds_per_frame": 0.033333333,
+
+    "monoslam_process_noise_cam_lin_veloc_std_mm": 0.3,
+    "monoslam_process_noise_cam_ang_veloc_std_rad": 0.6,
     "monoslam_measurm_noise_std_pix": 1.0,
     "monoslam_1pransac_corner_max_divergence_pix": 0.5,
     "// {0.9, 4.60517}, {0.95, 5.99146}, {0.99, 9.21034}": 0,
@@ -21,7 +27,5 @@
     "monoslam_sal_pnt_init_inv_dist": 0.1,
     "monoslam_sal_pnt_init_inv_dist_std": 1,
 
-    "// Civera used delta_t=1; Davison used delta_t=0.033333333 in original MonoSlam": 0,
-    "monoslam_seconds_per_frame": 1,
     "monoslam_sal_pnt_max_undetected_frames_count": 12
 }
