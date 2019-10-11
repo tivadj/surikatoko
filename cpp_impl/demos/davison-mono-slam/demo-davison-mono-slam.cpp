@@ -37,6 +37,7 @@
 #include <opencv2/imgproc.hpp> // cv::circle, cv::cvtColor
 #include <opencv2/highgui.hpp> // cv::imshow
 #include <opencv2/features2d.hpp> // cv::ORB
+#include <opencv2/calib3d.hpp>  // cv::undistort
 #endif
 
 #include "demo-davison-mono-slam-ui.h"
@@ -1038,6 +1039,18 @@ bool ValidateDirectoryEmptyOrExists(const std::string &value)
     return std::filesystem::is_directory(test_data_path);
 }
 
+/// The workspace data for the cv::undistort routine.
+struct UndistMaps
+{
+#if defined(SRK_HAS_OPENCV)
+    cv::Matx<double, 3, 3> cam_mat;
+    cv::Mat dist_coeffs;
+
+    cv::Mat map1;  // the maps as the output of cv::initUndistortRectifyMap
+    cv::Mat map2;
+#endif
+};
+
 static constexpr auto kVirtualSceneCStr = "virtscene";
 static constexpr auto kImageSeqDirCStr = "imageseqdir";
 
@@ -1114,7 +1127,7 @@ bool ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_
         return false;
     }
     auto process_noise_angular_velocity_std = FloatParam<Scalar>(&cr, "monoslam_process_noise_cam_ang_veloc_std_rad").value_or(-1);
-    if (!process_noise_angular_velocity_std == -1)
+    if (process_noise_angular_velocity_std == -1)
     {
         LOG(ERROR) << "no mandatory parameter monoslam_process_noise_cam_ang_veloc_std_rad";
         return false;
@@ -1671,6 +1684,32 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 
     CheckDavisonMonoSlamConfigurationAndDump(mono_slam, gt_cam_orient_cfw);
 
+    // undistort images after reading them, so that the tracking algorithm gets undistorted images as input
+    std::optional<UndistMaps> undistort_img_maps;
+    auto undistort_img_cam_mat_by_rows = FloatSeq<double>(&config_reader, "undistort_img_cam_mat_by_rows");
+    if (undistort_img_cam_mat_by_rows.has_value())
+    {
+        std::vector<double> A_vec = undistort_img_cam_mat_by_rows.value();
+        if (A_vec.size() != 3 * 3)
+        {
+            LOG(ERROR) << "Undistort.CameraMatrix must be vector of 9 elements, which is 3x3 by rows";
+            return 1;
+        }
+
+        auto undistort_img_dist_coeffs = FloatSeq<double>(&config_reader, "undistort_img_dist_coeffs").value_or(std::vector<Scalar>{0, 0, 0, 0});
+
+        UndistMaps m;
+#if defined(SRK_HAS_OPENCV)
+        m.cam_mat = cv::Matx<double, 3, 3> { undistort_img_cam_mat_by_rows.value().data() };
+        m.dist_coeffs = cv::Mat{ undistort_img_dist_coeffs, false };
+
+        cv::Size cv_img_size{ cam_intrinsics.image_size.width, cam_intrinsics.image_size.height };
+        auto I = cv::Mat_<double>::eye(3, 3);
+        cv::initUndistortRectifyMap(m.cam_mat, m.dist_coeffs, I, m.cam_mat, cv_img_size, CV_16SC2, m.map1, m.map2);
+#endif
+        undistort_img_maps = m;
+    }
+
     std::filesystem::path root_dump_dir = std::filesystem::absolute(FLAGS_ctrl_log_slam_images_dir);
 
     //
@@ -1717,6 +1756,16 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                     << "got image of sizeWxH=[" << image_bgr.cols << "," << image_bgr.rows << "] "
                     << "but expected sizeWxH=[" << cam_intrinsics.image_size.width << "," << cam_intrinsics.image_size.height << "]";
                 break;
+            }
+
+            if (undistort_img_maps.has_value())  // cv::undistort is requested by user
+            {
+                UndistMaps& m = undistort_img_maps.value();
+#if defined(SRK_HAS_OPENCV)
+                cv::Mat image_bgr_undist;
+                cv::remap(image_bgr, image_bgr_undist, m.map1, m.map2, cv::INTER_LINEAR);
+                image_bgr = image_bgr_undist;
+#endif
             }
 
             cv::Mat image_gray;

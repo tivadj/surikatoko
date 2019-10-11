@@ -89,7 +89,7 @@ message(STATUS "glog::glog.INTERFACE_INCLUDE_DIRECTORIES=${glog_incl_dirs}")
 
 if (suriko_with_opencv)
     # features2d for cv::ORB
-    find_package(OpenCV REQUIRED core imgcodecs imgproc highgui features2d)
+    find_package(OpenCV REQUIRED core imgcodecs imgproc highgui features2d calib3d)
     message(STATUS "OpenCV_INCLUDE_DIRS=${OpenCV_INCLUDE_DIRS}")
     message(STATUS "OpenCV_LIBS=${OpenCV_LIBS}")
     add_definitions(-DSRK_HAS_OPENCV)
