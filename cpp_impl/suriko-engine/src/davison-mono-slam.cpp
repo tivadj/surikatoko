@@ -1,5 +1,6 @@
 #include <random>
 #include <numeric> // accumulate
+#include <bitset>
 #include "suriko/davison-mono-slam.h"
 #include <glog/logging.h>
 #include <unsupported/Eigen/Polynomials>
@@ -73,6 +74,29 @@ suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei 
     return suriko::Point2i{
         static_cast<int>(center[0] - rad_x),
         static_cast<int>(center[1] - rad_y) };
+}
+
+size_t BitsHammingDistance(gsl::span<const std::byte> s1, gsl::span<const std::byte> s2)
+{
+    CHECK(s1.size() == s2.size());
+
+    using Word = unsigned long long;  // the parameter of std::bitset's constructor
+    constexpr size_t kWordSize = sizeof(Word);
+    CHECK(s1.size() % kWordSize == 0) << "The sequence must contain the whole number of bytes";
+
+    auto p1 = reinterpret_cast<const Word*>(s1.data());
+    auto p2 = reinterpret_cast<const Word*>(s2.data());
+
+    size_t result = 0;
+    size_t words_count = s1.size() / kWordSize;
+    for (size_t i = 0; i < words_count; ++i)
+    {
+        Word diff = p1[i] ^ p2[i];
+        std::bitset<kWordSize * 8> bs{ diff };
+        size_t dist = bs.count();
+        result += dist;
+    }
+    return result;
 }
 
 DavisonMonoSlamInternalsLogger::DavisonMonoSlamInternalsLogger()
@@ -241,7 +265,7 @@ void DavisonMonoSlam::CopyFrom(const DavisonMonoSlam& src)
 
     d.covar2D_to_ellipse_confidence_ = src.covar2D_to_ellipse_confidence_;
 
-    d.debug_max_sal_pnt_coun_ = src.debug_max_sal_pnt_coun_;
+    d.debug_max_sal_pnt_count_ = src.debug_max_sal_pnt_count_;
 
     d.cam_intrinsics_ = src.cam_intrinsics_;
     d.cam_enable_distortion_ = src.cam_enable_distortion_;
@@ -854,15 +878,15 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 
     corners_matcher_->AnalyzeFrame(frame_ind, image);
 
-    std::vector<std::pair<SalPntId, CornersMatcherBlobId>> matched_sal_pnts;
+    std::vector<std::pair<SalPntId, CornerCorrespond>> matched_sal_pnts;
     corners_matcher_->MatchSalientPoints(*this, GetSalientPoints(), frame_ind, image, &matched_sal_pnts);
 
     std::vector<std::pair<SalPntId, suriko::Point2f>> matched_sal_pnt_to_corner;
 
     // propagate result of matching to salient points
-    for (auto [sal_pnt_id, blob_id] : matched_sal_pnts)
+    for (auto [sal_pnt_id, corresp] : matched_sal_pnts)
     {
-        Point2f templ_center = corners_matcher_->GetBlobCoord(blob_id);
+        Point2f templ_center = corresp.templ_center;
         TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
 
         // (non-matched salient points are processed later)
@@ -879,7 +903,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
 
     // construct the set of salient points, visible in the current frame
     std::vector<SalPntId> latest_frame_sal_pnt_ids;
-    for (auto[sal_pnt_id, blob_id] : matched_sal_pnts)
+    for (auto[sal_pnt_id, corresp] : matched_sal_pnts)
     {
         TrackedSalientPoint& sal_pnt = GetSalientPoint(sal_pnt_id);
         if (sal_pnt.IsDetected())
@@ -1810,50 +1834,34 @@ void DavisonMonoSlam::FinishFrameStats(size_t frame_ind)
 }
 
 size_t DavisonMonoSlam::RecruitNewSalientPoints(size_t frame_ind, const Picture& image,
-    const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts)
+    const std::vector<std::pair<SalPntId, CornerCorrespond>>& matched_sal_pnts)
 {
     // eagerly try allocate new salient points
-    std::vector<CornersMatcherBlobId> new_blobs;
-    this->corners_matcher_->RecruitNewSalientPoints(*this, GetSalientPoints(), matched_sal_pnts, frame_ind, image, &new_blobs);
-    if (new_blobs.empty())
+    std::vector<CornerVicinity> vics;
+    this->corners_matcher_->RecruitNewCorners(*this, GetSalientPoints(), frame_ind, image, sal_pnt_templ_size_, &vics);
+    if (vics.empty())
         return 0;
 
     CameraStateVars cam_state;
     LoadCameraStateVarsFromArray(Span(estim_vars_, kCamStateComps), &cam_state);
 
-    for (auto blob_id : new_blobs)
+    for (auto vic : vics)
     {
-        if (debug_max_sal_pnt_coun_.has_value() &&
-            SalientPointsCount() >= debug_max_sal_pnt_coun_.value()) break;
+        if (debug_max_sal_pnt_count_.has_value() &&
+            SalientPointsCount() >= debug_max_sal_pnt_count_.value()) break;
 
-        Point2f coord = corners_matcher_->GetBlobCoord(blob_id);
+        Point2f coord = vic.coord;
 
         std::optional<Scalar> pnt_inv_dist_gt;
         if (sal_pnt_perfect_init_inv_dist_)
         {
-            pnt_inv_dist_gt = corners_matcher_->GetSalientPointGroundTruthInvDepth(blob_id);
-        }
-
-        TemplMatchStats templ_stats{};
-        Picture templ_img = corners_matcher_->GetBlobTemplate(blob_id, image, sal_pnt_templ_size_);
-        if (!templ_img.gray.empty())
-        {
-            // calculate the statistics of this template (mean and variance), used for matching templates
-            auto templ_roi = Recti{ 0, 0, sal_pnt_templ_size_.width, sal_pnt_templ_size_.height };
-            Scalar templ_mean = GetGrayImageMean(templ_img.gray, templ_roi);
-            Scalar templ_sum_sqr_diff = GetGrayImageSumSqrDiff(templ_img.gray, templ_roi, templ_mean);
-
-            // correlation coefficient is undefined for templates with zero variance (because variance goes into the denominator of corr coef)
-            if (IsClose(0, templ_sum_sqr_diff))
-                continue;
-
-            templ_stats.templ_mean_ = templ_mean;
-            templ_stats.templ_sqrt_sum_sqr_diff_ = std::sqrt(templ_sum_sqr_diff);
+            pnt_inv_dist_gt = vic.pnt_inv_dist_gt;
         }
 
         // current camera frame is the 'first' camera where a salient point is seen the first time: first_cam=cur_cam
-        SalPntId sal_pnt_id = AddSalientPoint(frame_ind, cam_state, coord, templ_img, templ_stats, pnt_inv_dist_gt);
-        corners_matcher_->OnSalientPointIsAssignedToBlobId(sal_pnt_id, blob_id, image);
+        TrackedSalientPoint& sal_pnt = AddSalientPoint(frame_ind, cam_state, coord, vic.templ_img, pnt_inv_dist_gt);
+
+        corners_matcher_->OnSalientPointIsAssignedToVicinity(vic, &sal_pnt);
     }
 
     if (kSurikoDebug) CheckCameraAndSalientPointsCovs(estim_vars_, estim_vars_covar_);  // TODO: seems unnecessary
@@ -1861,7 +1869,7 @@ size_t DavisonMonoSlam::RecruitNewSalientPoints(size_t frame_ind, const Picture&
     // now the estimated variables are changed, the dependent predicted variables must be updated too
     predicted_estim_vars_.resizeLike(estim_vars_);
     predicted_estim_vars_covar_.resizeLike(estim_vars_covar_);
-    return new_blobs.size();
+    return vics.size();
 }
 
 void DavisonMonoSlam::PredictStateAndCovariance()
@@ -2594,9 +2602,8 @@ void DavisonMonoSlam::GetDefaultXyzSalientPointCovarOrConvertFromSpherical(
 
 }
 
-DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner_pix,
-    Picture templ_img, TemplMatchStats templ_stats,
-    std::optional<Scalar> pnt_inv_dist_gt)
+TrackedSalientPoint& DavisonMonoSlam::AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner_pix,
+    Picture templ_img, std::optional<Scalar> pnt_inv_dist_gt)
 {
     size_t old_sal_pnts_count = SalientPointsCount();
     size_t sal_pnt_var_ind = SalientPointOffset(old_sal_pnts_count);
@@ -2604,7 +2611,6 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     AllocateAndInitStateForNewSalientPoint(sal_pnt_var_ind, cam_state, corner_pix, pnt_inv_dist_gt);
 
     auto new_sal_pnt = std::make_unique<TrackedSalientPoint>();
-    SalPntId sal_pnt_id = SalPntId(new_sal_pnt.get());  // get address of salient point before it is moved
 
     //
     suriko::Point2i top_left = TemplateTopLeftInt(corner_pix);
@@ -2622,7 +2628,6 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     sal_pnt.initial_templ_top_left_pix_debug_ = top_left;
     sal_pnt.initial_templ_bgr_debug = std::move(templ_img.bgr_debug);
 #endif
-    sal_pnt.templ_stats = templ_stats;
 
     // put salient point to the back of tracked points, but before the deleted points
     auto ins_pos_rit = sal_pnts_.rbegin();
@@ -2633,7 +2638,7 @@ DavisonMonoSlam::SalPntId DavisonMonoSlam::AddSalientPoint(size_t frame_ind, con
     estim_sal_pnts_count_++;
 
     if (kSurikoDebug) CheckSalientPoint(estim_vars_, estim_vars_covar_, sal_pnt, true);
-    return sal_pnt_id;
+    return sal_pnt;
 }
 
 std::optional<suriko::Point2f> DavisonMonoSlam::GetDetectedSalientTemplCenter(SalPntId sal_pnt_id) const

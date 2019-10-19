@@ -2,6 +2,7 @@
 #include <set>
 #include <vector>
 #include <memory>
+#include <cstddef>  // std::byte
 #include <set>
 #include <shared_mutex>
 #include <functional>
@@ -86,8 +87,9 @@ namespace
 }
 
 /// Opaque data to represent detected in image corner.
-struct CornersMatcherBlobId
+struct CornerCorrespond
 {
+    Point2f templ_center;
     size_t Ind; // possibly, index of blob in the blobs array
 };
 
@@ -106,6 +108,19 @@ struct TemplMatchStats
     Scalar templ_sqrt_sum_sqr_diff_;  // the part of denominator in formula of a correlation coefficient (=sqrt(sum))
 };
 
+/// Surrounding pixels around some corner. It is either 32x32 patch of pixels or 256 bit ORB descriptor.
+struct CornerVicinity
+{
+    Point2f coord;
+    std::array<std::byte, 32> orb_descr;  // the ORB hash, which identifies the blob
+    TemplMatchStats templ_stats;
+    Picture templ_img;  // used in visualization of features
+
+    std::optional<size_t> virtual_blob_ind;  // virtual scenarios associate id with corner's neighbourhood
+    std::optional<Scalar> pnt_inv_dist_gt;
+};
+
+
 /// Hints the source from which template's center is derived.
 enum class SalPntTemplCenterDeriveFrom
 {
@@ -116,6 +131,9 @@ enum class SalPntTemplCenterDeriveFrom
 
 // Internal
 suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center, suriko::Sizei templ_size);
+
+/// popcount on bits, represented by the array of bytes.
+size_t BitsHammingDistance(gsl::span<const std::byte> s1, gsl::span<const std::byte> s2);
 
 /// Represents the portion of the image, which is the projection of salient image into a camera.
 struct TrackedSalientPoint
@@ -141,6 +159,8 @@ struct TrackedSalientPoint
     size_t prev_detection_frame_ind_debug_ = static_cast<size_t>(-1);  // the latest frame, where the sal pnt was detected
     suriko::Point2f prev_detection_templ_center_pix_debug_ = suriko::Point2f{-1, -1};  // in pixels
 #endif
+
+    std::array<std::byte, 32> corner_orb_descr_;  // the ORB hash, which identifies the blob
 
     // As the template of the image, related to this salient point, doesn't change during tracking,
     // we may cache some related statistics.
@@ -200,6 +220,7 @@ inline bool operator==(SalPntId x, SalPntId y) { return x.sal_pnt_as_bits_intern
 inline bool operator!=(SalPntId x, SalPntId y) { return !operator==(x,y); }
 
 class DavisonMonoSlam;
+struct TrackedSalientPoint;
 
 /// We separate the tracking of existing salient points, for which the position in the latest
 /// frame is known, from occasional search for extra salient points.
@@ -215,32 +236,23 @@ public:
     virtual ~CornersMatcherBase() = default;
 
     virtual void AnalyzeFrame(size_t frame_ind, const Picture& image) {}
-    virtual void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const Picture& image) {}
 
     virtual void MatchSalientPoints(
         const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
         size_t frame_ind,
         const Picture& image,
-        std::vector<std::pair<SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) {}
+        std::vector<std::pair<SalPntId, CornerCorrespond>>* matched_sal_pnts) {}
 
-    virtual void RecruitNewSalientPoints(
+    virtual void RecruitNewCorners(
         const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
-        const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         size_t frame_ind,
         const Picture& image,
-        std::vector<CornersMatcherBlobId>* new_blob_ids) {}
+        suriko::Sizei sal_pnt_templ_size,
+        std::vector<CornerVicinity>* new_blob_ids) {}
 
-    virtual suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) = 0;
-
-    /// Gets rectangle around the given blob of requested size.
-    /// @param templ_size the size of requested image portion
-    virtual Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image, suriko::Sizei templ_size) {
-        return Picture{};
-    }
-
-    virtual std::optional<Scalar> GetSalientPointGroundTruthInvDepth(CornersMatcherBlobId blob_id) { return std::nullopt; };
+    virtual void OnSalientPointIsAssignedToVicinity(CornerVicinity corner_vicinity, TrackedSalientPoint* sal_pnt) {}
 
     void SetSuppressObservations(bool value) { suppress_observations_ = value; }
 };
@@ -487,7 +499,7 @@ public:
     // [SfM_EKF_Civera para 3.7.2 on page 50]
     Scalar covar2D_to_ellipse_confidence_ = 0.95f;  // {confidence interval, chi-square}={95%,5.99146}, {99%,9.21034}
 
-    std::optional<int> debug_max_sal_pnt_coun_;
+    std::optional<int> debug_max_sal_pnt_count_;
 
     // camera
     CameraIntrinsicParams cam_intrinsics_{};
@@ -764,7 +776,7 @@ private:
     void EnsureNonnegativeStateVariance(EigenDynMat* src_estim_vars_covar);
     void OnEstimVarsChanged(size_t frame_ind);
     void FinishFrameStats(size_t frame_ind);
-    size_t RecruitNewSalientPoints(size_t frame_ind, const Picture& image, const std::vector<std::pair<SalPntId, CornersMatcherBlobId>>& matched_sal_pnts);
+    size_t RecruitNewSalientPoints(size_t frame_ind, const Picture& image, const std::vector<std::pair<SalPntId, CornerCorrespond>>& matched_sal_pnts);
     void PredictStateAndCovariance();
 
     // Updates the centers of detected template.
@@ -797,9 +809,8 @@ private:
         Eigen::Matrix<Scalar, kXyzSalientPointComps, kXyzSalientPointComps>* xyz_sal_pnt_autocovar,
         Eigen::Matrix<Scalar, kXyzSalientPointComps, Eigen::Dynamic>* xyz_sal_pnt_to_other_covar) const;
 
-    SalPntId AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner, 
-        Picture templ_img, TemplMatchStats templ_stats,
-        std::optional<Scalar> pnt_inv_dist_gt);
+    TrackedSalientPoint& AddSalientPoint(size_t frame_ind, const CameraStateVars& cam_state, suriko::Point2f corner,
+        Picture templ_img, std::optional<Scalar> pnt_inv_dist_gt);
 
     gsl::span<Scalar> EstimVarsCamPosW();
     Eigen::Matrix<Scalar, kQuat4, 1> EstimVarsCamQuat() const;

@@ -134,6 +134,11 @@ struct RectProto
     int Bottom() const { return y + height; }
     auto TopLeft() const { return suriko::Point2i{ x, y }; }
     auto BotRight() const { return suriko::Point2i{ x + width, y + height }; }
+    auto Contains(F hitx, F hity) const
+    {
+        return x <= hitx && hitx <= x + width &&
+               y <= hity && hity <= y + height;
+    }
 };
 
 template <typename F>

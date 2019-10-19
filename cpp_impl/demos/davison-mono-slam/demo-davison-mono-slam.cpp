@@ -316,7 +316,7 @@ public:
         const std::set<SalPntId>& tracking_sal_pnts,
         size_t frame_ind,
         const Picture& image,
-        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
+        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornerCorrespond>>* matched_sal_pnts) override
     {
         if (suppress_observations_)
             return;
@@ -341,20 +341,18 @@ public:
                 continue;
             }
 
-            // the tracker is interested in this blob
-            size_t blob_id = i;
-            auto sal_pnt_to_coord = std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_id });
+            auto sal_pnt_to_coord = std::make_pair(sal_pnt_id, CornerCorrespond{ blob_info.Coord });
             matched_sal_pnts->push_back(sal_pnt_to_coord);
         }
     }
 
-    void RecruitNewSalientPoints(
+    void RecruitNewCorners(
         const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
-        const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         size_t frame_ind,
         const Picture& image,
-        std::vector<CornersMatcherBlobId>* new_blob_ids) override
+        suriko::Sizei sal_pnt_templ_size,
+        std::vector<CornerVicinity>* new_blob_ids) override
     {
         if (suppress_observations_)
             return;
@@ -389,24 +387,25 @@ public:
             if (blob_info.SalPntIdInTracker.HasId())
                 continue;
 
-            // the tracker is interested in this blob
-            size_t blob_id = i;
-            new_blob_ids->push_back(CornersMatcherBlobId {blob_id});
+            CornerVicinity vic;
+            vic.virtual_blob_ind = i;
+            vic.coord = blob_info.Coord;
+            vic.pnt_inv_dist_gt = blob_info.GTInvDepth;
+            new_blob_ids->push_back(vic);
         }
     }
 
-    void OnSalientPointIsAssignedToBlobId(SalPntId sal_pnt_id, CornersMatcherBlobId blob_id, const Picture& image) override
+    void OnSalientPointIsAssignedToVicinity(CornerVicinity corner_vicinity, TrackedSalientPoint* sal_pnt) override
     {
-        size_t frag_id = detected_blobs_[blob_id.Ind].FragmentId;
+        BlobInfo& blob_info = detected_blobs_[corner_vicinity.virtual_blob_ind.value()];
+
+        // entire_map's fragment.user_obj point to the salien point id
+        size_t frag_id = blob_info.FragmentId;
         SalientPointFragment& frag = entire_map_.GetSalientPointNew(frag_id);
-        
+
+        SalPntId sal_pnt_id{ sal_pnt };
         static_assert(sizeof sal_pnt_id <= sizeof frag.user_obj, "SalPntId must fit into UserObject");
         std::memcpy(&frag.user_obj, &sal_pnt_id, sizeof(sal_pnt_id));
-    }
-
-    suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) override
-    {
-        return detected_blobs_[blob_id.Ind].Coord;
     }
 
     void SetTemplCenterDetectionNoiseStd(float value)
@@ -416,37 +415,54 @@ public:
             templ_center_detection_noise_distr_ = std::normal_distribution<float>{ 0, value };
     }
     
-    std::optional<Scalar> GetSalientPointGroundTruthInvDepth(CornersMatcherBlobId blob_id) override
-    {
-        return detected_blobs_[blob_id.Ind].GTInvDepth;
-    }
-
     const std::vector<BlobInfo>& DetectedBlobs() const { return detected_blobs_; }
 };
 
 #if defined(SRK_HAS_OPENCV)
 
+enum class MatchCornerImpl
+{
+    Templ,    // match patches of images (original Monoslam strategy)
+    OrbDescr  // match ORB descriptors
+};
+
 class ImageTemplCornersMatcher : public CornersMatcherBase
 {
     cv::Ptr<cv::ORB> detector_;
-    std::vector<cv::KeyPoint> new_keypoints_;
+    std::vector<cv::KeyPoint> keypoints_on_got_frame_;
+    cv::Mat keypoints_on_got_frame_debug_;  // debug, for visualization of detected ORB features
 public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
+    std::optional<suriko::Sizei> min_search_rect_size_;
+
+    MatchCornerImpl match_corners_impl_ = MatchCornerImpl::Templ;
+
+    // impl=match templates
+    std::optional<Scalar> min_templ_corr_coeff_;
+
+    // impl=match ORB descriptors
+    int detect_orb_features_per_frame_ = 500;
+
+    // Small value (<32) will lead to mismatch of slightly changed corners.
+    // Corners quickly become unobserved and later deleted.
+    // Large values (>96) will lead to corners be matched with wrong corners.
+    // Corners become unstable and drift from frame to frame.
+    size_t match_orb_descr_max_hamming_dist_ = 64;  //!< [0;256] orb features with signature's distance in [0; value] range are matched
+
+    //
     std::function<void(DavisonMonoSlam&, SalPntId, cv::Mat*)> draw_sal_pnt_fun_;
     std::function<void(std::string_view, cv::Mat)> show_image_fun_;
-    std::optional<suriko::Sizei> min_search_rect_size_;
-    std::optional<Scalar> min_templ_corr_coeff_;
 public:
-    ImageTemplCornersMatcher()
+    ImageTemplCornersMatcher(int nfeatures = 50)
+    : detect_orb_features_per_frame_(nfeatures)
     {
-        int nfeatures = 50;
         detector_ = cv::ORB::create(nfeatures);
     }
 
 
     void AnalyzeFrame(size_t frame_ind, const Picture& image) override
     {
-        new_keypoints_.clear();
+        keypoints_on_got_frame_.clear();
 
         if (suppress_observations_) return;
     }
@@ -455,7 +471,7 @@ public:
     {
         bool success;
         suriko::Point2f center;
-        Scalar corr_coef;
+        std::optional<Scalar> corr_coef;  // used only in impl of matching by template
 
 #if defined(SRK_DEBUG)
         suriko::Point2i top_left;
@@ -463,7 +479,7 @@ public:
 #endif
     };
 
-    TemplateMatchResult MatchSalientPointTemplCenterInRect(const DavisonMonoSlam& mono_slam, const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
+    TemplateMatchResult FindMatchedTemplateCenterInRect(const DavisonMonoSlam& mono_slam, const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
     {
         Point2i search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
         const int search_radius_left = search_rect.width / 2;
@@ -613,7 +629,60 @@ public:
         return std::make_tuple(true, corner_bounds_i);
     }
 
-    std::optional<suriko::Point2f> MatchSalientTempl(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic)
+    TemplateMatchResult FindCorrespOrbDescrInRect(const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
+    {
+        SRK_ASSERT(match_corners_impl_ == MatchCornerImpl::OrbDescr);
+
+        std::vector<cv::KeyPoint> close_keypoints;
+        for (const cv::KeyPoint& kp : keypoints_on_got_frame_)
+        {
+            bool hit_search_rect =
+                search_rect.x <= kp.pt.x && kp.pt.x <= search_rect.Right() &&
+                search_rect.y <= kp.pt.y && kp.pt.y <= search_rect.Bottom();
+            if (hit_search_rect)
+                close_keypoints.push_back(kp);
+        }
+
+        cv::Mat close_keyp_img;
+        static bool debug_keypoints = false;
+        if (debug_keypoints)
+            cv::drawKeypoints(pic.gray, close_keypoints, close_keyp_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+
+        // HOTSPOT: computing ORB descriptor is very slow
+        // Also, we can't take the keypoint, closest to the center of a search rect, because the closest corner
+        // may actually be a wrong match. So the correspondence must be based on the comparison of descriptors.
+        cv::Mat descr_per_row;
+        detector_->compute(pic.gray, close_keypoints, descr_per_row);
+
+        struct IndInfo { size_t close_ind; size_t dist; };
+        IndInfo closest_neighbour{ (size_t)-1, std::numeric_limits<size_t>::max() };
+        for (size_t i = 0; i < close_keypoints.size(); ++i)
+        {
+            auto pdescr = reinterpret_cast<std::byte*>(descr_per_row.row((int)i).data);
+            auto neigh = gsl::make_span<const std::byte>(pdescr, (size_t)descr_per_row.cols);
+            size_t descr_dist = BitsHammingDistance(sal_pnt.corner_orb_descr_, neigh);
+
+            static bool print_each = false;
+            if (print_each) VLOG(4) << "descr_dist=" << descr_dist;
+
+            if (descr_dist < closest_neighbour.dist)
+                closest_neighbour = IndInfo{ i, descr_dist };
+        }
+
+        static bool print_best = false;
+        if (print_best) VLOG(4) << "best descr_dist=" << closest_neighbour.dist;
+
+        TemplateMatchResult match_result{ false };
+        if (closest_neighbour.dist < match_orb_descr_max_hamming_dist_)
+        {
+            const cv::KeyPoint& match_kp = close_keypoints[closest_neighbour.close_ind];
+            match_result.success = true;
+            match_result.center = suriko::Point2f{ (Scalar)match_kp.pt.x, (Scalar)match_kp.pt.y };
+        }
+        return match_result;
+    }
+
+    std::optional<suriko::Point2f> FindMatchedCornerInFrame(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic)
     {
         auto [op, search_rect_unbounded] = PredictSalientPointSearchRect(mono_slam, sal_pnt_id);
         if (!op)
@@ -643,7 +712,12 @@ public:
 
         const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
-        TemplateMatchResult match_result = MatchSalientPointTemplCenterInRect(mono_slam, sal_pnt, pic, search_rect);
+        TemplateMatchResult match_result;
+        if (match_corners_impl_ == MatchCornerImpl::OrbDescr)
+            match_result = FindCorrespOrbDescrInRect(sal_pnt, pic, search_rect);
+        else
+            match_result = FindMatchedTemplateCenterInRect(mono_slam, sal_pnt, pic, search_rect);
+
         if (!match_result.success)
             return std::nullopt;
 
@@ -671,7 +745,9 @@ public:
         }
 
         // skip a match with low correlation coefficient
-        if (min_templ_corr_coeff_.has_value() && match_result.corr_coef < min_templ_corr_coeff_.value())
+        if (min_templ_corr_coeff_.has_value() &&
+            match_result.corr_coef.has_value() &&
+            match_result.corr_coef.value() < min_templ_corr_coeff_.value())
         {
             static bool debug_matching = false;
             if (debug_matching)
@@ -680,7 +756,7 @@ public:
                 static_assert(std::is_same_v<decltype(predicted_center), MeanAndCov2D>);
                 SRK_ASSERT(op);
                 VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
-                    << " as undetected because corr_coef=" << match_result.corr_coef
+                    << " as undetected because corr_coef=" << match_result.corr_coef.value()
                     << " is less than thr=" << min_templ_corr_coeff_.value() << ","
                     << " predicted center_pix=[" << predicted_center.mean[0] << "," << predicted_center.mean[1] << "]";
             }
@@ -692,7 +768,7 @@ public:
         if (debug_calls)
         {
             int max_core_match_calls = search_rect.width * search_rect.height;
-            LOG(INFO) << "match_err_per_pixel=" << match_result.corr_coef
+            LOG(INFO) << "match_err_per_pixel=" << match_result.corr_coef.value_or(-1.0f)
                 << " match_calls=" << match_result.executed_match_templ_calls << "/" << max_core_match_calls
                 << "(" << match_result.executed_match_templ_calls / (float)max_core_match_calls << ")";
         }
@@ -706,15 +782,24 @@ public:
         const std::set<SalPntId>& tracking_sal_pnts,
         size_t frame_ind,
         const Picture& image,
-        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>* matched_sal_pnts) override
+        std::vector<std::pair<DavisonMonoSlam::SalPntId, CornerCorrespond>>* matched_sal_pnts) override
     {
         if (suppress_observations_) return;
+
+        if (match_corners_impl_ == MatchCornerImpl::OrbDescr)
+        {
+            detector_->detect(image.gray, keypoints_on_got_frame_);  // keypoints are sorted by ascending size [W,H]
+
+            static bool debug_keypoints = false;
+            if (debug_keypoints)
+                cv::drawKeypoints(image.gray, keypoints_on_got_frame_, keypoints_on_got_frame_debug_, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+        }
 
         for (auto sal_pnt_id : tracking_sal_pnts)
         {
             const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
-            std::optional<suriko::Point2f> match_pnt_center = MatchSalientTempl(mono_slam, sal_pnt_id, image);
+            std::optional<suriko::Point2f> match_pnt_center = FindMatchedCornerInFrame(mono_slam, sal_pnt_id, image);
             bool is_lost = !match_pnt_center.has_value();
             if (is_lost)
                 continue;
@@ -737,25 +822,29 @@ public:
                 }
             }
 #endif
-            size_t blob_ind = new_keypoints_.size();
-            cv::KeyPoint kp{};
-            kp.pt = cv::Point2f{ static_cast<float>(new_center.Mat()[0]), static_cast<float>(new_center.Mat()[1]) };
-            new_keypoints_.push_back(kp);
 
-            matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornersMatcherBlobId{ blob_ind }));
+            matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornerCorrespond{ new_center }));
         }
     }
 
-    void RecruitNewSalientPoints(
+    void RecruitNewCorners(
         const DavisonMonoSlam& mono_slam,
         const std::set<SalPntId>& tracking_sal_pnts,
-        const std::vector<std::pair<DavisonMonoSlam::SalPntId, CornersMatcherBlobId>>& matched_sal_pnts,
         size_t frame_ind,
         const Picture& image,
-        std::vector<CornersMatcherBlobId>* new_blob_ids) override
+        suriko::Sizei sal_pnt_templ_size,
+        std::vector<CornerVicinity>* new_blob_ids) override
     {
         std::vector<cv::KeyPoint> keypoints;
-        detector_->detect(image.gray, keypoints);  // keypoints are sorted by ascending size [W,H]
+        if (match_corners_impl_ == MatchCornerImpl::OrbDescr)
+        {
+            // in ORB impl we detect keypoints on every frame and the keypoints are already found
+            keypoints = keypoints_on_got_frame_;
+        }
+        else
+        {
+            detector_->detect(image.gray, keypoints);  // keypoints are sorted by ascending size [W,H]
+        }
 
         // reorder the features from high quality to low
         // this will lead to deterministic creation and matching of image features
@@ -766,9 +855,6 @@ public:
         static bool debug_keypoints = false;
         if (debug_keypoints)
             cv::drawKeypoints(image.gray, keypoints, keyp_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
-
-        cv::Mat descr_per_row;
-        detector_->compute(image.gray, keypoints, descr_per_row);
 
         std::vector<cv::KeyPoint> sparse_keypoints;
         Scalar closest_templ_min_dist = mono_slam.ClosestSalientPointTemplateMinDistance();
@@ -813,16 +899,52 @@ public:
             }
         };
 
-        new_keypoints_.clear();
-        filter_out_close_to_existing(sparse_keypoints, closest_templ_min_dist, &new_keypoints_);
+        std::vector<cv::KeyPoint> new_keypoints;
+        filter_out_close_to_existing(sparse_keypoints, closest_templ_min_dist, &new_keypoints);
 
         cv::Mat img_no_closest;
         if (debug_keypoints)
-            cv::drawKeypoints(image.gray, new_keypoints_, img_no_closest, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+            cv::drawKeypoints(image.gray, new_keypoints, img_no_closest, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
-        for (size_t i=0; i< new_keypoints_.size(); ++i)
+        cv::Mat descr_per_row;
+        if (match_corners_impl_ == MatchCornerImpl::OrbDescr)
+            detector_->compute(image.gray, new_keypoints, descr_per_row);
+
+        for (size_t i=0; i< new_keypoints.size(); ++i)
         {
-            new_blob_ids->push_back(CornersMatcherBlobId{i});
+            cv::KeyPoint kp = new_keypoints[i];
+
+            TemplMatchStats templ_stats{};
+            Picture templ_img = GetBlobTemplate(kp, image, sal_pnt_templ_size);
+            if (templ_img.gray.empty())
+                continue;
+
+            CornerVicinity vic;
+            vic.coord = GetBlobCoord(kp);
+            vic.templ_img = templ_img;
+
+            if (match_corners_impl_ == MatchCornerImpl::OrbDescr)
+            {
+                auto src = reinterpret_cast<std::byte*>(descr_per_row.row((int)i).data);
+                std::copy_n(src, vic.orb_descr.size(), vic.orb_descr.data());
+            }
+            else
+            {
+                // calculate the statistics of this template (mean and variance), used for matching templates
+                auto templ_roi = Recti{ 0, 0, sal_pnt_templ_size.width, sal_pnt_templ_size.height };
+                Scalar templ_mean = GetGrayImageMean(templ_img.gray, templ_roi);
+                Scalar templ_sum_sqr_diff = GetGrayImageSumSqrDiff(templ_img.gray, templ_roi, templ_mean);
+
+                // correlation coefficient is undefined for templates with zero variance (because variance goes into the denominator of corr coef)
+                if (IsClose(0, templ_sum_sqr_diff))
+                    continue;
+
+                templ_stats.templ_mean_ = templ_mean;
+                templ_stats.templ_sqrt_sum_sqr_diff_ = std::sqrt(templ_sum_sqr_diff);
+                vic.templ_stats = templ_stats;
+            }
+
+            new_blob_ids->push_back(vic);
         }
     }
 
@@ -849,17 +971,16 @@ public:
         }
     }
 
-    suriko::Point2f GetBlobCoord(CornersMatcherBlobId blob_id) override
+    suriko::Point2f GetBlobCoord(const cv::KeyPoint& kp)
     {
-        const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
         // some pixels already have fractional X or Y coordinate, like 213.2, so return it without changes
         return suriko::Point2f{ kp.pt.x, kp.pt.y };
     }
 
-    Picture GetBlobTemplate(CornersMatcherBlobId blob_id, const Picture& image, suriko::Sizei templ_size) override
+    /// Gets rectangle around the given blob of requested size.
+    /// @param templ_size the size of requested image portion
+    Picture GetBlobTemplate(const cv::KeyPoint& kp, const Picture& image, suriko::Sizei templ_size)
     {
-        const cv::KeyPoint& kp = new_keypoints_[blob_id.Ind];
-
         int rad_x_int = templ_size.width / 2;
         int rad_y_int = templ_size.height / 2;
 
@@ -881,6 +1002,19 @@ public:
         templ.bgr_debug = templ_mat;
 #endif
         return templ;
+    }
+
+    void OnSalientPointIsAssignedToVicinity(CornerVicinity corner_context, TrackedSalientPoint* sal_pnt) override
+    {
+        // matcher saves its payload in the salient point itself
+        if (match_corners_impl_ == MatchCornerImpl::OrbDescr)
+        {
+            std::copy_n(corner_context.orb_descr.begin(), corner_context.orb_descr.size(), sal_pnt->corner_orb_descr_.data());
+        }
+        else
+        {
+            sal_pnt->templ_stats = corner_context.templ_stats;
+        }
     }
 };
 #endif
@@ -1078,6 +1212,9 @@ DEFINE_int32(monoslam_update_impl, 0, "");
 DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
 DEFINE_int32(monoslam_max_new_blobs_per_frame, 1, "");
 DEFINE_double(monoslam_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
+DEFINE_int32(monoslam_match_corners_impl, 1, "1 to match image patches, 2 to match ORB features");
+DEFINE_int32(monoslam_detect_orb_features_per_frame, 500, "# of ORB features to create per frame");
+DEFINE_int32(monoslam_match_orb_descr_max_hamming_distance, 64, "ORB descriptors with Hamming distance in [0;value] are matched");
 DEFINE_int32(monoslam_templ_width, 15, "width of template");
 DEFINE_int32(monoslam_templ_min_search_rect_width, 7, "the min width of a rectangle when searching for tempplate in the next frame");
 DEFINE_int32(monoslam_templ_min_search_rect_height, 7, "");
@@ -1504,7 +1641,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.mono_slam_update_impl_ = FLAGS_monoslam_update_impl;
     mono_slam.fix_estim_vars_covar_symmetry_ = FLAGS_monoslam_fix_estim_vars_covar_symmetry;
     if (FLAGS_monoslam_debug_max_sal_pnt_count != -1)
-        mono_slam.debug_max_sal_pnt_coun_ = FLAGS_monoslam_debug_max_sal_pnt_count;
+        mono_slam.debug_max_sal_pnt_count_ = FLAGS_monoslam_debug_max_sal_pnt_count;
     if (demo_data_source == DemoDataSource::kVirtualScene)
     {
         std::optional<suriko::Point3> cam_vel_tracker;
@@ -1601,7 +1738,11 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
-        auto corners_matcher = std::make_shared<ImageTemplCornersMatcher>();
+        size_t detect_orb_features_per_frame = FLAGS_monoslam_detect_orb_features_per_frame;
+
+        auto corners_matcher = std::make_shared<ImageTemplCornersMatcher>(detect_orb_features_per_frame);
+        corners_matcher->match_corners_impl_ = FLAGS_monoslam_match_corners_impl == 2 ? MatchCornerImpl::OrbDescr : MatchCornerImpl::Templ;
+        corners_matcher->match_orb_descr_max_hamming_dist_ = FLAGS_monoslam_match_orb_descr_max_hamming_distance;
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_stop_on_sal_pnt_moved_too_far;
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };
         if (FLAGS_monoslam_templ_min_corr_coeff > -1)
