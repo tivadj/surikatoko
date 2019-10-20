@@ -828,7 +828,7 @@ void SceneVisualizationPangolinGui::OnKeyPressed(int key)
 
     // check if worker request finishing UI thread
     const auto& ui_params = s_ui_params_;
-    if (ui_params.mono_slam->in_multi_threaded_mode_)
+    if (ui_params.mono_slam->ui_in_separate_thread_)
     {
         if (multi_threaded_.form_state == FormState::WaitKey &&
             ui_params.worker_chat->ui_wait_key_predicate_(key))
@@ -850,7 +850,7 @@ void SceneVisualizationPangolinGui::OnKeyPressed(int key)
     switch (key)
     {
     case pangolin::PANGO_KEY_ESCAPE:
-        if (ui_params.mono_slam->in_multi_threaded_mode_)
+        if (ui_params.mono_slam->ui_in_separate_thread_)
         {
             {
                 std::lock_guard<std::mutex> lk(ui_params.worker_chat->the_mutex);

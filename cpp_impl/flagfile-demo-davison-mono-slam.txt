@@ -8,7 +8,6 @@
 #--demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-scenario01.json
 
 # Controller
---ctrl_multi_threaded_mode=false
 --ctrl_wait_after_each_frame=false
 --ctrl_visualize_during_processing=true
 --ctrl_visualize_after_processing=true
@@ -28,6 +27,7 @@
 --monoslam_cam_ang_vel_std=0
 
 #
+--monoslam_force_sequential_engine=false
 --monoslam_sal_pnt_negative_inv_rho_substitute=-1
 # 1=all, 2=one observation, 3=one component of one observation
 --monoslam_update_impl=4

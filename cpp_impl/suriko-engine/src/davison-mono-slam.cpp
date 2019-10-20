@@ -230,7 +230,7 @@ void DavisonMonoSlam::CopyFrom(const DavisonMonoSlam& src)
 
     d.estim_sal_pnts_count_ = src.estim_sal_pnts_count_;
 
-    d.in_multi_threaded_mode_ = src.in_multi_threaded_mode_;
+    d.ui_in_separate_thread_ = src.ui_in_separate_thread_;
     d.seconds_per_frame_ = src.seconds_per_frame_;
 
     d.process_noise_linear_velocity_std_ = src.process_noise_linear_velocity_std_;
@@ -911,7 +911,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     }
 
     std::unique_lock<std::shared_mutex> lk(predicted_estim_vars_mutex_, std::defer_lock);
-    if (in_multi_threaded_mode_)
+    if (ui_in_separate_thread_)
         lk.lock();
 
     if (latest_frame_sal_pnt_ids.empty())
@@ -955,7 +955,7 @@ void DavisonMonoSlam::ProcessFrame(size_t frame_ind, const Picture& image)
     PredictStateAndCovariance();
     EnsureNonnegativeStateVariance(&predicted_estim_vars_covar_);
 
-    if (in_multi_threaded_mode_)
+    if (ui_in_separate_thread_)
         lk.unlock();
 
     static bool debug_predicted_vars = false;

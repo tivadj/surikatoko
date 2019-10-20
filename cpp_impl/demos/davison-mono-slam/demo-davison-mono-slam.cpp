@@ -12,6 +12,7 @@
 #include <tuple>
 #include <chrono>
 #include <thread>
+#include <execution>
 #include <condition_variable>
 #include <sstream>
 #include <filesystem>
@@ -449,6 +450,8 @@ public:
     // Corners become unstable and drift from frame to frame.
     size_t match_orb_descr_max_hamming_dist_ = 64;  //!< [0;256] orb features with signature's distance in [0; value] range are matched
 
+    bool force_sequential_execution_ = false;
+
     //
     std::function<void(DavisonMonoSlam&, SalPntId, cv::Mat*)> draw_sal_pnt_fun_;
     std::function<void(std::string_view, cv::Mat)> show_image_fun_;
@@ -479,7 +482,7 @@ public:
 #endif
     };
 
-    TemplateMatchResult FindMatchedTemplateCenterInRect(const DavisonMonoSlam& mono_slam, const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
+    TemplateMatchResult FindMatchedTemplateCenterInRect(const DavisonMonoSlam& mono_slam, const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect) const
     {
         Point2i search_center{ search_rect.x + search_rect.width / 2, search_rect.y + search_rect.height / 2 };
         const int search_radius_left = search_rect.width / 2;
@@ -617,7 +620,7 @@ public:
         return result;
     }
 
-    std::tuple<bool,Recti> PredictSalientPointSearchRect(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id)
+    std::tuple<bool,Recti> PredictSalientPointSearchRect(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id) const
     {
         auto [op_2D_ellip, corner_ellipse] = mono_slam.GetPredictedSalientPointProjectedUncertEllipse(sal_pnt_id);
         static_assert(std::is_same_v<decltype(corner_ellipse), RotatedEllipse2D>);
@@ -629,7 +632,7 @@ public:
         return std::make_tuple(true, corner_bounds_i);
     }
 
-    TemplateMatchResult FindCorrespOrbDescrInRect(const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect)
+    TemplateMatchResult FindCorrespOrbDescrInRect(const TrackedSalientPoint& sal_pnt, const Picture& pic, Recti search_rect) const
     {
         SRK_ASSERT(match_corners_impl_ == MatchCornerImpl::OrbDescr);
 
@@ -682,7 +685,7 @@ public:
         return match_result;
     }
 
-    std::optional<suriko::Point2f> FindMatchedCornerInFrame(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic)
+    std::optional<suriko::Point2f> FindMatchedCornerInFrame(const DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, const Picture& pic) const
     {
         auto [op, search_rect_unbounded] = PredictSalientPointSearchRect(mono_slam, sal_pnt_id);
         if (!op)
@@ -795,14 +798,16 @@ public:
                 cv::drawKeypoints(image.gray, keypoints_on_got_frame_, keypoints_on_got_frame_debug_, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
         }
 
-        for (auto sal_pnt_id : tracking_sal_pnts)
+        // HOTSPOT: finding correspondences between corners is slow
+        std::mutex match_corners_mutex;
+        auto match_fun = [this,&mono_slam,frame_ind,&image,&matched_sal_pnts,&match_corners_mutex](SalPntId sal_pnt_id) -> void
         {
             const TrackedSalientPoint& sal_pnt = mono_slam.GetSalientPoint(sal_pnt_id);
 
             std::optional<suriko::Point2f> match_pnt_center = FindMatchedCornerInFrame(mono_slam, sal_pnt_id, image);
             bool is_lost = !match_pnt_center.has_value();
             if (is_lost)
-                continue;
+                return;
 
             const auto& new_center = match_pnt_center.value();
 
@@ -818,13 +823,19 @@ public:
                     if (stop_on_sal_pnt_moved_too_far_)
                         SRK_ASSERT(false) << "sal pnt moved to far away";
                     else
-                        continue;
+                        return;
                 }
             }
 #endif
 
+            std::lock_guard<std::mutex> lk(match_corners_mutex);
             matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornerCorrespond{ new_center }));
-        }
+        };
+
+        if (force_sequential_execution_)
+            std::for_each(std::execution::seq, tracking_sal_pnts.begin(), tracking_sal_pnts.end(), match_fun);
+        else
+            std::for_each(std::execution::par, tracking_sal_pnts.begin(), tracking_sal_pnts.end(), match_fun);
     }
 
     void RecruitNewCorners(
@@ -1208,6 +1219,7 @@ DEFINE_double(monoslam_sal_pnt_inv_dist_std_if_gt, 0, "");
 
 DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
 DEFINE_double(monoslam_sal_pnt_negative_inv_rho_substitute, -1, "");
+DEFINE_bool(monoslam_force_sequential_engine, false, "True to perform sequential matching");
 DEFINE_int32(monoslam_update_impl, 0, "");
 DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
 DEFINE_int32(monoslam_max_new_blobs_per_frame, 1, "");
@@ -1236,7 +1248,7 @@ DEFINE_int32(ui_tight_loop_relaxing_delay_ms, 100, "");
 DEFINE_int32(ui_dots_per_uncert_ellipse, 12, "Number of dots to split uncertainty ellipse (4=rectangle)");
 DEFINE_double(ui_covar3D_to_ellipsoid_chi_square, 7.814f, "{confidence interval,chi-square}={68%,3.505},{95%,7.814},{99%,11.344}");
 
-DEFINE_bool(ctrl_multi_threaded_mode, false, "true for UI to work in a separated dedicated thread; false for UI to work inside worker's thread");
+constexpr bool FLAGS_ctrl_ui_in_separate_thread = false;  // TODO: to be removed, locking of predicted/updated state of a tracker is not implemented
 DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
 DEFINE_bool(ctrl_debug_skim_over, false, "overview the synthetic world without reconstruction");
 DEFINE_bool(ctrl_visualize_during_processing, true, "");
@@ -1625,7 +1637,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     DavisonMonoSlam mono_slam{ };
     if (!ApplyParamsFromConfigFile(&mono_slam, &config_reader))
         return 1;
-    mono_slam.in_multi_threaded_mode_ = FLAGS_ctrl_multi_threaded_mode;
+    mono_slam.ui_in_separate_thread_ = FLAGS_ctrl_ui_in_separate_thread;
     mono_slam.cam_intrinsics_ = cam_intrinsics;
     mono_slam.cam_distort_params_ = cam_distort_params;
     mono_slam.cam_enable_distortion_ = config_reader.GetValue<bool>("camera_enable_distortion").value_or(true);
@@ -1744,6 +1756,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         corners_matcher->match_corners_impl_ = FLAGS_monoslam_match_corners_impl == 2 ? MatchCornerImpl::OrbDescr : MatchCornerImpl::Templ;
         corners_matcher->match_orb_descr_max_hamming_dist_ = FLAGS_monoslam_match_orb_descr_max_hamming_distance;
         corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_stop_on_sal_pnt_moved_too_far;
+        corners_matcher->force_sequential_execution_ = FLAGS_monoslam_force_sequential_engine;
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };
         if (FLAGS_monoslam_templ_min_corr_coeff > -1)
             corners_matcher->min_templ_corr_coeff_ = static_cast<Scalar>(FLAGS_monoslam_templ_min_corr_coeff);
@@ -1805,7 +1818,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     auto pangolin_gui = SceneVisualizationPangolinGui::New(defer_ui_construction);  // used in single threaded mode
     if (FLAGS_ctrl_visualize_during_processing)
     {
-        if (FLAGS_ctrl_multi_threaded_mode)
+        if (FLAGS_ctrl_ui_in_separate_thread)
             ui_thread = std::thread(SceneVisualizationThread, ui_params);
         else
         {
@@ -2006,7 +2019,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             }
 #endif
 #if defined(SRK_HAS_PANGOLIN)
-            if (FLAGS_ctrl_multi_threaded_mode)
+            if (FLAGS_ctrl_ui_in_separate_thread)
             {
                 // check if UI requests the exit
                 std::lock_guard<std::mutex> lk(worker_chat->the_mutex);
@@ -2061,7 +2074,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                     // let a user observe the UI and signal back when to continue
 
                     int key = -1;
-                    if (FLAGS_ctrl_multi_threaded_mode)
+                    if (FLAGS_ctrl_ui_in_separate_thread)
                     {
                         std::unique_lock<std::mutex> ulk(worker_chat->the_mutex);
                         worker_chat->ui_message = UIChatMessage::UIWaitKey; // reset the waiting flag
@@ -2091,7 +2104,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
                 }
                 else
                 {
-                    if (FLAGS_ctrl_multi_threaded_mode) {}
+                    if (FLAGS_ctrl_ui_in_separate_thread) {}
                     else
                     {
                         // in single thread mode the controller executes the tracker and gui code sequentially in the same thread
@@ -2136,7 +2149,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #if defined(SRK_HAS_PANGOLIN)
     if (FLAGS_ctrl_visualize_after_processing)
     {
-        if (FLAGS_ctrl_multi_threaded_mode)
+        if (FLAGS_ctrl_ui_in_separate_thread)
         {
             if (!ui_thread.joinable())  // don't create thread second time
             {

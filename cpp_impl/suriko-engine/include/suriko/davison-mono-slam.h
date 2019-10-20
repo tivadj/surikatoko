@@ -438,7 +438,7 @@ private:
     size_t estim_sal_pnts_count_ = 0;  // number of salient points in error covariance matrix; this doesn't include deleted salient points
 
 public:
-    bool in_multi_threaded_mode_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
+    bool ui_in_separate_thread_ = false;  // true to expect the clients to read predicted vars from different thread; locks are used to protect from conflicting access
 
     // Civera used delta_t=1; Davison used delta_t=0.033333333 in original MonoSlam
     // Working configurations:
