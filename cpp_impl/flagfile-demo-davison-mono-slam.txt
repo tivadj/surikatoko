@@ -4,7 +4,8 @@
 # vmodule doesn't work on Windows
 #--vmodule=bundle*=4
 
---demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-imageseq.json
+#--demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-imageseq.json
+--demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-imageseq-freiburg.json
 #--demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-scenario01.json
 
 # Controller
@@ -36,14 +37,15 @@
 --monoslam_max_new_blobs_per_frame=-1
 --monoslam_match_blob_prob=-0.3
 --monoslam_fix_estim_vars_covar_symmetry=true
+
 # 1=match image patches, 2=match ORB descriptors
 --monoslam_match_corners_impl=1
---monoslam_detect_orb_features_per_frame=500
---monoslam_match_orb_descr_max_hamming_distance=64
+--monoslam_match_closest_corner_min_dist_pix=35
+--monoslam_match_stop_on_sal_pnt_moved_too_far=false
+--monoslam_match_detect_corners_per_frame=500
 --monoslam_templ_width=17
---monoslam_templ_min_corr_coeff=0.65
---monoslam_templ_closest_templ_min_dist_pix=35
---monoslam_stop_on_sal_pnt_moved_too_far=false
+--monoslam_orb_descr_max_hamming_distance=64
+
 --monoslam_debug_estim_vars_cov=true
 --monoslam_debug_predicted_vars_cov=true
 --monoslam_debug_max_sal_pnt_count=-1

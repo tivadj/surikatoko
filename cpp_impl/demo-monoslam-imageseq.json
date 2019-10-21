@@ -27,5 +27,7 @@
     "monoslam_sal_pnt_init_inv_dist": 0.1,
     "monoslam_sal_pnt_init_inv_dist_std": 1,
 
-    "monoslam_sal_pnt_max_undetected_frames_count": 12
+    "monoslam_sal_pnt_max_undetected_frames_count": 12,
+    
+    "monoslam_templ_min_corr_coeff": 0.65
 }

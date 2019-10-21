@@ -436,13 +436,17 @@ public:
     bool stop_on_sal_pnt_moved_too_far_ = false;
     std::optional<suriko::Sizei> min_search_rect_size_;
 
+    // this allow to register a new salient point only if the distance between corners is greater than this value;
+    // this prevents overlapping of templates of tracked salient points
+    std::optional<Scalar> closest_corner_min_dist_pix_;
+
     MatchCornerImpl match_corners_impl_ = MatchCornerImpl::Templ;
 
     // impl=match templates
-    std::optional<Scalar> min_templ_corr_coeff_;
+    Scalar min_templ_corr_coeff_ = 0.65f;
 
     // impl=match ORB descriptors
-    int detect_orb_features_per_frame_ = 500;
+    int detect_orb_corners_per_frame_ = 500;
 
     // Small value (<32) will lead to mismatch of slightly changed corners.
     // Corners quickly become unobserved and later deleted.
@@ -457,7 +461,7 @@ public:
     std::function<void(std::string_view, cv::Mat)> show_image_fun_;
 public:
     ImageTemplCornersMatcher(int nfeatures = 50)
-    : detect_orb_features_per_frame_(nfeatures)
+    : detect_orb_corners_per_frame_(nfeatures)
     {
         detector_ = cv::ORB::create(nfeatures);
     }
@@ -748,9 +752,9 @@ public:
         }
 
         // skip a match with low correlation coefficient
-        if (min_templ_corr_coeff_.has_value() &&
+        if (min_templ_corr_coeff_ &&
             match_result.corr_coef.has_value() &&
-            match_result.corr_coef.value() < min_templ_corr_coeff_.value())
+            match_result.corr_coef.value() < min_templ_corr_coeff_)
         {
             static bool debug_matching = false;
             if (debug_matching)
@@ -760,7 +764,7 @@ public:
                 SRK_ASSERT(op);
                 VLOG(5) << "Treating sal_pnt(ind=" << sal_pnt.sal_pnt_ind << ")"
                     << " as undetected because corr_coef=" << match_result.corr_coef.value()
-                    << " is less than thr=" << min_templ_corr_coeff_.value() << ","
+                    << " is less than thr=" << min_templ_corr_coeff_ << ","
                     << " predicted center_pix=[" << predicted_center.mean[0] << "," << predicted_center.mean[1] << "]";
             }
             return std::nullopt;
@@ -868,8 +872,8 @@ public:
             cv::drawKeypoints(image.gray, keypoints, keyp_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
 
         std::vector<cv::KeyPoint> sparse_keypoints;
-        Scalar closest_templ_min_dist = mono_slam.ClosestSalientPointTemplateMinDistance();
-        FilterOutClosest(keypoints, closest_templ_min_dist, &sparse_keypoints);
+        Scalar closest_corner_min_dist = ClosestCornerMinDistance(sal_pnt_templ_size);
+        FilterOutClosest(keypoints, closest_corner_min_dist, &sparse_keypoints);
 
         cv::Mat sparse_img;
         if (debug_keypoints)
@@ -911,7 +915,7 @@ public:
         };
 
         std::vector<cv::KeyPoint> new_keypoints;
-        filter_out_close_to_existing(sparse_keypoints, closest_templ_min_dist, &new_keypoints);
+        filter_out_close_to_existing(sparse_keypoints, closest_corner_min_dist, &new_keypoints);
 
         cv::Mat img_no_closest;
         if (debug_keypoints)
@@ -1026,6 +1030,19 @@ public:
         {
             sal_pnt->templ_stats = corner_context.templ_stats;
         }
+    }
+
+    // Keeps corners away from each other to prevent overlapping.
+    Scalar ClosestCornerMinDistance(suriko::Sizei sal_pnt_templ_size) const
+    {
+        if (closest_corner_min_dist_pix_.has_value())
+            return closest_corner_min_dist_pix_.value();
+
+        // when two salient points touch each other, the distance between them is 2R, R='radius of a template'
+        const Scalar touch_dist = std::sqrt(
+            suriko::Sqr(static_cast<Scalar>(sal_pnt_templ_size.width)) +
+            suriko::Sqr(static_cast<Scalar>(sal_pnt_templ_size.height)));
+        return touch_dist;
     }
 };
 #endif
@@ -1225,15 +1242,14 @@ DEFINE_int32(monoslam_max_new_blobs_in_first_frame, 7, "");
 DEFINE_int32(monoslam_max_new_blobs_per_frame, 1, "");
 DEFINE_double(monoslam_match_blob_prob, 1, "[0,1] portion of blobs which are matched with ones in the previous frame; 1=all matched, 0=none matched");
 DEFINE_int32(monoslam_match_corners_impl, 1, "1 to match image patches, 2 to match ORB features");
-DEFINE_int32(monoslam_detect_orb_features_per_frame, 500, "# of ORB features to create per frame");
-DEFINE_int32(monoslam_match_orb_descr_max_hamming_distance, 64, "ORB descriptors with Hamming distance in [0;value] are matched");
+DEFINE_int32(monoslam_match_detect_corners_per_frame, 500, "# of ORB features to create per frame");
+DEFINE_int32(monoslam_orb_descr_max_hamming_distance, 64, "ORB descriptors with Hamming distance in [0;value] are matched");
 DEFINE_int32(monoslam_templ_width, 15, "width of template");
 DEFINE_int32(monoslam_templ_min_search_rect_width, 7, "the min width of a rectangle when searching for tempplate in the next frame");
 DEFINE_int32(monoslam_templ_min_search_rect_height, 7, "");
-DEFINE_double(monoslam_templ_min_corr_coeff, -1, "");
 DEFINE_double(monoslam_templ_center_detection_noise_std_pix, 0, "std of measurement noise(=sqrt(R), 0=no noise");
-DEFINE_double(monoslam_templ_closest_templ_min_dist_pix, 0, "");
-DEFINE_bool(monoslam_stop_on_sal_pnt_moved_too_far, false, "width of template");
+DEFINE_double(monoslam_match_closest_corner_min_dist_pix, 0, "");
+DEFINE_bool(monoslam_match_stop_on_sal_pnt_moved_too_far, false, "width of template");
 DEFINE_bool(monoslam_fix_estim_vars_covar_symmetry, true, "");
 DEFINE_bool(monoslam_debug_estim_vars_cov, false, "");
 DEFINE_bool(monoslam_debug_predicted_vars_cov, false, "");
@@ -1643,8 +1659,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.cam_enable_distortion_ = config_reader.GetValue<bool>("camera_enable_distortion").value_or(true);
     mono_slam.force_xyz_sal_pnt_pos_diagonal_uncert_ = FLAGS_monoslam_force_xyz_sal_pnt_pos_diagonal_uncert;
     mono_slam.sal_pnt_templ_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
-    if (FLAGS_monoslam_templ_closest_templ_min_dist_pix > 0)
-        mono_slam.closest_sal_pnt_templ_min_dist_pix_ = static_cast<Scalar>(FLAGS_monoslam_templ_closest_templ_min_dist_pix);
     if (FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute >= 0)
         mono_slam.sal_pnt_negative_inv_rho_substitute_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute);
     mono_slam.covar2D_to_ellipse_confidence_ = static_cast<Scalar>(FLAGS_monoslam_covar2D_to_ellipse_confidence);
@@ -1729,7 +1743,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     LOG(INFO) << "mono_slam_measurm_noise_std_pix=" << mono_slam.measurm_noise_std_pix_;
     LOG(INFO) << "mono_slam_update_impl=" << FLAGS_monoslam_update_impl;
     LOG(INFO) << "mono_slam_sal_pnt_vars=" << DavisonMonoSlam::kSalientPointComps;
-    LOG(INFO) << "mono_slam_templ_min_dist=" << mono_slam.ClosestSalientPointTemplateMinDistance();
     LOG(INFO) << "mono_slam_templ_center_detection_noise_std_pix=" << FLAGS_monoslam_templ_center_detection_noise_std_pix;
     LOG(INFO) << "mono_slam_sal_pnt_negative_inv_rho_substitute=" << mono_slam.sal_pnt_negative_inv_rho_substitute_.value_or(static_cast<Scalar>(-1));
 
@@ -1750,16 +1763,18 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
-        size_t detect_orb_features_per_frame = FLAGS_monoslam_detect_orb_features_per_frame;
+        size_t detect_orb_corners_per_frame = FLAGS_monoslam_match_detect_corners_per_frame;
 
-        auto corners_matcher = std::make_shared<ImageTemplCornersMatcher>(detect_orb_features_per_frame);
+        auto corners_matcher = std::make_shared<ImageTemplCornersMatcher>(detect_orb_corners_per_frame);
+        corners_matcher->closest_corner_min_dist_pix_ = static_cast<Scalar>(FLAGS_monoslam_match_closest_corner_min_dist_pix);
         corners_matcher->match_corners_impl_ = FLAGS_monoslam_match_corners_impl == 2 ? MatchCornerImpl::OrbDescr : MatchCornerImpl::Templ;
-        corners_matcher->match_orb_descr_max_hamming_dist_ = FLAGS_monoslam_match_orb_descr_max_hamming_distance;
-        corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_stop_on_sal_pnt_moved_too_far;
+        corners_matcher->match_corners_impl_ = FLAGS_monoslam_match_corners_impl == 2 ? MatchCornerImpl::OrbDescr : MatchCornerImpl::Templ;
+        corners_matcher->match_orb_descr_max_hamming_dist_ = FLAGS_monoslam_orb_descr_max_hamming_distance;
+        corners_matcher->stop_on_sal_pnt_moved_too_far_ = FLAGS_monoslam_match_stop_on_sal_pnt_moved_too_far;
         corners_matcher->force_sequential_execution_ = FLAGS_monoslam_force_sequential_engine;
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };
-        if (FLAGS_monoslam_templ_min_corr_coeff > -1)
-            corners_matcher->min_templ_corr_coeff_ = static_cast<Scalar>(FLAGS_monoslam_templ_min_corr_coeff);
+        corners_matcher->min_templ_corr_coeff_ = config_reader.GetValue<Scalar>("monoslam_templ_min_corr_coeff").value_or(corners_matcher->min_templ_corr_coeff_);
+        
         corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, cv::Mat* out_image_bgr)
         {
             drawer.DrawEstimatedSalientPoint(mono_slam, sal_pnt_id, out_image_bgr);

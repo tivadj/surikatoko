@@ -489,11 +489,6 @@ public:
     // Davison used templates of 15x15 (see "Simultaneous localization and map-building using active vision" para 3.1, Davison, Murray, 2002)
     suriko::Sizei sal_pnt_templ_size_ = { 15, 15 };
 
-    // this allow to register a new salient point only if the distance (between the centers of templates)
-    // to the closest salient point is greater than this value;
-    // this prevents overlapping of templates of tracked salient points
-    std::optional<Scalar> closest_sal_pnt_templ_min_dist_pix_;
-
     // The confidence interval determining the size of ellipse, extracted from 2D covariance matrix.
     // The value 95% corresponds to chi^2=5.99146 in ellipse equation (x/a)^2+(y/b)^2=chi^2 where a,b are semi major,minor axes of ellipse.
     // [SfM_EKF_Civera para 3.7.2 on page 50]
@@ -623,9 +618,6 @@ public:
     void CheckSalientPointsConsistency() const;
 
     suriko::Point2i TemplateTopLeftInt(const suriko::Point2f& center) const;
-
-    // New salient points should be farther away from other salient points in the picture by this distance.
-    Scalar ClosestSalientPointTemplateMinDistance() const;
 
     /// Calculates the 3D rectangle, corresponding to a salient point's template.
     /// The information, used in the calculation is:

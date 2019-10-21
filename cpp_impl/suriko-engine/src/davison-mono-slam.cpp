@@ -261,8 +261,6 @@ void DavisonMonoSlam::CopyFrom(const DavisonMonoSlam& src)
 
     d.sal_pnt_templ_size_ = src.sal_pnt_templ_size_;
 
-    d.closest_sal_pnt_templ_min_dist_pix_ = src.closest_sal_pnt_templ_min_dist_pix_;
-
     d.covar2D_to_ellipse_confidence_ = src.covar2D_to_ellipse_confidence_;
 
     d.debug_max_sal_pnt_count_ = src.debug_max_sal_pnt_count_;
@@ -4296,18 +4294,6 @@ std::optional<Scalar> DavisonMonoSlam::CurrentFrameReprojError(FilterStageType f
 suriko::Point2i DavisonMonoSlam::TemplateTopLeftInt(const suriko::Point2f& center) const
 {
     return suriko::TemplateTopLeftInt(center, sal_pnt_templ_size_);
-}
-
-Scalar DavisonMonoSlam::ClosestSalientPointTemplateMinDistance() const
-{
-    if (closest_sal_pnt_templ_min_dist_pix_.has_value())
-        return closest_sal_pnt_templ_min_dist_pix_.value();
-
-    // when two salient points touch each other, the distance between them is 2R, R='radius of a template'
-    const Scalar touch_dist = std::sqrt(
-        suriko::Sqr(static_cast<Scalar>(sal_pnt_templ_size_.width)) + 
-        suriko::Sqr(static_cast<Scalar>(sal_pnt_templ_size_.height)));
-    return touch_dist;
 }
 
 void DavisonMonoSlam::FixSymmetricMat(EigenDynMat* sym_mat) const
