@@ -38,6 +38,7 @@ set(lib_hdrs
         ${PROJECT_SOURCE_DIR}/include/suriko/quat.h
         ${PROJECT_SOURCE_DIR}/include/suriko/multi-view-factorization.h
         ${PROJECT_SOURCE_DIR}/include/suriko/rand-stuff.h
+        ${PROJECT_SOURCE_DIR}/include/suriko/adapt/tum-dataset.h
         ${PROJECT_SOURCE_DIR}/include/suriko/virt-world/scene-generator.h
         ${PROJECT_SOURCE_DIR}/include/suriko/rt-config-autogen.h.in
         )
@@ -54,6 +55,7 @@ set(lib_srcs
         ${PROJECT_SOURCE_DIR}/src/quat.cpp
         ${PROJECT_SOURCE_DIR}/src/lin-alg.cpp
         ${PROJECT_SOURCE_DIR}/src/multi-view-factorization.cpp
+        ${PROJECT_SOURCE_DIR}/src/adapt/tum-dataset.cpp
         ${PROJECT_SOURCE_DIR}/src/virt-world/scene-generator.cpp
         )
 

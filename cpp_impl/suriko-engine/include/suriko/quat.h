@@ -6,6 +6,10 @@
 
 namespace suriko
 {
+inline auto NewQuat(Scalar qx, Scalar qy, Scalar qz, Scalar qw)->Eigen::Matrix<Scalar, 4, 1> {
+    return Eigen::Matrix<Scalar, 4, 1> {qw, qx, qy, qz};
+}
+
 /// Converts from rotation matrix (SO3) to quaternion. Doesn't check R.
 auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::span<Scalar> q) -> void;
     

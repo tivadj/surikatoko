@@ -16,6 +16,7 @@
 --ctrl_log_slam_images_dir=dump_out
 --ctrl_log_slam_images_cam0=false
 --ctrl_log_slam_images_scene3D=false
+--ctrl_log_slam_cam_traj=false
 # true to just test visualizer, no slam is done
 --ctrl_debug_skim_over=false
 

@@ -2,9 +2,11 @@
 #include <cmath> // std::sqrt
 #include <algorithm> // std::clamp
 #include <glog/logging.h>
+#include <gsl/span>
 #include <Eigen/Cholesky>
 #include "suriko/approx-alg.h"
 #include "suriko/obs-geom.h"
+#include "suriko/stat-helpers.h"
 
 namespace suriko
 {
@@ -147,6 +149,11 @@ auto SE3Compose(const SE3Transform& rt1, const SE3Transform& rt2) -> suriko::SE3
 auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_world) -> suriko::SE3Transform
 {
     return SE3Compose(a_from_world, SE3Inv(b_from_world));
+}
+
+auto SE3BFromA(const SE3Transform& a_from_world, const SE3Transform& b_from_world) -> suriko::SE3Transform
+{
+    return SE3Compose(SE3Inv(a_from_world), b_from_world);
 }
 
 FragmentMap::FragmentMap(size_t fragment_id_offset)
@@ -1070,5 +1077,90 @@ namespace internals
         Point3 unity_dir(unity_dir_x, unity_dir_y, unity_dir_z);
         return RotMat(unity_dir, ang);
     }
+}
+
+// Calculates difference between two trajectories, aka Relative Pose Error (RPE).
+// source: "A benchmark for the evaluation of RGB-D SLAM systems", Sturm, 2012.
+bool CalcRelativePoseError(
+    gsl::span<const std::optional<SE3Transform>> ground_cfw,
+    gsl::span<const std::optional<SE3Transform>> estim_cfw,
+    std::vector<Scalar>* errs)
+{
+    if (ground_cfw.size() != estim_cfw.size()) return false;
+
+    std::optional<SE3Transform> prev_expect_opt = !ground_cfw.empty() ? ground_cfw[0] : std::nullopt;
+    std::optional<SE3Transform> prev_actual_opt = !estim_cfw.empty() ? estim_cfw[0] : std::nullopt;
+    size_t comm_size = std::min(ground_cfw.size(), estim_cfw.size());
+    for (size_t i = 1; i < comm_size; ++i)
+    {
+        const std::optional<SE3Transform>& expect_opt = ground_cfw[i];
+        const std::optional<SE3Transform>& actual_opt = estim_cfw[i];
+        if (expect_opt.has_value() && actual_opt.has_value() &&
+            prev_expect_opt.has_value() && prev_actual_opt.has_value())
+        {
+            // formula (1) and (2)
+            SE3Transform expect_cur_from_prev = SE3BFromA(expect_opt.value(), prev_expect_opt.value());
+            SE3Transform actual_cur_from_prev = SE3BFromA(actual_opt.value(), prev_actual_opt.value());
+            SE3Transform rel_err = SE3BFromA(expect_cur_from_prev, actual_cur_from_prev);
+            Scalar err2 = rel_err.T.squaredNorm();
+            Scalar err = std::sqrt(err2);
+            errs->push_back(err);
+        }
+        prev_expect_opt = expect_opt;
+        prev_actual_opt = actual_opt;
+    }
+    return true;
+}
+
+auto CalcTrajectoryErrStats(const std::vector<Scalar>& errs) -> std::optional<ErrWithMoments>
+{
+    if (errs.empty()) return std::nullopt;
+
+    Scalar err2_sum = 0;
+    MeanStdAlgo stat_calc;
+    for (Scalar err : errs)
+    {
+        Scalar err2 = suriko::Sqr(err);
+        err2_sum += err2;
+        stat_calc.Next(err);
+    }
+
+    Scalar mean_of_squares = err2_sum / errs.size();
+    Scalar rmse = std::sqrt(mean_of_squares);
+
+    std::vector<Scalar> nums_workspace;
+    std::optional<Scalar> median = LeftMedian(errs, &nums_workspace);
+
+    ErrWithMoments val_moms;
+    val_moms.median = median.value();
+    val_moms.mean = stat_calc.Mean();
+    val_moms.std = stat_calc.Std();
+    val_moms.min = stat_calc.Min().value();
+    val_moms.max = stat_calc.Max().value();
+    val_moms.rmse = rmse;
+    return val_moms;
+}
+
+Scalar CalcTrajectoryLength(
+    const std::vector<std::optional<SE3Transform>>* cam_cfw_opt,
+    const std::vector<SE3Transform>* cam_cfw)
+{
+    CHECK(cam_cfw != nullptr ^ cam_cfw_opt != nullptr);
+
+    std::optional<SE3Transform> prev_opt = cam_cfw_opt != nullptr ? (*cam_cfw_opt)[0] : (*cam_cfw)[0];
+    size_t size = cam_cfw_opt != nullptr ? cam_cfw_opt->size() : cam_cfw->size();
+    Scalar shifts_sum = 0;
+    for (size_t i = 1; i < size; ++i)
+    {
+        const std::optional<SE3Transform>& cur_opt = cam_cfw_opt != nullptr ? (*cam_cfw_opt)[i] : (*cam_cfw)[i];
+        if (cur_opt.has_value() && prev_opt.has_value())
+        {
+            SE3Transform cur_from_prev = SE3BFromA(prev_opt.value(), cur_opt.value());
+            Scalar s = cur_from_prev.T.norm();
+            shifts_sum += s;
+        }
+        prev_opt = cur_opt;
+    }
+    return shifts_sum;
 }
 }

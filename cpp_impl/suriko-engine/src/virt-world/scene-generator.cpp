@@ -60,7 +60,7 @@ void GenerateCameraShotsRightAndLeft(const WorldBounds& wb,
     const Point3& up,
     Scalar max_deviation,
     int num_steps,
-    std::vector<SE3Transform>* inverse_orient_cams)
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw)
 {
     suriko::Point3 look_at_me{ wb.x_min, wb.y_min, 0 };
 
@@ -91,7 +91,7 @@ void GenerateCameraShotsRightAndLeft(const WorldBounds& wb,
 
         SE3Transform RT = SE3Inv(wfc);
 
-        inverse_orient_cams->push_back(RT);
+        cam_orient_cfw->push_back(RT);
     }
 }
 
@@ -103,7 +103,7 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     int periods_count,
     int shots_per_period,
     bool head_straight,
-    std::vector<SE3Transform>* inverse_orient_cams)
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw)
 {
     Point3 view_dir = center - eye;
     CHECK(Normalize(&view_dir));
@@ -130,7 +130,7 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
 
         SE3Transform RT = SE3Inv(wfc);
 
-        inverse_orient_cams->push_back(RT);
+        cam_orient_cfw->push_back(RT);
     }
 }
 
@@ -140,7 +140,7 @@ void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
     Scalar min_ang, Scalar max_ang,
     int periods_count,
     int shots_per_period,
-    std::vector<SE3Transform>* inverse_orient_cams)
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw)
 {
     Scalar init_ang = (min_ang + max_ang) / 2;
     Scalar half_fov = (max_ang - min_ang) / 2;
@@ -161,13 +161,13 @@ void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
 
         SE3Transform RT = SE3Inv(wfc);
 
-        inverse_orient_cams->push_back(RT);
+        cam_orient_cfw->push_back(RT);
     }
 }
 
 void GenerateCameraShots3DPath(const WorldBounds& wb,
     const std::vector<LookAtComponents>& cam_poses, int periods_count,
-    std::vector<SE3Transform>* inverse_orient_cams)
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw)
 {
     for (int i = 0; i < periods_count; ++i)
     {
@@ -175,7 +175,7 @@ void GenerateCameraShots3DPath(const WorldBounds& wb,
         {
             SE3Transform wfc = LookAtLufWfc(p.eye, p.center, p.up);
             SE3Transform cfw = SE3Inv(wfc);;
-            inverse_orient_cams->push_back(cfw);
+            cam_orient_cfw->push_back(cfw);
         }
     }
 }

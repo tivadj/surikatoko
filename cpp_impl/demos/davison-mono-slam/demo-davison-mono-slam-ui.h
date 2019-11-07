@@ -60,8 +60,9 @@ struct UIThreadParams
     Scalar covar3D_to_ellipsoid_chi_square;
     bool wait_for_user_input_after_each_frame;
     std::function<size_t()> get_observable_frame_ind_fun;
-    const std::vector<SE3Transform>* gt_cam_orient_cfw;
-    const std::vector<SE3Transform>* cam_orient_cfw_history;
+    const std::vector<std::optional<SE3Transform>>* gt_cam_orient_cfw;
+    const std::vector<std::optional<SE3Transform>>* external_cam_orient_cfw;  // some external trjaectory to render
+    const std::vector<SE3Transform>* estim_cam_orient_cfw;
     const FragmentMap* entire_map;
     std::shared_ptr<WorkerChatSharedState> worker_chat;
     bool ui_swallow_exc;
@@ -148,8 +149,9 @@ private:
     // (and declared here), because in single threaded scenario we want
     // the part of rendering of a UI frame to be called in isolation.
     std::unique_ptr<pangolin::Var<ptrdiff_t>> a_frame_ind_;
-    std::unique_ptr<pangolin::Var<bool>> cb_displ_traj_;
-    std::unique_ptr<pangolin::Var<bool>> cb_displ_ground_truth_;
+    std::unique_ptr<pangolin::Var<bool>> cb_displ_estim_traj_;
+    std::unique_ptr<pangolin::Var<bool>> cb_displ_external_traj_;
+    std::unique_ptr<pangolin::Var<int>> slider_displ_ground_truth_;
     std::unique_ptr<pangolin::Var<int>> slider_mid_cam_type_;
     std::unique_ptr<pangolin::Var<bool>> cb_displ_mid_cam_type_;
     std::unique_ptr<pangolin::Var<bool>> button_set_viewer_behind_camera_;

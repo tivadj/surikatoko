@@ -100,6 +100,14 @@ enum class CamDisplayType
     Schematic // camera is visualized schematically
 };
 
+/// Specify how much poses of a camera to visualize.
+enum class TrajectoryPortion
+{
+    None,
+    UpToCurrentFrame,  // poses [0..current_frame]
+    Entire                // all poses
+};
+
 /// Draw axes in the local coordinates.
 void RenderAxes(Scalar axis_seg_len, float line_width)
 {
@@ -289,28 +297,40 @@ void RenderPosUncertaintyMatAsEllipsoid(
     RenderEllipsoid(rot_ellipsoid, dots_per_ellipse);
 }
 
-void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
+void RenderCameraTrajectory(
+    gsl::span<const SE3Transform> gt_cam_orient_cfw,
+    gsl::span<const std::optional<SE3Transform>> gt_cam_orient_cfw_opt,
     const CameraIntrinsicParams& cam_instrinsics,
     const std::array<GLfloat, 3>& track_color,
-    bool display_trajectory,
     CamDisplayType mid_cam_disp_type)
 {
-    Point3 cam_pos_world_prev;
-    bool cam_pos_world_prev_inited = false;
+    SRK_ASSERT(gt_cam_orient_cfw.empty() || gt_cam_orient_cfw_opt.empty());
 
-    for (size_t i = 0; i < gt_cam_orient_cfw.size(); ++i)
+    std::optional<Point3> cam_pos_world_prev;
+
+    size_t cams_count = !gt_cam_orient_cfw.empty() ? gt_cam_orient_cfw.size() : gt_cam_orient_cfw_opt.size();
+    for (size_t i = 0; i < cams_count; ++i)
     {
-        const auto& cam_cfw = gt_cam_orient_cfw[i];
+        std::optional<SE3Transform> cam_cfw_opt = !gt_cam_orient_cfw.empty() ?
+            gt_cam_orient_cfw[i] : gt_cam_orient_cfw_opt[i];
+        if (!cam_cfw_opt.has_value())
+        {
+            cam_pos_world_prev = std::nullopt;
+            continue;
+        }
+
+        const auto& cam_cfw = cam_cfw_opt.value();
         const SE3Transform& cam_wfc = SE3Inv(cam_cfw);
 
         // get position of the camera in the world: cam_to_world*(0,0,0,1)=cam_pos
-        const Point3& cam_pos_world = cam_wfc.T;
+        Point3 cam_pos_world = cam_wfc.T;
 
-        if (display_trajectory && cam_pos_world_prev_inited)
+        if (cam_pos_world_prev.has_value())
         {
             glBegin(GL_LINES);
             glColor3fv(track_color.data());
-            glVertex3d(cam_pos_world_prev[0], cam_pos_world_prev[1], cam_pos_world_prev[2]);
+            const Point3& c1 = cam_pos_world_prev.value();
+            glVertex3d(c1[0], c1[1], c1[2]);
             glVertex3d(cam_pos_world[0], cam_pos_world[1], cam_pos_world[2]);
             glEnd();
         }
@@ -318,7 +338,6 @@ void RenderCameraTrajectory(const std::vector<SE3Transform>& gt_cam_orient_cfw,
         RenderSchematicCamera(cam_wfc, cam_instrinsics, track_color, mid_cam_disp_type);
 
         cam_pos_world_prev = cam_pos_world;
-        cam_pos_world_prev_inited = true;
     }
 }
 
@@ -483,11 +502,12 @@ void RenderMap(const DavisonMonoSlam* mono_slam, Scalar covar3D_to_ellipsoid_chi
     }
 }
 
-void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar covar3D_to_ellipsoid_chi_square,
-    bool display_trajectory,
+void RenderScene(const UIThreadParams& ui_params, ptrdiff_t frame_ind, const DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar covar3D_to_ellipsoid_chi_square,
+    bool display_estim_trajectory,
     CamDisplayType mid_cam_disp_type,
     bool display_3D_uncertainties,
-    bool display_ground_truth,
+    TrajectoryPortion gt_display_portion,
+    bool display_external_trajectory,
     size_t dots_per_ellipse,
     bool ui_swallow_exc)
 {
@@ -495,16 +515,28 @@ void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_sl
     // A tracker is positioned somewhere inside world and is rendered inside its own frame, usually the first camera position.
     // A world is chosen as the primary (identity) origin because one may think of multiple trackers inside the world.
 
-    if (bool has_gt_data = ui_params.entire_map != nullptr; has_gt_data && display_ground_truth)
+    if (bool has_gt_data = ui_params.entire_map != nullptr; has_gt_data)
     {
         // world axes
         RenderAxes(1, 4);
 
-        if (bool has_gt_cameras = ui_params.gt_cam_orient_cfw != nullptr)
+        if (display_external_trajectory && ui_params.external_cam_orient_cfw != nullptr)
         {
+            std::array<GLfloat, 3> track_color{ 232 / 255.0f, 174 / 255.0f, 201 / 255.0f }; // rose
+            RenderCameraTrajectory(gsl::span<const SE3Transform>{}, * ui_params.external_cam_orient_cfw, cam_instrinsics, track_color, mid_cam_disp_type);
+        }
+        if (ui_params.gt_cam_orient_cfw != nullptr && (
+            gt_display_portion == TrajectoryPortion::UpToCurrentFrame ||
+            gt_display_portion == TrajectoryPortion::Entire))
+        {
+            size_t poses_count = ui_params.gt_cam_orient_cfw->size(); // display entire trajectory
+            if (gt_display_portion == TrajectoryPortion::UpToCurrentFrame)
+                poses_count = std::min(static_cast<size_t>(frame_ind + 1), ui_params.gt_cam_orient_cfw->size());
+
+            auto gt_cams = gsl::make_span(*ui_params.gt_cam_orient_cfw).first(poses_count);
+
             std::array<GLfloat, 3> track_color{ 232 / 255.0f, 188 / 255.0f, 87 / 255.0f }; // browny
-            RenderCameraTrajectory(*ui_params.gt_cam_orient_cfw, cam_instrinsics, track_color, display_trajectory,
-                mid_cam_disp_type);
+            RenderCameraTrajectory(gsl::span<const SE3Transform>{}, gt_cams, cam_instrinsics, track_color, mid_cam_disp_type);
         }
         if (bool has_gt_sal_pnts = ui_params.entire_map != nullptr)
         {
@@ -537,10 +569,9 @@ void RenderScene(const UIThreadParams& ui_params, const DavisonMonoSlam* mono_sl
 
         // render history of camera's positions (schematic)
         std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
-        if (ui_params.cam_orient_cfw_history != nullptr)
+        if (display_estim_trajectory && ui_params.estim_cam_orient_cfw != nullptr)
         {
-            RenderCameraTrajectory(*ui_params.cam_orient_cfw_history, cam_instrinsics, actual_track_color, display_trajectory,
-                mid_cam_disp_type);
+            RenderCameraTrajectory(*ui_params.estim_cam_orient_cfw, gsl::span<const std::optional<SE3Transform>>{}, cam_instrinsics, actual_track_color, mid_cam_disp_type);
         }
 
         // render current (the latest) camera position
@@ -606,8 +637,9 @@ void SceneVisualizationPangolinGui::InitUI()
     display_cam->SetHandler(handler3d_.get());
 
     a_frame_ind_ = std::make_unique<pangolin::Var<ptrdiff_t>>("ui.frame_ind", -1);
-    cb_displ_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_trajectory", true, true);
-    cb_displ_ground_truth_ = std::make_unique<pangolin::Var<bool>>("ui.displ_gt", false, true);
+    cb_displ_estim_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_estim_traj", true, true);
+    slider_displ_ground_truth_ = std::make_unique<pangolin::Var<int>>("ui.displ_gt", 1, 0, 2);
+    cb_displ_external_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_extern_traj", false, true);
     slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
     cb_displ_mid_cam_type_ = std::make_unique<pangolin::Var<bool>>("ui.displ_3D_uncert", true, true);
     button_set_viewer_behind_camera_ = std::make_unique<pangolin::Var<bool>>("ui.view_behind_cam", false, false);
@@ -646,9 +678,23 @@ void SceneVisualizationPangolinGui::RenderFrame()
     if (pangolin::Pushed(*button_set_viewer_behind_camera_))
         SetCameraBehindTracker();
 
-    bool display_trajectory = cb_displ_traj_->Get();
+    bool display_estim_trajectory = cb_displ_estim_traj_->Get();
     bool display_3D_uncertainties = cb_displ_mid_cam_type_->Get();
-    bool display_ground_truth = cb_displ_ground_truth_->Get();
+
+    TrajectoryPortion gt_display_portion = [](int value) {
+        switch (value)
+        {
+        case 0:
+            return TrajectoryPortion::None;
+        case 1:
+            return TrajectoryPortion::UpToCurrentFrame;
+        case 2:
+            return TrajectoryPortion::Entire;
+        }
+        return TrajectoryPortion::UpToCurrentFrame;
+    }(slider_displ_ground_truth_->Get());
+
+    bool display_external_trajectory = cb_displ_external_traj_->Get();
 
     CamDisplayType mid_cam_disp_type = CamDisplayType::None;
     int displ_mid_cam_type = slider_mid_cam_type_->Get();
@@ -663,11 +709,12 @@ void SceneVisualizationPangolinGui::RenderFrame()
         mid_cam_disp_type = CamDisplayType::Schematic;
     }
 
-    RenderScene(ui_params, ui_params.mono_slam, cam_instrinsics_, ui_params.covar3D_to_ellipsoid_chi_square,
-                display_trajectory,
+    RenderScene(ui_params, frame_ind, ui_params.mono_slam, cam_instrinsics_, ui_params.covar3D_to_ellipsoid_chi_square,
+                display_estim_trajectory,
                 mid_cam_disp_type,
                 display_3D_uncertainties,
-                display_ground_truth,
+                gt_display_portion,
+                display_external_trajectory,
                 dots_per_uncert_ellipse_,
                 ui_params.ui_swallow_exc);
 }

@@ -3,6 +3,7 @@
 #include <tuple>
 #include <vector>
 #include <optional>
+#include <gsl/span>
 #include <gsl/pointers> // gsl::not_null
 #include <Eigen/Dense> // Eigen::Matrix
 #include "suriko/rt-config.h"
@@ -199,6 +200,7 @@ auto SE2Apply(const SE2Transform& rt, const suriko::Point2f& x)->suriko::Point2f
 auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3;
 auto SE3Compose(const SE3Transform& rt1, const SE3Transform& rt2) -> suriko::SE3Transform;
 auto SE3AFromB(const SE3Transform& a_from_world, const SE3Transform& b_from_world) -> suriko::SE3Transform;
+auto SE3BFromA(const SE3Transform& a_from_world, const SE3Transform& b_from_world) -> suriko::SE3Transform;
 
 /// The 3D point inside the map.
 struct SalientPointFragment
@@ -450,4 +452,27 @@ constexpr auto Deg2Rad(F x)
     return x * static_cast<Float>(M_PI / 180);
 }
 }
+
+// Calculates difference between two trajectories, aka Relative Pose Error (RPE).
+// source: "A benchmark for the evaluation of RGB-D SLAM systems", Sturm, 2012.
+bool CalcRelativePoseError(
+    gsl::span<const std::optional<SE3Transform>> ground_cfw,
+    gsl::span<const std::optional<SE3Transform>> estim_cfw,
+    std::vector<Scalar>* errs);
+
+struct ErrWithMoments
+{
+    Scalar median;
+    Scalar mean;
+    Scalar std;
+    Scalar min;
+    Scalar max;
+    Scalar rmse;
+};
+
+auto CalcTrajectoryErrStats(const std::vector<Scalar>& errs)->std::optional<ErrWithMoments>;
+
+Scalar CalcTrajectoryLength(
+    const std::vector<std::optional<SE3Transform>>* cam_cfw_opt,
+    const std::vector<SE3Transform>* cam_cfw);
 }

@@ -17,7 +17,7 @@ struct WorldBounds
 };
 
 void GenerateCircleCameraShots(const suriko::Point3& circle_center, Scalar circle_radius, Scalar ascentZ,
-    gsl::span<const Scalar> rot_angles, std::vector<SE3Transform>* inverse_orient_cams);
+    gsl::span<const Scalar> rot_angles, std::vector<std::optional<SE3Transform>>* inverse_orient_cams);
 
 void GenerateCameraShotsRightAndLeft(const WorldBounds& wb,
     const Point3& eye_offset,
@@ -25,7 +25,7 @@ void GenerateCameraShotsRightAndLeft(const WorldBounds& wb,
     const Point3& up,
     Scalar offset_dist,
     int num_steps,
-    std::vector<SE3Transform>* inverse_orient_cams);
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw);
 
 void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     const Point3& eye_offset,
@@ -35,7 +35,7 @@ void GenerateCameraShotsOscilateRightAndLeft(const WorldBounds& wb,
     int periods_count,
     int shots_per_period,
     bool const_view_dir,
-    std::vector<SE3Transform>* inverse_orient_cams);
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw);
 
 void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
     const Point3& eye,
@@ -43,7 +43,7 @@ void GenerateCameraShotsRotateLeftAndRight(const WorldBounds& wb,
     Scalar min_ang, Scalar max_ang,
     int periods_count,
     int shots_per_period,
-    std::vector<SE3Transform>* inverse_orient_cams);
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw);
 
 struct LookAtComponents
 {
@@ -54,6 +54,6 @@ struct LookAtComponents
 
 void GenerateCameraShots3DPath(const WorldBounds& wb,
     const std::vector<LookAtComponents>& cam_poses, int periods_count,
-    std::vector<SE3Transform>* inverse_orient_cams);
+    std::vector<std::optional<SE3Transform>>* cam_orient_cfw);
 
 }}
