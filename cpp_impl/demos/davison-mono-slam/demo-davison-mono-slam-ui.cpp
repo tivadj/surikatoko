@@ -1082,7 +1082,8 @@ void DavisonMonoSlam2DDrawer::DrawEstimatedSalientPoint(const DavisonMonoSlam& m
         SrkColor search_rect_color = { 192, 192, 192 };
         if (op_corner)
         {
-            Point2i corner{ corner_ellipse.world_from_ellipse.T[0], corner_ellipse.world_from_ellipse.T[1] };
+            Point2i corner{static_cast<int>(corner_ellipse.world_from_ellipse.T[0]),
+                        static_cast<int>(corner_ellipse.world_from_ellipse.T[1]) };
             bool is_in =
                 corner.x > predict_pos_rect.x && corner.x < predict_pos_rect.Right() &&
                 corner.y > predict_pos_rect.y && corner.y < predict_pos_rect.Bottom();

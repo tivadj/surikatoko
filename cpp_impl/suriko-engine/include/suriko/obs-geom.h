@@ -131,10 +131,22 @@ template <typename F>
 struct RectProto
 {
     F x, y, width, height;
-    int Right() const { return x + width; }
-    int Bottom() const { return y + height; }
-    auto TopLeft() const { return suriko::Point2i{ x, y }; }
-    auto BotRight() const { return suriko::Point2i{ x + width, y + height }; }
+    auto Right() const { return x + width; }
+    auto Bottom() const { return y + height; }
+    auto TopLeft() const
+    {
+        if constexpr (std::is_same_v<F, int>) // TODO: make generic PointProto2
+            return suriko::Point2i{ x, y };
+        else
+            return suriko::Point2f{ x, y };
+    }
+    auto BotRight() const
+    {
+        if constexpr (typeid(F) == typeid(int))
+            return suriko::Point2i{ x + width, y + height };
+        else
+            return suriko::Point2f{ x, y };
+    }
     auto Contains(F hitx, F hity) const
     {
         return x <= hitx && hitx <= x + width &&

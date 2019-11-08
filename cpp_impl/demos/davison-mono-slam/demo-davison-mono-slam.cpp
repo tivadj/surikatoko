@@ -1401,9 +1401,9 @@ bool ApplyParamsFromConfigFile(DavisonMonoSlam* mono_slam, ConfigReader* config_
 
     opt_set(FloatParam<Scalar>(&cr, "monoslam_seconds_per_frame"), &ms.seconds_per_frame_);
     
-    auto sal_pnt_max_undetected_frames_count = FloatParam<Scalar>(&cr, "monoslam_sal_pnt_max_undetected_frames_count");
+    auto sal_pnt_max_undetected_frames_count = cr.GetValue<int>("monoslam_sal_pnt_max_undetected_frames_count");
     if (sal_pnt_max_undetected_frames_count.has_value())
-        ms.sal_pnt_max_undetected_frames_count_ = sal_pnt_max_undetected_frames_count.value();
+        ms.sal_pnt_max_undetected_frames_count_ = static_cast<size_t>(sal_pnt_max_undetected_frames_count.value());
 
     return true;
 }
@@ -1903,7 +1903,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     }
     else if (demo_data_source == DemoDataSource::kImageSeqDir)
     {
-        size_t detect_orb_corners_per_frame = FLAGS_monoslam_match_detect_corners_per_frame;
+        int detect_orb_corners_per_frame = FLAGS_monoslam_match_detect_corners_per_frame;
 
         auto corners_matcher = std::make_shared<ImageTemplCornersMatcher>(detect_orb_corners_per_frame);
         corners_matcher->closest_corner_min_dist_pix_ = static_cast<Scalar>(FLAGS_monoslam_match_closest_corner_min_dist_pix);
