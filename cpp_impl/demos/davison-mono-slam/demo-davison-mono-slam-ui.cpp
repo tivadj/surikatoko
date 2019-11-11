@@ -1046,7 +1046,7 @@ void DrawDistortedEllipseOnPicture(const RotatedEllipse2D& ellipse_pix,
 
         if (pnt_int_prev.has_value())
         {
-            if (line_type == LineType::Solid || line_type == LineType::Dashed && i % 2 == 0)
+            if (line_type == LineType::Solid || (line_type == LineType::Dashed && i % 2 == 0))
                 cv::line(*camera_image_bgr, pnt_int_prev.value(), pnt_int, color);
         }
         if (line_type == LineType::Dotted)

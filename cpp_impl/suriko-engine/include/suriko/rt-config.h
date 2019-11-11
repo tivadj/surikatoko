@@ -18,14 +18,30 @@ struct NoopOut // allows putting messages after assert, like ASSERT(false) << "f
     template <typename T>
     NoopOut& operator <<([[maybe_unused]] T x) { return *this; }
 };
+/// This is taken from glog/logging.h at line 1342
+// This class is used to explicitly ignore values in the conditional
+// logging macros.  This avoids compiler warnings like "value computed
+// is not used" and "statement has no effect".
+class LogMessageVoidify {
+public:
+    LogMessageVoidify() { }
+    // This has to be an operator with a precedence lower than << but
+    // higher than ?:
+    //void operator&(std::ostream&) { }
+    void operator&(const suriko::NoopOut&) { }
+};
 }
 // The macro:
 // SRK_ASSERT(get_false()) << "leo";
 // Expands into (with added square brackets to show operators precedence).
-// (get_false()) ? (void)0 : [NoopOut() << "leo"];
-// First get_false is executed, then <<.
-// The result of expression [true ? (void)0 : Noop&] is Noop&.
-#define SRK_ASSERT(expr) (expr) ? (void)0 : NoopOut()
+// (get_false()) ? (void)0 : [LogMessageVoidify{} & [NoopOut{} << "leo"]];
+// First get_false is executed, then <<, then &.
+// The transformation of the expression is the following:
+// [false ? (void)0 : [Voidify & [Noop& << "leo"]]
+// [false ? (void)0 : [Voidify & Noop&]]
+// [false ? (void)0 : void]=void.
+#define SRK_ASSERT(expr) (expr) ? (void)0 : suriko::LogMessageVoidify{} & suriko::NoopOut{}
+
 #endif
 
 namespace suriko {

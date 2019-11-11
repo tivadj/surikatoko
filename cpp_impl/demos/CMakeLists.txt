@@ -66,6 +66,7 @@ add_executable(demo-davison-mono-slam
     davison-mono-slam/demo-davison-mono-slam-ui.cpp
     ${test-helpers})
 AddDepsF(demo-davison-mono-slam)
+target_link_libraries(demo-davison-mono-slam GuidelineGSL)
 target_include_directories(demo-davison-mono-slam PRIVATE ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(demo-davison-mono-slam ${OpenCV_LIBS})
 target_include_directories(demo-davison-mono-slam PRIVATE ${Pangolin_INCLUDE_DIRS})

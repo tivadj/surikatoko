@@ -1145,7 +1145,7 @@ Scalar CalcTrajectoryLength(
     const std::vector<std::optional<SE3Transform>>* cam_cfw_opt,
     const std::vector<SE3Transform>* cam_cfw)
 {
-    CHECK(cam_cfw != nullptr ^ cam_cfw_opt != nullptr);
+    CHECK((cam_cfw != nullptr) ^ (cam_cfw_opt != nullptr));
 
     std::optional<SE3Transform> prev_opt = cam_cfw_opt != nullptr ? (*cam_cfw_opt)[0] : (*cam_cfw)[0];
     size_t size = cam_cfw_opt != nullptr ? cam_cfw_opt->size() : cam_cfw->size();

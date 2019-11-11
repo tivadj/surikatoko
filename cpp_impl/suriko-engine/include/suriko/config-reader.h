@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <optional>
 #include <variant>
+#include <vector>
 
 namespace suriko::config
 {

@@ -1,5 +1,4 @@
-# Qt5 requires CMake>2.8.9
-cmake_minimum_required(VERSION 2.8.9)
+cmake_minimum_required(VERSION 3.1)
 project (SurikatOkoSolution)
 
 #cmake_policy(SET CMP0020 NEW) # OLD=do not automatically link to 'qtmain.lib' when referencing QtCore target
@@ -28,7 +27,17 @@ option(suriko_build_tests "Include unit tests" OFF)
 
 # C++14 is required (because of std::make_unique)
 # C++17 is required (because of [[noreturn]])
-if (MSVC)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+
+    # ask GCC to don't use PIC (position-independent code) to fix
+    # linker error: relocation R_X86_64_32 against `.rodata' can not be used when making a PIE object; recompile with -fPIC
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -no-pie")
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Intel")
+    # using Intel C++
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++latest")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /std:c++17")
 
@@ -36,12 +45,6 @@ if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_CRT_SECURE_NO_WARNINGS") # suppress warning: strtok is unsafe
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_NEGATORS_DEPRECATION_WARNING") # suppress warning: std::not1() is deprecated
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /D_SILENCE_CXX17_ITERATOR_BASE_CLASS_DEPRECATION_WARNING") # suppress warning: STL4015: The std::iterator class template (used as a base class to provide typedefs) is deprecated in C++17
-elseif(UNIX)
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
-
-    # ask GCC to don't use PIC (position-independent code) to fix
-    # linker error: relocation R_X86_64_32 against `.rodata' can not be used when making a PIE object; recompile with -fPIC
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -no-pie")
 endif()
 
 find_package(Eigen3 REQUIRED NO_MODULE)
