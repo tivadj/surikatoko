@@ -18,6 +18,7 @@ if (MSVC)
     target_compile_definitions(suriko-test PRIVATE _USE_MATH_DEFINES) # allow M_PI in "cmath.h"
 endif()
 
+target_link_libraries(suriko-test GuidelineGSL)
 target_link_libraries(suriko-test Eigen3::Eigen)
 target_link_libraries(suriko-test glog::glog)
 target_link_libraries(suriko-test GTest::GTest)

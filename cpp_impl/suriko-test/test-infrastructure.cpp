@@ -23,7 +23,7 @@ bool SideEffect(int* pv, int new_value, bool ret)
 
 TEST_F(InfrastructureTest, TestSurikoAssert)
 {
-    SRK_ASSERT(false) << "chu";
+    SRK_ASSERT(true) << "chu";
 
     // assert can contain routines with side-effects, eg: assert(f->write(x) == 4)
     int i = 111;

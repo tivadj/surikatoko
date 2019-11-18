@@ -12,7 +12,6 @@
 #include <tuple>
 #include <chrono>
 #include <thread>
-#include <execution>
 #include <condition_variable>
 #include <sstream>
 #include <filesystem>
@@ -32,6 +31,10 @@
 #include "suriko/quat.h"
 #include "suriko/stat-helpers.h"
 #include "../visualize-helpers.h"
+
+#if defined(SRK_PARALLEL_ENGINE)
+#include <execution>
+#endif
 
 #if defined(SRK_HAS_OPENCV)
 #include <opencv2/core/core.hpp> // cv::Mat
@@ -840,10 +843,14 @@ public:
             matched_sal_pnts->push_back(std::make_pair(sal_pnt_id, CornerCorrespond{ new_center }));
         };
 
-        if (force_sequential_execution_)
-            std::for_each(std::execution::seq, tracking_sal_pnts.begin(), tracking_sal_pnts.end(), match_fun);
-        else
-            std::for_each(std::execution::par, tracking_sal_pnts.begin(), tracking_sal_pnts.end(), match_fun);
+#if defined(SRK_PARALLEL_ENGINE)
+            if (force_sequential_execution_)
+                std::for_each(std::execution::seq, tracking_sal_pnts.begin(), tracking_sal_pnts.end(), match_fun);
+            else
+                std::for_each(std::execution::par, tracking_sal_pnts.begin(), tracking_sal_pnts.end(), match_fun);
+#else
+            std::for_each(tracking_sal_pnts.begin(), tracking_sal_pnts.end(), match_fun);
+#endif
     }
 
     void RecruitNewCorners(
@@ -2343,7 +2350,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
     }
 #elif defined(SRK_HAS_OPENCV)
-    cv::waitKey(0); // 0=wait forever
+    if (FLAGS_ctrl_visualize_after_processing)
+        cv::waitKey(0); // 0=wait forever
 #endif
 
     // dump trajectory of a camera

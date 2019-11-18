@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <vector>
 #include "suriko/stat-helpers.h"
 #include "suriko/approx-alg.h"
 

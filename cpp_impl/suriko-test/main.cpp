@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <cstdlib>  // getenv
 #include <gtest/gtest.h>
 #include <glog/logging.h>
@@ -17,14 +18,22 @@ std::string GetTestData()
     return std::string();
 }
 
-int main(int ac, char* av[])
+int main(int argc, char* argv[])
 {
-    testing::InitGoogleTest(&ac, av);
-    google::InitGoogleLogging(av[0]);
+    gflags::ParseCommandLineFlags(&argc, &argv, true); // parse flags first, as they may initialize the logger (eg: -logtostderr)
+    google::InitGoogleLogging(argv[0]);
+    testing::InitGoogleTest(&argc, argv);
 
+    std::cout << "FLAGS_test_data=" << FLAGS_test_data <<std::endl;
     std::string test_data = GetTestData();
+    if (test_data.empty())
+    {
+        LOG(ERROR) << "test_data param isn't set. Add --test_data=... or set SRK_TEST_DATA environment variable.";
+        return 1;
+    }
+
     TestDataRoot() = test_data;
-    LOG(INFO) << "test_data=" << test_data;
+    std::cout << "test_data=" << test_data <<std::endl;
 
     return RUN_ALL_TESTS();
 }

@@ -63,6 +63,14 @@ typedef
 #endif
     Scalar;
 
+static constexpr bool kSurikoParallelEngine =
+#if defined(SRK_PARALLEL_ENGINE)
+true;
+#else
+false;
+#endif
+
+
 /// Indicates that the point of function call is never reached. This allows to satisfy the compiler,
 /// which otherwise emits a warning "not all control paths return a value".
 //[[noreturn]] inline void AssertFalse() { std::terminate(); }

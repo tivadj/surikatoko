@@ -5,16 +5,26 @@ Requires: gflags, glog, (Guideline) GSL, Eigen, OpenCV
 Optional: Pangolin, gtest
 
 Tested on:
-Windows, VS2017 v141
-Ubuntu, GCC 8.3
+Windows, VS2019 v141; Ubuntu, GCC 9.1; Ubuntu, Clang 9.
 
-Run C++ demos:
+####Install on Ubuntu
+sudo apt-get install libeigen3-dev libgflags-dev libgoogle-glog-dev libopencv-dev
+# optional testing
+sudo apt-get install libgtest-dev libgmock-dev 
+
+cd ~/bake
+git clone https://github.com/microsoft/GSL.git
+
+cd ~/bake/surikatoko/build
+cmake -DGuidelineGSL_INCLUDE_DIR=~/bake/GSL/include/ ~/bake/surikatoko
+
+####Run C++ demos:
 ```
 demo-circle-grid.exe --logtostderr -v 4
 demo-dino.exe --logtostderr -v 4 --testdata ../../../../testdata
 demo-davison-mono-slam --flagfile=flagfile-demo-davison-mono-slam.txt
 ```
-Davison's MonoSlam implementation.
+####Davison's MonoSlam implementation.
 
 Implementation of MonoSlam by Andrew Davison https://www.doc.ic.ac.uk/~ajd/Scene/index.html
 The algorithm uses Kalman filter to estimate camera's location and map features (salient points).
@@ -42,5 +52,7 @@ i=dumps camera information to the console
 u=(virtual mode only) sets the position of the camera  and salient points to the ground truth
 s='skip' current frame - performs Kalman filter's 'prediction' step without 'update' step (as if camera is covered with a blanket)
 
-Testing:
-Set env(SRK_TEST_DATA) to point to SRC/testdata folder.
+###Testing:
+Set env(SRK_TEST_DATA) to point to SRC/testdata folder or use command line argument --test_data.
+./suriko-test/suriko-test
+./suriko-test/suriko-test --test_data=/path/to/testdata

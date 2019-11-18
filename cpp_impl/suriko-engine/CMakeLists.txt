@@ -15,10 +15,12 @@ set (suriko_scalar_type_string "f64" CACHE STRING "f32 (for c++ float) or f64 (f
 set_property(CACHE suriko_scalar_type_string PROPERTY STRINGS f32 f64)
 set(suriko_monoslam_salient_point_repres "SphericalFirstCamInvDist" CACHE STRING "A represents for salient point, 'XYZ' for 3x1 vector, 'SphericalFirstCamInvDist' for 6x1 vector")
 set_property(CACHE suriko_monoslam_salient_point_repres PROPERTY STRINGS XYZ SphericalFirstCamInvDist)
+option (suriko_parallel_engine "True to allow parts of the engine to be executed concurrently" OFF)
 
 message(STATUS "suriko_debug=${suriko_debug}") #
 message(STATUS "suriko_scalar_type_string=${suriko_scalar_type_string}") #
 message(STATUS "suriko_monoslam_salient_point_repres=${suriko_monoslam_salient_point_repres}") #
+message(STATUS "suriko_parallel_engine=${suriko_parallel_engine}") #
 
 #
 set(lib_hdrs
@@ -90,14 +92,18 @@ endif()
 
 if (1)
     set (SRK_DEBUG ${suriko_debug}) # variable is used by configure
+    set (SRK_PARALLEL_ENGINE ${suriko_parallel_engine})
     configure_file(
       "${PROJECT_SOURCE_DIR}/include/suriko/rt-config-autogen.h.in"
       "${PROJECT_BINARY_DIR}/rt-config-autogen.h")
 endif()
 
+
 #set_target_properties(suriko-engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(suriko-engine PUBLIC SAL_PNT_REPRES=${sal_pnt_repres_id})
 target_include_directories(suriko-engine PUBLIC "${PROJECT_BINARY_DIR}")
+
+target_link_libraries(suriko-engine PRIVATE GuidelineGSL)
 
 #target_include_directories(suriko-engine PRIVATE ${EIGEN3_INCLUDE_DIR})
 target_link_libraries (suriko-engine PRIVATE Eigen3::Eigen)

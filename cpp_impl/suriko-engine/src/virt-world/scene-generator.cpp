@@ -6,7 +6,8 @@ namespace suriko { namespace virt_world {
 
 using namespace suriko::internals;
 
-void GenerateCircleCameraShots(const suriko::Point3& circle_center, Scalar circle_radius, Scalar ascentZ, gsl::span<const Scalar> rot_angles, std::vector<SE3Transform>* inverse_orient_cams)
+void GenerateCircleCameraShots(const suriko::Point3& circle_center, Scalar circle_radius, Scalar ascentZ, gsl::span<const Scalar> rot_angles,
+    std::vector<SE3Transform>* inverse_orient_cams)
 {
     for (gsl::span<const Scalar>::index_type ang_ind = 0; ang_ind < rot_angles.size(); ++ang_ind)
     {
