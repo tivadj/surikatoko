@@ -47,7 +47,7 @@ auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::spa
         quat[2] = 0.5f * root;
         quat[3] = 0.5f * (R(2, 1) + R(1, 2)) / root;
     }
-    else if (R(1, 1) <= R(2, 2) && R(0, 0) <= -R(1, 1) && R(0, 0) <= -R(2, 2))
+    else if (R(1, 1) <= R(2, 2) && R(0, 0) <= -R(1, 1) && R(0, 0) <= R(2, 2))
     {
         Scalar sum = 1 - R(0, 0) - R(1, 1) + R(2, 2);
         SRK_ASSERT(sum >= 0);
