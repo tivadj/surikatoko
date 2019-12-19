@@ -81,5 +81,53 @@ TEST_F(ObsGeomTest, UnityDirAndAngleCornerCases)
 	EXPECT_FALSE(op) << "ang != 0 is unchecked";
 }
 
+TEST_F(ObsGeomTest, AlignTrajectoriesHorn_Simple1)
+{
+    std::vector<Point3> src_traj;
+    for (size_t i=0; i<100; ++i)
+    {
+        auto x = static_cast<Scalar>(1 + i);
+        auto y = std::log(x);
+        src_traj.push_back(Point3{ x, y, 0 });
+    }
+
+    {
+        // rotate counter clockwise by 90deg
+        Eigen::Matrix<Scalar, 3, 3> rot_mat;
+        bool opaxis = RotMatFromUnityDirAndAngle(Point3{ 0,0,1 }, M_PI / 2, &rot_mat, true);
+        CHECK(opaxis);
+        SE3Transform gt_rt{ rot_mat, Point3{1,1,0} };  // ground truth
+
+        std::vector<Point3> dst_traj(src_traj.size());
+        std::transform(src_traj.begin(), src_traj.end(), dst_traj.begin(),
+            [&gt_rt](const auto& p) { return SE3Apply(gt_rt, p); });
+
+        // should recover transformation in question
+        auto [op, dst_from_src] = AlignTrajectoryHornAFromB(dst_traj, src_traj);
+        ASSERT_TRUE(op);
+        auto r_diffvalue = (dst_from_src.R - gt_rt.R).norm();
+        EXPECT_NEAR(0, r_diffvalue, atol);
+        auto t_diffvalue = (dst_from_src.T - gt_rt.T).norm();
+        EXPECT_NEAR(0, t_diffvalue, atol);
+
+        // source points are mapped closely to destination points
+        auto p0_src = src_traj[0];
+        auto p0_dst = dst_traj[0];
+        auto p0_src_to_dst = SE3Apply(dst_from_src, p0_src);
+        auto pnt_diffvalue = Norm(Mat(p0_dst) - Mat(p0_src_to_dst));
+        EXPECT_NEAR(0, pnt_diffvalue, atol);
+    }
+
+    {
+        // should recover identity transformation (no transformation)
+        auto [op, estim_rt] = AlignTrajectoryHornAFromB(src_traj, src_traj);
+        ASSERT_TRUE(op);
+        using Mat33 = decltype(estim_rt.R);
+        auto r_diffvalue = (estim_rt.R - Mat33::Identity()).norm();
+        EXPECT_NEAR(0, r_diffvalue, atol);
+        auto t_norm = estim_rt.T.norm();
+        EXPECT_NEAR(0, t_norm, atol);
+    }
+}
 
 }

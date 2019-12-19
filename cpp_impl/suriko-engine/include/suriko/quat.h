@@ -10,6 +10,21 @@ inline auto NewQuat(Scalar qx, Scalar qy, Scalar qz, Scalar qw)->Eigen::Matrix<S
     return Eigen::Matrix<Scalar, 4, 1> {qw, qx, qy, qz};
 }
 
+/// Specifies the order in which to put quaternion's components into sequence.
+enum class QuatLayout
+{
+    XyzW,  // [x y z w], used by TUM's datasets
+    WXyz   // [w x y z]
+};
+
+inline auto NewQuatFrom(gsl::span<Scalar> q, QuatLayout layout)->std::array<Scalar, 4> {
+    auto qx = q[layout == QuatLayout::XyzW ? 0 : 1];
+    auto qy = q[layout == QuatLayout::XyzW ? 1 : 2];
+    auto qz = q[layout == QuatLayout::XyzW ? 2 : 3];
+    auto qw = q[layout == QuatLayout::XyzW ? 3 : 0];
+    return std::array<Scalar, 4> {qw, qx, qy, qz};
+}
+
 /// Converts from rotation matrix (SO3) to quaternion. Doesn't check R.
 auto QuatFromRotationMatNoRChecks(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::span<Scalar> q) -> void;
     
@@ -25,6 +40,7 @@ auto QuatFromRotationMat(const Eigen::Matrix<Scalar, 3, 3>& R, gsl::span<Scalar>
 auto RotMatFromQuat(gsl::span<const Scalar> q, gsl::not_null<Eigen::Matrix<Scalar, 3, 3>*> R) -> void;
 
 auto RotMat(const Eigen::Matrix<Scalar, 4, 1>& quat)->Eigen::Matrix<Scalar, 3, 3>;
+auto RotMat(gsl::span<Scalar> quat)->Eigen::Matrix<Scalar, 3, 3>;
 
 /// Converts from axis-angle representation of a rotation (SO3) to quaternion.
 /// param axis_ang : 3 - element vector of angle*rot_axis

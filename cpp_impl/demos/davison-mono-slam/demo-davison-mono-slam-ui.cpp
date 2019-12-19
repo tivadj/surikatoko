@@ -504,6 +504,7 @@ void RenderMap(const DavisonMonoSlam* mono_slam, Scalar covar3D_to_ellipsoid_chi
 
 void RenderScene(const UIThreadParams& ui_params, ptrdiff_t frame_ind, const DavisonMonoSlam* mono_slam, const CameraIntrinsicParams& cam_instrinsics, Scalar covar3D_to_ellipsoid_chi_square,
     bool display_estim_trajectory,
+    bool align_estim_traj_to_gt,
     CamDisplayType mid_cam_disp_type,
     bool display_3D_uncertainties,
     TrajectoryPortion gt_display_portion,
@@ -568,10 +569,19 @@ void RenderScene(const UIThreadParams& ui_params, ptrdiff_t frame_ind, const Dav
         RenderMap(mono_slam, covar3D_to_ellipsoid_chi_square, display_3D_uncertainties, dots_per_ellipse, ui_swallow_exc);
 
         // render history of camera's positions (schematic)
-        std::array<float, 3> actual_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
+        std::array<GLfloat, 3> estim_track_color{ 128 / 255.0f, 255 / 255.0f, 255 / 255.0f }; // cyan
+        std::array<GLfloat, 3> aligned_track_color{ 0 / 255.0f, 162 / 255.0f, 132 / 255.0f }; // blue
+        auto actual_track_color = align_estim_traj_to_gt ? aligned_track_color : estim_track_color;
+        
         if (display_estim_trajectory && ui_params.estim_cam_orient_cfw != nullptr)
         {
-            RenderCameraTrajectory(*ui_params.estim_cam_orient_cfw, gsl::span<const std::optional<SE3Transform>>{}, cam_instrinsics, actual_track_color, mid_cam_disp_type);
+            gsl::span<const SE3Transform> cams{};
+            gsl::span<const std::optional<SE3Transform>> opt_cams{};
+            if (align_estim_traj_to_gt)
+                opt_cams = *ui_params.aligned_with_gt_estim_cam_orient_cfw;
+            else
+                cams = *ui_params.estim_cam_orient_cfw;
+            RenderCameraTrajectory(cams, opt_cams, cam_instrinsics, actual_track_color, mid_cam_disp_type);
         }
 
         // render current (the latest) camera position
@@ -638,6 +648,7 @@ void SceneVisualizationPangolinGui::InitUI()
 
     a_frame_ind_ = std::make_unique<pangolin::Var<ptrdiff_t>>("ui.frame_ind", -1);
     cb_displ_estim_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_estim_traj", true, true);
+    cb_align_estim_traj_to_gt_ = std::make_unique<pangolin::Var<bool>>("ui.align_estim_to_gt", false, true);
     slider_displ_ground_truth_ = std::make_unique<pangolin::Var<int>>("ui.displ_gt", 1, 0, 2);
     cb_displ_external_traj_ = std::make_unique<pangolin::Var<bool>>("ui.displ_extern_traj", false, true);
     slider_mid_cam_type_ = std::make_unique<pangolin::Var<int>>("ui.mid_cam_type", 1, 0, 2);
@@ -679,6 +690,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
         SetCameraBehindTracker();
 
     bool display_estim_trajectory = cb_displ_estim_traj_->Get();
+    bool align_estim_traj_to_gt = cb_align_estim_traj_to_gt_->Get();
     bool display_3D_uncertainties = cb_displ_mid_cam_type_->Get();
 
     TrajectoryPortion gt_display_portion = [](int value) {
@@ -711,6 +723,7 @@ void SceneVisualizationPangolinGui::RenderFrame()
 
     RenderScene(ui_params, frame_ind, ui_params.mono_slam, cam_instrinsics_, ui_params.covar3D_to_ellipsoid_chi_square,
                 display_estim_trajectory,
+                align_estim_traj_to_gt,
                 mid_cam_disp_type,
                 display_3D_uncertainties,
                 gt_display_portion,

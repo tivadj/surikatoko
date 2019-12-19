@@ -74,6 +74,22 @@ auto TimestampPoseToSE3(const TumTimestampPose& r)->std::optional<SE3Transform>
     return se3;
 }
 
+auto SE3ToTimestampPose(TumTimestamp stamp, std::optional<SE3Transform> rt_opt)->TumTimestampPose
+{
+    TumTimestampPose result;
+    result.timestamp = stamp;
+    if (rt_opt.has_value())
+    {
+        const auto& rt = rt_opt.value();
+        result.pos = rt.T;
+
+        Eigen::Matrix<Scalar, 4, 1 > q;
+        QuatFromRotationMatNoRChecks(rt.R, gsl::make_span<Scalar>(q.data(), 4));
+        result.quat = q;
+    }
+    return result;
+}
+
 bool ReadTumDatasetGroundTruth(const std::filesystem::path& file_path,
     std::vector<TumTimestampPose>* poses_gt, std::string* err_msg, bool check_timestamp_order_asc)
 {
@@ -191,7 +207,7 @@ bool ReadTumDatasetGroundTruth(const std::filesystem::path& file_path,
 }
 
 bool SaveTumDatasetGroundTruth(const std::filesystem::path& file_path,
-    std::vector<TumTimestampPose>* poses_gt, QuatLayout quat_layout, std::string* err_msg)
+    std::vector<TumTimestampPose>* poses_gt, QuatLayout quat_layout, std::string_view header, std::string* err_msg)
 {
     std::ofstream fs(file_path.c_str());
     if (!fs)
@@ -204,6 +220,8 @@ bool SaveTumDatasetGroundTruth(const std::filesystem::path& file_path,
         }
         return false;
     }
+    if (!header.empty())
+        fs << "# " << header << std::endl;
     if (quat_layout == QuatLayout::XyzW)
         fs << "# timestamp tx ty tz qx qy qz qw" << std::endl;
     else
@@ -296,7 +314,7 @@ ptrdiff_t SearchClosestGroundTruthPeerByTimestamp(
 size_t AssignCloseIndsByTimestamp(
     const std::vector<TumTimestampPose>& ground,
     const std::vector<TumTimestamp>& need_match,
-    TumTimestampDiff max_time_diff,
+    std::optional<TumTimestampDiff> max_time_diff,
     std::vector<ptrdiff_t>* gt_inds)
 {
     gt_inds->resize(need_match.size());
@@ -331,10 +349,10 @@ size_t AssignCloseIndsByTimestamp(
             }
         }
 
-        if (min_time_gt_ind != -1)  // found the candidate for correspondence
+        if (min_time_gt_ind != -1 && max_time_diff.has_value())  // found the candidate for correspondence
         {
             TumTimestampDiff time_mismatch = std::abs(ground[min_time_gt_ind].timestamp - ask_time);
-            if (time_mismatch > max_time_diff)
+            if (time_mismatch > max_time_diff.value())
                 min_time_gt_ind = -1;  // reject distant correspondence
         }
 
@@ -350,7 +368,58 @@ size_t AssignCloseIndsByTimestamp(
 
     // postcondition
     SRK_ASSERT(gt_inds->size() == need_match.size());
+
+    static bool compare_with_naive_impl = false;
+    if (compare_with_naive_impl)
+    {
+        std::vector<ptrdiff_t> gt_inds_naive;
+        size_t found_gt_count_naive  = AssignCloseIndsByTimestampNaive(ground, need_match, max_time_diff, &gt_inds_naive);
+        SRK_ASSERT(found_gt_count_naive == found_gt_count) << "can't assign gt to trajectory, expected(naive): " << found_gt_count_naive << ", actual: " << found_gt_count;
+        // assert this impl matches the naive impl
+        for (size_t i = 0; i < need_match.size(); ++i)
+        {
+            auto expect = gt_inds_naive[i];
+            auto actual = (*gt_inds)[i];
+            SRK_ASSERT(expect == actual);
+        }
+    }
     return found_gt_count;
 }
 
+size_t AssignCloseIndsByTimestampNaive(
+    const std::vector<TumTimestampPose>& ground,
+    const std::vector<TumTimestamp>& need_match,
+    std::optional<TumTimestampDiff> max_time_diff,
+    std::vector<ptrdiff_t>* gt_inds)
+{
+    gt_inds->resize(need_match.size());
+
+    constexpr ptrdiff_t kNoInd = -1;
+    size_t found_gt_count = 0;
+    for (size_t ask_ind = 0; ask_ind < need_match.size(); ++ask_ind)
+    {
+        TumTimestamp ask_stamp = need_match[ask_ind];
+
+        auto closest_dist = std::numeric_limits<TumTimestampDiff>::max();
+        auto closest_ind = kNoInd;
+        for (size_t gt_ind = 0; gt_ind < ground.size(); ++gt_ind)
+        {
+            auto time_dist = std::abs(ground[gt_ind].timestamp - ask_stamp);
+            if (time_dist < closest_dist)
+            {
+                closest_dist = time_dist;
+                closest_ind = gt_ind;
+            }
+        }
+
+        // ignore far away ground truth
+        if (closest_ind != kNoInd &&
+            max_time_diff.has_value() &&
+            closest_dist > max_time_diff) closest_ind = kNoInd;
+
+        (*gt_inds)[ask_ind] = closest_ind;
+        found_gt_count += (closest_ind != kNoInd ? 1 : 0);
+    }
+    return found_gt_count;
+}
 }

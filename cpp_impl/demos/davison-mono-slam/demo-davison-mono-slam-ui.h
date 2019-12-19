@@ -63,6 +63,7 @@ struct UIThreadParams
     const std::vector<std::optional<SE3Transform>>* gt_cam_orient_cfw;
     const std::vector<std::optional<SE3Transform>>* external_cam_orient_cfw;  // some external trjaectory to render
     const std::vector<SE3Transform>* estim_cam_orient_cfw;
+    const std::vector<std::optional<SE3Transform>>* aligned_with_gt_estim_cam_orient_cfw;
     const FragmentMap* entire_map;
     std::shared_ptr<WorkerChatSharedState> worker_chat;
     bool ui_swallow_exc;
@@ -150,6 +151,7 @@ private:
     // the part of rendering of a UI frame to be called in isolation.
     std::unique_ptr<pangolin::Var<ptrdiff_t>> a_frame_ind_;
     std::unique_ptr<pangolin::Var<bool>> cb_displ_estim_traj_;
+    std::unique_ptr<pangolin::Var<bool>> cb_align_estim_traj_to_gt_;  // display aligned to ground truth estimated trajectory 
     std::unique_ptr<pangolin::Var<bool>> cb_displ_external_traj_;
     std::unique_ptr<pangolin::Var<int>> slider_displ_ground_truth_;
     std::unique_ptr<pangolin::Var<int>> slider_mid_cam_type_;

@@ -4,6 +4,7 @@
 #include <optional>
 #include "suriko/rt-config.h"
 #include "suriko/obs-geom.h"
+#include "suriko/quat.h"
 
 namespace suriko::adapt::tum
 {
@@ -27,19 +28,15 @@ struct TumTimestampPose
 };
 
 auto TimestampPoseToSE3(const TumTimestampPose& r)->std::optional<SE3Transform>;
+auto SE3ToTimestampPose(TumTimestamp stamp, std::optional<SE3Transform> rt_opt)->TumTimestampPose;
 
 bool ReadTumDatasetGroundTruth(const std::filesystem::path& file_path,
     std::vector<TumTimestampPose>* poses_gt, std::string* err_msg = nullptr, bool check_timestamp_order_asc = true);
 
-/// Specifies the order in which to put quaternion's components into sequence.
-enum class QuatLayout
-{
-    XyzW,  // [x y z w], used by TUM's datasets
-    WXyz   // [w x y z]
-};
-
 bool SaveTumDatasetGroundTruth(const std::filesystem::path& file_path,
-    std::vector<TumTimestampPose>* poses_gt, QuatLayout quat_layout, std::string* err_msg = nullptr);
+    std::vector<TumTimestampPose>* poses_gt, QuatLayout quat_layout,
+    std::string_view header = std::string_view{},
+    std::string* err_msg = nullptr);
 
 std::optional<TumTimestampDiff> MaxMatchTimeDifference(const std::vector<TumTimestampPose>& ground);
 
@@ -54,7 +51,13 @@ ptrdiff_t SearchClosestGroundTruthPeerByTimestamp(
 size_t AssignCloseIndsByTimestamp(
     const std::vector<TumTimestampPose>& ground,
     const std::vector<TumTimestamp>& need_match,
-    TumTimestampDiff max_time_diff,
+    std::optional<TumTimestampDiff> max_time_diff,
+    std::vector<ptrdiff_t>* gt_inds);
+
+size_t AssignCloseIndsByTimestampNaive(
+    const std::vector<TumTimestampPose>& ground,
+    const std::vector<TumTimestamp>& need_match,
+    std::optional<TumTimestampDiff> max_time_diff,
     std::vector<ptrdiff_t>* gt_inds);
 
 }

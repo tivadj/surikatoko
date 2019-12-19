@@ -89,8 +89,8 @@ auto DemoGetSalPntFramgmentId(const FragmentMap& entire_map, DavisonMonoSlam::Sa
 }
 
 void GenerateCameraShotsAlongRectangularPath(const WorldBounds& wb, size_t steps_per_side_x, size_t steps_per_side_y,
-    suriko::Point3 eye_offset, 
-    suriko::Point3 center_offset,
+    const suriko::Point3& eye_offset, 
+    const suriko::Point3& center_offset,
     const Point3& up,
     std::vector<std::optional<SE3Transform>>* cam_orient_cfw)
 {
@@ -1208,88 +1208,313 @@ void CheckDavisonMonoSlamConfigurationAndDump(const DavisonMonoSlam& mono_slam,
     }
 }
 
-bool LoadTumGtTraj(const std::filesystem::path& tum_dataset_dirpath,
-    std::vector<std::optional<SE3Transform>>* gt_cam_orient_cfw,
-    std::vector<TumTimestamp>* gt_rgb_timestamps)
+bool LoadOversampledTumGtTraj(const std::filesystem::path& tum_dataset_dirpath,
+    std::vector<std::optional<SE3Transform>>* gt_cam_orient_cfw)
 {
     if (tum_dataset_dirpath.empty() || !is_directory(tum_dataset_dirpath))
         return false;
 
     // TUM dataset has ground truth trajectory in oversampled frequency (4ms), while images are collected every 33ms.
-
-    // images
-    std::filesystem::path rgb_filepath = tum_dataset_dirpath / "rgb.txt"sv;
-    std::vector<TumTimestampFilename> filename_stamps;
-    filename_stamps.reserve(1024);
-    std::string err_msg;
-    bool op = ReadTumDatasetTimedRgb(rgb_filepath, &filename_stamps, &err_msg);
-    if (!op)
-    {
-        LOG(ERROR) << "Can't read TUM 'rgb' file: " << rgb_filepath << ", error: " << err_msg;
-        return false;
-    }
-    auto& rgb_stamps = *gt_rgb_timestamps;
-    rgb_stamps.resize(filename_stamps.size());
-    std::transform(filename_stamps.begin(), filename_stamps.end(), rgb_stamps.begin(), [](const TumTimestampFilename& i) { return i.timestamp; });
-
     // ground truth
     std::filesystem::path gt_filepath = tum_dataset_dirpath / "groundtruth.txt"sv;
-    std::vector<TumTimestampPose> oversampled_poses_gt;
-    oversampled_poses_gt.reserve(filename_stamps.size());  // there may be more samples due to oversampling
-    op = ReadTumDatasetGroundTruth(gt_filepath, &oversampled_poses_gt, &err_msg);
+    std::vector<TumTimestampPose> oversampled_poses_wfc_gt_tum;
+    std::string err_msg;
+    bool op = ReadTumDatasetGroundTruth(gt_filepath, &oversampled_poses_wfc_gt_tum, &err_msg);
     if (!op)
     {
-        LOG(ERROR) << "Can't read TUM groundtruth file: " << gt_filepath << ", error: " << err_msg;
+        LOG(ERROR) << "Can't read TUM ground truth file: " << gt_filepath << ", error: " << err_msg;
         return false;
     }
 
+    std::vector<std::optional<SE3Transform>> gt_poses_wfc_gt;
+    std::transform(oversampled_poses_wfc_gt_tum.begin(), oversampled_poses_wfc_gt_tum.end(), std::back_inserter(gt_poses_wfc_gt),
+        [](const auto& t) { return TimestampPoseToSE3(t); });
+    return true;
+}
+
+/// \param premult_gt_from_cam0 transforms from frame of camera0 into the frame of ground truth: result=premult_gt_from_cam0 * cam0_from_cami
+bool LoadTumGtTraj(const std::filesystem::path& tum_dataset_dirpath,
+    const std::vector<TumTimestamp>& rgb_stamps,
+    std::optional<TumTimestampDiff> max_time_diff,
+    std::optional<Eigen::Matrix<Scalar, 3,3>> premult_gt_from_cam0,
+    std::vector<std::optional<SE3Transform>>* gt_cam_orient_cfw)
+{
+    if (tum_dataset_dirpath.empty() || !is_directory(tum_dataset_dirpath))
+        return false;
+
+    // TUM dataset has ground truth trajectory in oversampled frequency (4ms), while images are collected every 33ms.
+    // ground truth
+    std::filesystem::path gt_filepath = tum_dataset_dirpath / "groundtruth.txt"sv;
+    std::vector<TumTimestampPose> oversampled_poses_wfc_gt_tum;
+    std::string err_msg;
+    bool op = ReadTumDatasetGroundTruth(gt_filepath, &oversampled_poses_wfc_gt_tum, &err_msg);
+    if (!op)
+    {
+        LOG(ERROR) << "Can't read TUM ground truth file: " << gt_filepath << ", error: " << err_msg;
+        return false;
+    }
+
+    std::vector<std::optional<SE3Transform>> gt_poses_wfc_gt;
+    std::transform(oversampled_poses_wfc_gt_tum.begin(), oversampled_poses_wfc_gt_tum.end(), std::back_inserter(gt_poses_wfc_gt),
+        [](const auto& t) { return TimestampPoseToSE3(t); });
+
+    double gt_total_dur = -1;
+    Scalar gt_total_rot_ang = -1;
+    Scalar gt_poses_traj_len = CalcTrajectoryLengthWfc(&gt_poses_wfc_gt, nullptr, 
+        [&](size_t i) -> std::optional<double> {
+            return oversampled_poses_wfc_gt_tum[i].timestamp;
+        }, &gt_total_dur, &gt_total_rot_ang);
+LOG(INFO) << "gt traj:"
+        << " frames:" << oversampled_poses_wfc_gt_tum.size()
+        << ", length[m]: " << gt_poses_traj_len
+        << ", dur[s]: " << gt_total_dur
+        << ", avg transl vel[m/s]:" << gt_poses_traj_len / gt_total_dur
+        << ", avg angular vel[deg/s]:" << Rad2Deg(gt_total_rot_ang) / gt_total_dur;
+
     // maximal allowed difference between ground truth and rgb image timestamp
-    auto max_time_diff = MaxMatchTimeDifference(oversampled_poses_gt);
+    if (!max_time_diff.has_value())
+        max_time_diff = MaxMatchTimeDifference(oversampled_poses_wfc_gt_tum);
     if (!max_time_diff.has_value()) return false;
 
     std::vector<ptrdiff_t> rgb_poses_gt_inds;
-    size_t found_gt_count = AssignCloseIndsByTimestamp(oversampled_poses_gt, rgb_stamps, max_time_diff.value(), &rgb_poses_gt_inds);
-    LOG(INFO) << found_gt_count << " out of " << rgb_stamps.size() << " camera frames has ground truth";
+    size_t found_gt_count = AssignCloseIndsByTimestamp(oversampled_poses_wfc_gt_tum, rgb_stamps, max_time_diff, &rgb_poses_gt_inds);
 
     // construct subset of ground truth trajectory, corresponding to rgb images
-    std::vector<std::optional<SE3Transform>> rgb_poses_gt{ rgb_stamps.size() };
-    for (size_t i = 0; i < rgb_poses_gt.size(); ++i)
+    std::vector<std::optional<SE3Transform>> rgb_poses_wfc_gt{ rgb_stamps.size() };
+    for (size_t i = 0; i < rgb_poses_wfc_gt.size(); ++i)
     {
         ptrdiff_t gt_ind = rgb_poses_gt_inds[i];
         if (gt_ind != -1)
         {
-            const TumTimestampPose& p = oversampled_poses_gt[gt_ind];
-            rgb_poses_gt[i] = TimestampPoseToSE3(p);
+            const TumTimestampPose& p = oversampled_poses_wfc_gt_tum[gt_ind];
+            rgb_poses_wfc_gt[i] = TimestampPoseToSE3(p);
         }
     }
-    Scalar rgb_poses_gt_traj_len = CalcTrajectoryLength(&rgb_poses_gt, nullptr);
-    LOG(INFO) << "gt trajectory length: " << rgb_poses_gt_traj_len;
+
+    double rgb_total_dur = -1;
+    Scalar rgb_total_rot_ang = -1;
+    Scalar rgb_poses_gt_traj_len = CalcTrajectoryLengthWfc(&rgb_poses_wfc_gt, nullptr,
+        [&](size_t i) -> std::optional<double> {
+            ptrdiff_t gt_ind = rgb_poses_gt_inds[i];
+            if (gt_ind == -1) return std::nullopt;
+            return oversampled_poses_wfc_gt_tum[gt_ind].timestamp;
+        }, &rgb_total_dur, &rgb_total_rot_ang);
+    LOG(INFO) << "estim traj"
+        << " frames:" << rgb_poses_wfc_gt.size()
+        << ", frames_with_gt:" << found_gt_count
+        <<", length[m]: " << rgb_poses_gt_traj_len
+        << ", dur[s]: " << rgb_total_dur
+        << ", avg trans vel[m/s]:" << rgb_poses_gt_traj_len / rgb_total_dur
+        << ", avg angul vel[deg/s]:" << Rad2Deg(rgb_total_rot_ang) / rgb_total_dur;
 
     // ground truth corresponding to the first camera frame
     ptrdiff_t first_cam_gt_ind = rgb_poses_gt_inds[0];
-    const TumTimestampPose& first_cam_gt = oversampled_poses_gt[first_cam_gt_ind];
-    std::optional<SE3Transform> first_cam_gt_se3 = TimestampPoseToSE3(first_cam_gt);
-    if (!first_cam_gt_se3.has_value()) return false;
+    const TumTimestampPose& first_cam_wfc_gt_tum = oversampled_poses_wfc_gt_tum[first_cam_gt_ind];
+    std::optional<SE3Transform> first_cam_wfc0_gt = TimestampPoseToSE3(first_cam_wfc_gt_tum);
+    if (!first_cam_wfc0_gt.has_value()) return false;
 
     // transform the entire ground truth sequence, so that a ground truth frame, corresponding to the first camera's frame, coincides with the origin
+    SE3Transform first_cam_c0fw_gt = SE3Inv(first_cam_wfc0_gt.value());  // rgb cam0 from world
 
-    SE3Transform first_cam_gt_inv = SE3Inv(first_cam_gt_se3.value());
-    //for (const TumTimestampPose& t : oversampled_poses_gt)
-    //{
-    //    std::optional<SE3Transform> cfw = TimestampPoseToSE3(t);
-    //    if (cfw.has_value())
-    //        cfw = SE3Compose(first_cam_gt_inv, cfw.value());
-    //    gt_cam_orient_cfw->push_back(cfw);
-    //}
-    for (const std::optional<SE3Transform>& t : rgb_poses_gt)
+    // this may transform from X-right-Y-bottom into X-left-Y-top (which is the default) coordinates
+    SE3Transform premult_gt_from_cam0_se3 = SE3Transform::NoTransform();
+    if (premult_gt_from_cam0.has_value())
+        premult_gt_from_cam0_se3.R = premult_gt_from_cam0.value();
+
+    std::array<Scalar, 4> prefix_quat;
+    op = QuatFromRotationMat(premult_gt_from_cam0_se3.R, prefix_quat);
+    SRK_ASSERT(op);
+
+    for (const std::optional<SE3Transform>& wfci : rgb_poses_wfc_gt)  // world from cami
     {
-        std::optional<SE3Transform> cfw = t;
-        if (cfw.has_value())
-            cfw = SE3Compose(first_cam_gt_inv, cfw.value());
-        gt_cam_orient_cfw->push_back(cfw);
+        std::optional<SE3Transform> cifc0;  // cam0 from cami
+        if (wfci.has_value())
+        {
+            auto c0fci = SE3Compose(first_cam_c0fw_gt, wfci.value());
+
+            c0fci = SE3Compose(premult_gt_from_cam0_se3, c0fci);  // apply X-right-y_bottom to X-left-Y-top transformation
+
+            cifc0 = SE3Inv(c0fci);
+        }
+        gt_cam_orient_cfw->push_back(cifc0);
     }
 
     return true;
+}
+
+void CalcAndPrintTrajectoryErrors(const std::vector<SE3Transform>& estim_cam_orient_cfw,
+    const std::vector<std::optional<SE3Transform>>& gt_cam_orient_cfw,
+    std::vector<std::optional<SE3Transform>>* aligned_with_gt_estim_cam_orient_cfw,
+    Scalar seconds_per_frame)
+{
+    std::vector<std::optional<SE3Transform>> estim_cfw;
+    estim_cfw.reserve(estim_cam_orient_cfw.size());
+    std::transform(estim_cam_orient_cfw.begin(), estim_cam_orient_cfw.end(), std::back_inserter(estim_cfw),
+        [](const SE3Transform& t) { return std::make_optional(t); });
+
+    // calculate average camera movement in estimated trajectory
+    {
+        MeanStdAlgo transl_stat;
+        MeanStdAlgo rot_angs_stat;
+        std::vector<Scalar> cam_transls;
+        std::vector<Scalar> cam_rot_angs;
+        for (size_t i = 1; i < estim_cfw.size(); ++i)
+        {
+            const auto& v1 = estim_cfw[i - 1];
+            const auto& v2 = estim_cfw[i];
+            if (!v1.has_value() || !v2.has_value()) continue;
+            SE3Transform wfc1 = SE3Inv(v1.value());
+            SE3Transform wfc2 = SE3Inv(v2.value());
+            Scalar cam_shift = (wfc2.T - wfc1.T).norm();
+            transl_stat.Next(cam_shift);
+            cam_transls.push_back(cam_shift);
+
+            SE3Transform step = SE3Compose(SE3Inv(wfc1), wfc2);
+            Scalar ang = RotAngleFromRotMat(step.R);
+            Scalar ang_deg = Rad2Deg(ang);
+            rot_angs_stat.Next(ang_deg);
+            cam_rot_angs.push_back(ang_deg);
+        }
+        if (!cam_transls.empty())
+        {
+            Scalar shifts_median = LeftMedianInplace(&cam_transls).value();
+            LOG(INFO) << "estim transl vel[m/f]: {"
+                << "median:" << shifts_median
+                << ",mean:" << transl_stat.Mean()
+                << ",std:" << transl_stat.Std()
+                << ",min:" << transl_stat.Min().value()
+                << ",max:" << transl_stat.Max().value() << "}";
+            LOG(INFO) << "estim transl vel[m/s]: {"
+                << "median:" << shifts_median / seconds_per_frame
+                << ",mean:" << transl_stat.Mean() / seconds_per_frame
+                << ",std:" << transl_stat.Std() / seconds_per_frame
+                << ",min:" << transl_stat.Min().value() / seconds_per_frame
+                << ",max:" << transl_stat.Max().value() / seconds_per_frame << "}";
+
+            Scalar rot_angs_median = LeftMedianInplace(&cam_rot_angs).value();
+            LOG(INFO) << "estim angular vel[deg/f]: {"
+                << "median:" << rot_angs_median
+                << ",mean:" << rot_angs_stat.Mean()
+                << ",std:" << rot_angs_stat.Std()
+                << ",min:" << rot_angs_stat.Min().value()
+                << ",max:" << rot_angs_stat.Max().value() << "}";
+            LOG(INFO) << "estim angular vel[deg/s]: {"
+                << "median:" << rot_angs_median / seconds_per_frame
+                << ",mean:" << rot_angs_stat.Mean() / seconds_per_frame
+                << ",std:" << rot_angs_stat.Std() / seconds_per_frame
+                << ",min:" << rot_angs_stat.Min().value() / seconds_per_frame
+                << ",max:" << rot_angs_stat.Max().value() / seconds_per_frame << "}";
+        }
+    }
+
+    // RPE (relative pose error)
+
+    size_t poses_count = std::min(estim_cfw.size(), gt_cam_orient_cfw.size());
+    auto gt_first_poses_cfw = gsl::make_span(gt_cam_orient_cfw).first(poses_count);
+
+    std::vector<std::optional<SE3Transform>> estim_wfc;
+    std::transform(estim_cfw.begin(), estim_cfw.end(), std::back_inserter(estim_wfc),
+        [](const auto& c) { return SE3Inv(c); });;
+
+    std::vector<std::optional<SE3Transform>> gt_first_poses_wfc;
+    std::transform(gt_first_poses_cfw.begin(), gt_first_poses_cfw.end(), std::back_inserter(gt_first_poses_wfc),
+        [](const auto& c) { return SE3Inv(c); });
+
+
+    auto printErrStats = [frame_dur = seconds_per_frame](std::string_view title, const ErrWithMoments& e) {
+        LOG(INFO) << title << ": {"
+            << "RMSE:" << e.rmse
+            << ",median:" << e.median
+            << ",mean:" << e.mean
+            << ",std:" << e.std
+            << ",min:" << e.min
+            << ",max:" << e.max << "}";
+    };
+
+    std::optional<std::tuple<ErrWithMoments,ErrWithMoments>> rpe = CalcRelativePoseError(gt_first_poses_wfc, estim_wfc);
+    if (!rpe.has_value())
+        LOG(ERROR) << "Can't calculate relative pose error.";
+    else
+    {
+        auto [rpe_transl, rpe_rot] = rpe.value();
+
+        auto mul = [](const ErrWithMoments& e, Scalar s)->ErrWithMoments {
+            auto result = e;
+            result.rmse *= s;
+            result.median *= s;
+            result.mean *= s;
+            result.std *= s;
+            result.min *= s;
+            result.max *= s;
+            return result;
+        };
+        auto rpe_transl_per_second = mul(rpe_transl, 1 / seconds_per_frame);
+        auto rpe_rot_deg = mul(rpe_rot, static_cast<Scalar>(180/M_PI));
+        auto rpe_rot_deg_per_second = mul(rpe_rot_deg, 1 / seconds_per_frame);
+
+        printErrStats("RPE(transl)[m/f]", rpe_transl);             // meters per frame
+        printErrStats("RPE(transl)[m/s]", rpe_transl_per_second);  // meters per second
+        printErrStats("RPE(rot)[deg/f]",  rpe_rot_deg);            // degrees per frame
+        printErrStats("RPE(rot)[deg/s]",  rpe_rot_deg_per_second); // degrees per second
+    }
+
+    // ATE (absolute trajectory error)
+
+    std::vector<Point3> estim_coord_nogaps_world;
+    std::vector<Point3> gt_coord_nogaps_world;
+    for (size_t i = 0; i < estim_wfc.size(); ++i)
+    {
+        const auto& p1 = estim_wfc[i];
+        if (!p1.has_value()) continue;
+        const auto& p2 = gt_first_poses_wfc[i];
+        if (!p2.has_value()) continue;
+        estim_coord_nogaps_world.push_back(p1.value().T);
+        gt_coord_nogaps_world.push_back(p2.value().T);
+    }
+
+    std::optional<ErrWithMoments> ate_noalign = CalcAbsoluteTrajectoryError(gt_coord_nogaps_world, estim_coord_nogaps_world);
+    if (!ate_noalign.has_value())
+        LOG(ERROR) << "Can't calculate absolute trajectory error.";
+    else
+        printErrStats("ATE(noalign)[m]", ate_noalign.value());
+
+    auto [opalign, gt_from_estim] = AlignTrajectoryHornAFromB(gt_coord_nogaps_world, estim_coord_nogaps_world);
+    if (!opalign)
+    {
+        LOG(ERROR) << "Can't align estimated trajectory into gt trajectory.";
+        return;
+    }
+    LOG(INFO) << "align(Horn) gt_from_estim: R[:,0]=[" << gt_from_estim.R.col(0).transpose()
+        << "] R[:,1]=[" << gt_from_estim.R.col(1).transpose()
+        << "] T=[" << gt_from_estim.T.transpose() << "]";
+
+    // for visualization, populate estimated trajectory aligned into gt trajectory
+    for (size_t i = 0; i < estim_wfc.size(); ++i)
+    {
+        std::optional<SE3Transform> estim_from_camera = estim_wfc[i];
+        std::optional<SE3Transform> camera_from_gt;
+        if (estim_from_camera.has_value())
+        {
+            SE3Transform gt_from_camera = SE3Compose(gt_from_estim, estim_from_camera.value());
+            camera_from_gt = SE3Inv(gt_from_camera);
+        }
+        aligned_with_gt_estim_cam_orient_cfw->push_back(camera_from_gt);
+    }
+
+    // ATE on aligned trjactories
+
+    std::vector<Point3> estim_coord_mapped_to_gt_nogaps_world;
+    for (auto& p : estim_coord_nogaps_world)
+    {
+        auto p_mapped = SE3Apply(gt_from_estim, p);
+        estim_coord_mapped_to_gt_nogaps_world.push_back(p_mapped);
+    }
+
+    std::optional<ErrWithMoments> ate_aligned = CalcAbsoluteTrajectoryError(gt_coord_nogaps_world, estim_coord_mapped_to_gt_nogaps_world);
+    if (!ate_aligned.has_value())
+        LOG(ERROR) << "Can't calculate absolute trajectory error.";
+    else
+        printErrStats("ATE(aligned)[m]", ate_aligned.value());
 }
 
 bool ValidateDirectoryEmptyOrExists(const std::string &value)
@@ -1332,7 +1557,6 @@ DEFINE_double(monoslam_sal_pnt_first_cam_pos_std_if_gt, 0, "");
 DEFINE_double(monoslam_sal_pnt_azimuth_std_if_gt, 0, "");
 DEFINE_double(monoslam_sal_pnt_elevation_std_if_gt, 0, "");
 DEFINE_double(monoslam_sal_pnt_inv_dist_std_if_gt, 0, "");
-
 DEFINE_bool(monoslam_force_xyz_sal_pnt_pos_diagonal_uncert, false, "false to derive XYZ sal pnt uncertainty from spherical sal pnt; true to set diagonal covariance values");
 DEFINE_double(monoslam_sal_pnt_negative_inv_rho_substitute, -1, "");
 DEFINE_bool(monoslam_force_sequential_engine, false, "True to perform sequential matching");
@@ -1362,7 +1586,6 @@ DEFINE_int32(ui_loop_prolong_period_ms, 3000, "");
 DEFINE_int32(ui_tight_loop_relaxing_delay_ms, 100, "");
 DEFINE_int32(ui_dots_per_uncert_ellipse, 12, "Number of dots to split uncertainty ellipse (4=rectangle)");
 DEFINE_double(ui_covar3D_to_ellipsoid_chi_square, 7.814f, "{confidence interval,chi-square}={68%,3.505},{95%,7.814},{99%,11.344}");
-DEFINE_string(FLAGS_adorn_traj_filepath, "", "Loads some trajectory from a file in TUM dataset format and renders it");
 
 constexpr bool FLAGS_ctrl_ui_in_separate_thread = false;  // TODO: to be removed, locking of predicted/updated state of a tracker is not implemented
 DEFINE_bool(ctrl_wait_after_each_frame, false, "true to wait for keypress after each iteration");
@@ -1452,6 +1675,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     std::vector<std::optional<SE3Transform>> gt_cam_orient_cfw;  // entire sequence of ground truth camera orientation, transforming into camera from world
     std::vector<TumTimestamp> estim_rgb_timestamps;              // timestamps of input images
     std::vector<SE3Transform> estim_cam_orient_cfw;              // estimated trajectory of the camera
+    std::vector<std::optional<SE3Transform>> aligned_with_gt_estim_cam_orient_cfw;  // estimated trajectory of the camera which is aligned with ground truth using Horn algorithm
 
     std::vector<std::optional<SE3Transform>> external_cam_orient_cfw;  // some trajectory to render
 
@@ -1516,6 +1740,30 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             LOG(ERROR) << "directory [" << scene_imageseq_dir << "] doesn't exist";
             return 2;
         }
+    }
+
+    // just visualize and compute trajectory errors for some provided trajectory
+    auto analyze_estim_traj_wfc_filepath_opt = config_reader.GetValue<std::string>("analyze_estim_traj_wfc");
+    bool analyze_preloaded_estim_traj = analyze_estim_traj_wfc_filepath_opt.has_value();
+    if (analyze_preloaded_estim_traj)
+    {
+        SE3Transform premultM = SE3Transform::NoTransform();
+        if (std::optional<std::vector<Scalar>> prefix_quat_opt = FloatSeq<Scalar>(&config_reader, "analyze_estim_traj_wfc_premultiply_quat_xyzw");
+            prefix_quat_opt.has_value() && prefix_quat_opt.value().size() == 4)
+        {
+            std::array<Scalar, 4> prefix_quat = NewQuatFrom(prefix_quat_opt.value(), QuatLayout::XyzW);
+            premultM.R = RotMat(prefix_quat);
+        }
+
+        std::vector<TumTimestampPose> est_poses_wfc;
+        bool op33 = ReadTumDatasetGroundTruth(analyze_estim_traj_wfc_filepath_opt.value(), &est_poses_wfc);
+        std::transform(est_poses_wfc.begin(), est_poses_wfc.end(), std::back_inserter(estim_cam_orient_cfw),
+            [premultM](const TumTimestampPose& t) { return SE3Inv(SE3Compose(premultM, TimestampPoseToSE3(t).value())); });
+
+        // load timestamps of poses from the estimated trajectory to construct later the ground truth trajectory
+        // (in TUM dataset the ground truth poses for these stamps are pulled from oversampled ground truth trajectory)
+        std::transform(est_poses_wfc.begin(), est_poses_wfc.end(), std::back_inserter(estim_rgb_timestamps),
+            [](const TumTimestampPose& t) { return t.timestamp; });
     }
 
     //
@@ -1700,26 +1948,63 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         {
             LOG(INFO) << "Loading TUM dataset";
 
+            if (analyze_preloaded_estim_traj)
+            {
+                SRK_ASSERT(!estim_rgb_timestamps.empty()) << "Timestamps of poses must be loaded from estimated trajectory.";
+            }
+            else
+            {
+                // load timestamps from file names of rgb images
+                std::filesystem::path rgb_filepath = tum_dataset_dirpath / "rgb.txt"sv;
+                std::vector<TumTimestampFilename> filename_stamps;
+                filename_stamps.reserve(1024);
+                std::string err_msg;
+                bool op = ReadTumDatasetTimedRgb(rgb_filepath, &filename_stamps, &err_msg);
+                if (!op)
+                {
+                    LOG(ERROR) << "Can't read TUM 'rgb' file: " << rgb_filepath << ", error: " << err_msg;
+                    return false;
+                }
+                estim_rgb_timestamps.resize(filename_stamps.size());
+                std::transform(filename_stamps.begin(), filename_stamps.end(), estim_rgb_timestamps.begin(), [](const TumTimestampFilename& i) { return i.timestamp; });
+            }
+
+            std::optional<Eigen::Matrix<Scalar, 3, 3>> premult_gt_from_cam0;
+            if (std::optional<std::vector<Scalar>> prefix_quat_opt = FloatSeq<Scalar>(&config_reader, "tum_groundtruth_premultiply_quat_xyzw");
+                prefix_quat_opt.has_value() && prefix_quat_opt.value().size() == 4)
+            {
+                std::array<Scalar, 4> prefix_quat = NewQuatFrom(prefix_quat_opt.value(), QuatLayout::XyzW);
+                premult_gt_from_cam0 = RotMat(prefix_quat);
+            }
+
+            // [seconds] max time difference to assign ground truth to estimated trajectory; TUM RGB - D bench 'evalute_ate.py' utility uses 0.02 seconds
+            TumTimestampDiff max_time_diff = static_cast<TumTimestampDiff>(FloatParam<Scalar>(&config_reader, "tum_groundtruth_sample_match_tolerance_s").value_or(0.02f));
+            LOG(INFO) << "tum_groundtruth_sample_match_tolerance[s]: " << max_time_diff;
+
             // ground truth
-            bool oploadgt = LoadTumGtTraj(tum_dataset_dirpath, &gt_cam_orient_cfw, &estim_rgb_timestamps);
+            bool oploadgt = LoadTumGtTraj(tum_dataset_dirpath, estim_rgb_timestamps, max_time_diff, premult_gt_from_cam0, &gt_cam_orient_cfw);
             if (!oploadgt)
                 LOG(INFO) << "Can't load ground truth from TUM dataset";
+
+            std::vector<std::optional<SE3Transform>> gt_cam_orient_wfc;
+            std::transform(gt_cam_orient_cfw.begin(), gt_cam_orient_cfw.end(), std::back_inserter(gt_cam_orient_wfc),
+                [](const auto& p) { return SE3Inv(p); });
         }
 
-        if (auto external_traj_filepath = config_reader.GetValue<std::string>("external_traj_filepath").value_or(""); !external_traj_filepath.empty())
+        if (auto external_traj_filepath = config_reader.GetValue<std::string>(" ").value_or(""); !external_traj_filepath.empty())
         {
             std::string err_msg;
-            std::vector<TumTimestampPose> poses_cfw;
-            bool op = ReadTumDatasetGroundTruth(external_traj_filepath, &poses_cfw, &err_msg);
+            std::vector<TumTimestampPose> poses_wfc;
+            bool op = ReadTumDatasetGroundTruth(external_traj_filepath, &poses_wfc, &err_msg);
             if (!op)
             {
                 LOG(ERROR) << "Can't read external trajectory from path: " << external_traj_filepath;
                 return 1;
             }
-            LOG(INFO) << "Loaded external trajectory, count:" << poses_cfw.size() <<", filepath:" << external_traj_filepath;
+            LOG(INFO) << "Loaded external trajectory, count:" << poses_wfc.size() <<", filepath:" << external_traj_filepath;
 
-            std::transform(poses_cfw.begin(), poses_cfw.end(), std::back_inserter(external_cam_orient_cfw), 
-                [](const TumTimestampPose& t) { return TimestampPoseToSE3(t); });
+            std::transform(poses_wfc.begin(), poses_wfc.end(), std::back_inserter(external_cam_orient_cfw), 
+                [](const TumTimestampPose& t) { return SE3Inv(TimestampPoseToSE3(t)); });
         }
     }
 
@@ -1940,10 +2225,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.SetStatsLogger(std::make_shared<DavisonMonoSlamInternalsLogger>());
     }
 
-    auto unused_params = config_reader.GetUnusedParams();
-    for (auto param : unused_params)
-        LOG(INFO) << "Unused param=" << param;
-
 
 #if defined(SRK_HAS_OPENCV)
     cv::Mat camera_image_bgr = cv::Mat::zeros(cam_intrinsics.image_size.height, (int)cam_intrinsics.image_size.width, CV_8UC3);
@@ -1959,6 +2240,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     ui_params.tracker_origin_from_world = tracker_origin_from_world;
     ui_params.covar3D_to_ellipsoid_chi_square = static_cast<Scalar>(FLAGS_ui_covar3D_to_ellipsoid_chi_square);
     ui_params.estim_cam_orient_cfw = &estim_cam_orient_cfw;
+    ui_params.aligned_with_gt_estim_cam_orient_cfw = &aligned_with_gt_estim_cam_orient_cfw;
     ui_params.get_observable_frame_ind_fun = [&observable_frame_ind]() { return observable_frame_ind; };
     ui_params.worker_chat = worker_chat;
     ui_params.ui_swallow_exc = FLAGS_ui_swallow_exc;
@@ -2034,7 +2316,18 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         LOG(INFO) << "imageseq_dir=" << scene_imageseq_dir;
         dir_it = std::filesystem::directory_iterator(scene_imageseq_dir);
     }
+
+
+
+    auto unused_params = config_reader.GetUnusedParams();
+    for (auto param : unused_params)
+        LOG(INFO) << "Unused param=" << param;
+
+
     bool iterate_frames = true;
+    if (analyze_preloaded_estim_traj)  // skip iteration (no tracking) if the entire trajectory is given and we need just to analyze it as is
+        iterate_frames = false;
+
     while(iterate_frames)  // for each frame
     {
         ++frame_ind;
@@ -2291,7 +2584,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             }
 #endif
         }
-        auto zero_time = std::chrono::seconds{ 0 };
+        std::chrono::seconds zero_time = std::chrono::seconds{0};
         auto total_time = 
             frame_process_time.value_or(zero_time) +
             frame_OpenCV_gui_time.value_or(zero_time) +
@@ -2339,13 +2632,13 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         }
         else
         {
-            if (FLAGS_ctrl_wait_after_each_frame)
+            if (!FLAGS_ctrl_wait_after_each_frame || analyze_preloaded_estim_traj)
             {
-                // if there was pause after each frame then we won't wait again
+                pangolin_gui->WaitKey();
             }
             else
             {
-                pangolin_gui->WaitKey();
+                // if there was pause after each frame then we won't wait again
             }
         }
     }
@@ -2357,84 +2650,33 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     // dump trajectory of a camera
     if (FLAGS_ctrl_log_slam_cam_traj)
     {
-        std::vector<TumTimestampPose> cam_poses_cfw;
-        cam_poses_cfw.resize(estim_cam_orient_cfw.size());
+        std::vector<TumTimestampPose> cam_poses_wfc;
+        cam_poses_wfc.resize(estim_cam_orient_cfw.size());
         for (size_t i = 0; i < estim_cam_orient_cfw.size(); ++i)
         {
             const SE3Transform& s = estim_cam_orient_cfw[i];
+            SE3Transform s_wfc = SE3Inv(s);
+            bool ortho = IsSpecialOrthogonal(s_wfc.R);
 
             TumTimestamp stamp = i * mono_slam.seconds_per_frame_;
             if (i < estim_rgb_timestamps.size())  // image timestamp is available
                 stamp = estim_rgb_timestamps[i];
 
-            TumTimestampPose pose_cfw;
-            pose_cfw.timestamp = stamp;
-            pose_cfw.pos = s.T;
-            Eigen::Matrix<Scalar, 4, 1 > q;
-            QuatFromRotationMatNoRChecks(s.R, gsl::make_span<Scalar>(q.data(), 4));
-            pose_cfw.quat = q;
-            cam_poses_cfw[i] = pose_cfw;
+            cam_poses_wfc[i] = SE3ToTimestampPose(stamp, s_wfc);
         }
         std::string err_mgs;
-        bool dump_traj = SaveTumDatasetGroundTruth("cam_traj.txt", &cam_poses_cfw, QuatLayout::XyzW, &err_mgs);
+        bool dump_traj = SaveTumDatasetGroundTruth("cam_traj_wfc.txt", &cam_poses_wfc, QuatLayout::XyzW, 
+            "transforms into world from camera: Pworld = M * Pcamera"sv, &err_mgs);
         if (!dump_traj)
             LOG(ERROR) << "Can't dump camera's trajectory. " << err_mgs;
     }
+
     if (bool calc_traj_error = true)
     {
-        std::vector<std::optional<SE3Transform>> estim_cfw;
-        estim_cfw.reserve(estim_cam_orient_cfw.size());
-        std::transform(estim_cam_orient_cfw.begin(), estim_cam_orient_cfw.end(), std::back_inserter(estim_cfw), [](const SE3Transform& t) { return std::make_optional(t); });
-
-        // calculate average camera movement in estimated trajectory
-        {
-            MeanStdAlgo stat_calc;
-            std::vector<Scalar> cam_shifts;
-            for (size_t i = 1; i < estim_cfw.size(); ++i)
-            {
-                const auto& v1 = estim_cfw[i - 1];
-                const auto& v2 = estim_cfw[i];
-                if (!v1.has_value() || !v2.has_value()) continue;
-                SE3Transform wfc1 = SE3Inv(v1.value());
-                SE3Transform wfc2 = SE3Inv(v2.value());
-                Scalar cam_shift = (wfc2.T - wfc1.T).norm();
-                stat_calc.Next(cam_shift);
-                cam_shifts.push_back(cam_shift);
-            }
-            if (!cam_shifts.empty())
-            {
-                Scalar median = LeftMedianInplace(&cam_shifts).value();
-                LOG(INFO) << "Estim cam shift (m/frame): {"
-                    << "median:" << median
-                    << ",mean:" << stat_calc.Mean()
-                    << ",std:" << stat_calc.Std()
-                    << ",min:" << stat_calc.Min().value()
-                    << ",max:" << stat_calc.Max().value() << "}";
-            }
-        }
-
-        size_t poses_count = std::min(estim_cfw.size(), gt_cam_orient_cfw.size());
-        auto gt_poses = gsl::make_span(gt_cam_orient_cfw).first(poses_count);
-
-        std::vector<Scalar> transl_errs;
-        bool op = CalcRelativePoseError(gt_poses, estim_cfw, &transl_errs);
-        if (!op)
-            LOG(ERROR) << "Can't calculate relative pose error.";
-        else
-        {
-            std::optional<ErrWithMoments> rpe = CalcTrajectoryErrStats(transl_errs);
-            if (rpe.has_value())
-            {
-                const ErrWithMoments& e = rpe.value();
-                LOG(INFO) << "RPE (m/frame): {"
-                    << "RMSE:" << e.rmse
-                    << ",median:" << e.median
-                    << ",mean:" << e.mean
-                    << ",std:" << e.std
-                    << ",min:" << e.min
-                    << ",max:" << e.max << "}";
-            }
-        }
+        CalcAndPrintTrajectoryErrors(estim_cam_orient_cfw, gt_cam_orient_cfw, &aligned_with_gt_estim_cam_orient_cfw, mono_slam.seconds_per_frame_);
+#if defined(SRK_HAS_PANGOLIN)
+        pangolin_gui->WaitKey();  // let user see estimated traj which is aligned to gt trajectory
+#endif
     }
 
     //

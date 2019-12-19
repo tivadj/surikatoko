@@ -122,6 +122,10 @@ auto SE3Inv(const SE3Transform& rt) -> SE3Transform {
     result.T = - result.R * rt.T;
     return result;
 }
+auto SE3Inv(const std::optional<SE3Transform>& rt) ->std::optional<SE3Transform> {
+    if (!rt.has_value()) return std::nullopt;
+    return SE3Inv(rt.value());
+}
 
 auto SE2Apply(const SE2Transform& rt, const suriko::Point2f& x)->suriko::Point2f
 {
@@ -567,35 +571,52 @@ auto RotMatFromAxisAngle(const Point3& axis_angle, gsl::not_null<Eigen::Matrix<S
     return RotMatFromUnityDirAndAngle(unity_dir, ang, rot_mat, check_input);
 }
 
-auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Point3*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input) -> bool
+auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, Point3* unity_dir, gsl::not_null<Scalar*> ang, bool check_input) -> bool
 {
     // skip precondition checking in Release mode on user request (check_input=false)
-    if (check_input || kSurikoDebug)
+    if (check_input)
     {
         std::string msg;
         bool ok = IsSpecialOrthogonal(rot_mat, &msg);
         CHECK(ok) << msg;
     }
+
     Scalar cos_ang = 0.5f*(rot_mat.trace() - 1);
-    cos_ang = std::clamp<Scalar>(cos_ang, -1, 1); // the cosine may be slightly off due to rounding errors
+    // the cosine may be slightly off due to rounding errors
+    if (cos_ang > 1)
+    {
+        cos_ang = 1;  // clamp cos
+        *ang = 0;
+    }
+    else if (cos_ang < -1)
+    {
+        cos_ang = -1;  // clamp cos
+        *ang = M_PI;
+    }
+    else
+    {
+        *ang = std::acos(cos_ang);
+    }
 
-    Scalar sin_ang = std::sqrt(1.0f - cos_ang * cos_ang);
-    Scalar atol = 1e-3f;
-    if (IsClose(0, sin_ang, 0, atol))
-        return false;
+    if (unity_dir != nullptr)
+    {
+        Scalar sin_ang = std::sqrt(1.0f - cos_ang * cos_ang);
+        Scalar atol = 1e-3f;
+        if (IsClose(0, sin_ang, 0, atol))
+            return false;
 
-    auto& udir = *unity_dir;
-    udir[0] = rot_mat(2, 1) - rot_mat(1, 2);
-    udir[1] = rot_mat(0, 2) - rot_mat(2, 0);
-    udir[2] = rot_mat(1, 0) - rot_mat(0, 1);
-    udir *= 0.5f / sin_ang;
+        auto& udir = *unity_dir;
+        udir[0] = rot_mat(2, 1) - rot_mat(1, 2);
+        udir[1] = rot_mat(0, 2) - rot_mat(2, 0);
+        udir[2] = rot_mat(1, 0) - rot_mat(0, 1);
+        udir *= 0.5f / sin_ang;
 
-    // direction vector is already close to unity, but due to rounding errors it diverges
-    // TODO: check where the rounding error appears
-    Scalar dirlen = Norm(udir);
-    udir *= 1 / dirlen;
+        // direction vector is already close to unity, but due to rounding errors it diverges
+        // TODO: check where the rounding error appears
+        Scalar dirlen = Norm(udir);
+        udir *= 1 / dirlen;
+    }
 
-    *ang = std::acos(cos_ang);
     return true;
 }
 
@@ -608,6 +629,14 @@ auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_nu
 
     *dir = unity_dir * ang;
     return true;
+}
+
+auto RotAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, bool check_rot_mat)->Scalar
+{
+    Scalar ang;
+    bool op = LogSO3(rot_mat, nullptr, &ang, check_rot_mat);
+    if (!op) ang = 0;
+    return ang;
 }
 
 auto DecomposeProjMat(const Eigen::Matrix<Scalar, 3, 4> &proj_mat, bool check_post_cond)
@@ -1079,37 +1108,104 @@ namespace internals
     }
 }
 
-// Calculates difference between two trajectories, aka Relative Pose Error (RPE).
-// source: "A benchmark for the evaluation of RGB-D SLAM systems", Sturm, 2012.
-bool CalcRelativePoseError(
-    gsl::span<const std::optional<SE3Transform>> ground_cfw,
-    gsl::span<const std::optional<SE3Transform>> estim_cfw,
-    std::vector<Scalar>* errs)
+bool CalcRelativePoseErrorItems(
+    gsl::span<const std::optional<SE3Transform>> ground_wfc,
+    gsl::span<const std::optional<SE3Transform>> estim_wfc,
+    std::vector<Scalar>* trasl_errs,
+    std::vector<Scalar>* rot_errs)
 {
-    if (ground_cfw.size() != estim_cfw.size()) return false;
+    if (ground_wfc.size() != estim_wfc.size()) return false;
 
-    std::optional<SE3Transform> prev_expect_opt = !ground_cfw.empty() ? ground_cfw[0] : std::nullopt;
-    std::optional<SE3Transform> prev_actual_opt = !estim_cfw.empty() ? estim_cfw[0] : std::nullopt;
-    size_t comm_size = std::min(ground_cfw.size(), estim_cfw.size());
+    std::optional<SE3Transform> ground1_opt = !ground_wfc.empty() ? ground_wfc[0] : std::nullopt;
+    std::optional<SE3Transform> estim1_opt = !estim_wfc.empty() ? estim_wfc[0] : std::nullopt;
+    size_t comm_size = std::min(ground_wfc.size(), estim_wfc.size());
     for (size_t i = 1; i < comm_size; ++i)
     {
-        const std::optional<SE3Transform>& expect_opt = ground_cfw[i];
-        const std::optional<SE3Transform>& actual_opt = estim_cfw[i];
-        if (expect_opt.has_value() && actual_opt.has_value() &&
-            prev_expect_opt.has_value() && prev_actual_opt.has_value())
+        const std::optional<SE3Transform>& ground2_opt = ground_wfc[i];
+        const std::optional<SE3Transform>& estim2_opt = estim_wfc[i];
+        if (ground2_opt.has_value() && estim2_opt.has_value() &&
+            ground1_opt.has_value() && estim1_opt.has_value())
         {
             // formula (1) and (2)
-            SE3Transform expect_cur_from_prev = SE3BFromA(expect_opt.value(), prev_expect_opt.value());
-            SE3Transform actual_cur_from_prev = SE3BFromA(actual_opt.value(), prev_actual_opt.value());
-            SE3Transform rel_err = SE3BFromA(expect_cur_from_prev, actual_cur_from_prev);
-            Scalar err2 = rel_err.T.squaredNorm();
-            Scalar err = std::sqrt(err2);
-            errs->push_back(err);
+            const SE3Transform& Q1 = ground1_opt.value();
+            const SE3Transform& Q2 = ground2_opt.value();
+            const SE3Transform& P1 = estim1_opt.value();
+            const SE3Transform& P2 = estim2_opt.value();
+            SE3Transform Qstep = SE3Compose(SE3Inv(Q1), Q2);  // 1 from 2
+            SE3Transform Pstep = SE3Compose(SE3Inv(P1), P2);
+            SE3Transform rel = SE3Compose(SE3Inv(Qstep), Pstep);
+
+            //std::string msg;
+            //bool ok = IsSpecialOrthogonal(Q1.R, &msg);
+            //CHECK(ok);
+            //ok = IsSpecialOrthogonal(Q2.R, &msg);
+            //CHECK(ok);
+            //ok = IsSpecialOrthogonal(P1.R, &msg);
+            //CHECK(ok);
+            //ok = IsSpecialOrthogonal(P2.R, &msg);
+            //CHECK(ok);
+            //ok = IsSpecialOrthogonal(Qstep.R, &msg);
+            //CHECK(ok);
+            //ok = IsSpecialOrthogonal(Pstep.R, &msg);
+            //CHECK(ok);
+            //ok = IsSpecialOrthogonal(rel.R, &msg);
+            //CHECK(ok);
+
+            Scalar transl = Norm(rel.T);
+            trasl_errs->push_back(transl);
+
+            Scalar ang = RotAngleFromRotMat(rel.R, /*check_rot_mat*/ false);
+            rot_errs->push_back(ang);
         }
-        prev_expect_opt = expect_opt;
-        prev_actual_opt = actual_opt;
+        ground1_opt = ground2_opt;
+        estim1_opt = estim2_opt;
     }
     return true;
+}
+
+// Calculates difference between two trajectories, aka Relative Pose Error (RPE).
+// source: "A benchmark for the evaluation of RGB-D SLAM systems", Sturm, 2012.
+std::optional<std::tuple<ErrWithMoments,ErrWithMoments>> CalcRelativePoseError(
+    gsl::span<const std::optional<SE3Transform>> ground_wfc,
+    gsl::span<const std::optional<SE3Transform>> estim_wfc)
+{
+    if (ground_wfc.empty() || ground_wfc.size() != estim_wfc.size()) return std::nullopt;
+
+    std::vector<Scalar> transl_errs;
+    std::vector<Scalar> rot_errs;
+    bool op = CalcRelativePoseErrorItems(ground_wfc, estim_wfc, &transl_errs, &rot_errs);
+    if (!op)
+        return std::nullopt;
+
+    std::optional<ErrWithMoments> rpe_transl = CalcTrajectoryErrStats(transl_errs);
+    std::optional<ErrWithMoments> rpe_rot    = CalcTrajectoryErrStats(rot_errs);
+    return std::tuple{ rpe_transl.value(), rpe_rot.value() };
+}
+
+
+bool CalcAbsoluteTrajectoryErrorItems(gsl::span<Point3> ground_coords, gsl::span<Point3> estim_coords,
+    std::vector<Scalar>* errs)
+{
+    size_t n = ground_coords.size();
+    if (n != estim_coords.size()) return false;
+    for (size_t i = 1; i < n; ++i)
+    {
+        const auto& e = estim_coords[i];
+        const auto& g = ground_coords[i];
+        auto dist = Norm(Mat(e) - Mat(g));
+        errs->push_back(dist);
+    }
+    return true;
+}
+
+std::optional<ErrWithMoments> CalcAbsoluteTrajectoryError(gsl::span<Point3> ground_coords, gsl::span<Point3> estim_coords)
+{
+    std::vector<Scalar> errs;
+    bool op = CalcAbsoluteTrajectoryErrorItems(ground_coords, estim_coords, &errs);
+    if (!op)
+        return std::nullopt;
+
+    return CalcTrajectoryErrStats(errs);
 }
 
 auto CalcTrajectoryErrStats(const std::vector<Scalar>& errs) -> std::optional<ErrWithMoments>
@@ -1163,4 +1259,97 @@ Scalar CalcTrajectoryLength(
     }
     return shifts_sum;
 }
+
+Scalar CalcTrajectoryLengthWfc(
+    const std::vector<std::optional<SE3Transform>>* cam_wfc_opt,
+    const std::vector<SE3Transform>* cam_wfc,
+    std::function<std::optional<double>(size_t)> get_pose_time,
+    double* total_dur,
+    Scalar* total_rot_ang)
+{
+    CHECK((cam_wfc != nullptr) ^ (cam_wfc_opt != nullptr));
+
+    std::optional<SE3Transform> prev_opt = cam_wfc_opt != nullptr ? (*cam_wfc_opt)[0] : (*cam_wfc)[0];
+    size_t size = cam_wfc_opt != nullptr ? cam_wfc_opt->size() : cam_wfc->size();
+    Scalar trans_sum = 0;
+    *total_dur = 0;
+    *total_rot_ang = 0;
+    using TumTimestamp = double;
+    std::optional <TumTimestamp> prev_time = get_pose_time(0);
+    for (size_t i = 1; i < size; ++i)
+    {
+        std::optional<TumTimestamp> cur_time = get_pose_time(i);
+
+        const std::optional<SE3Transform>& cur_opt = cam_wfc_opt != nullptr ? (*cam_wfc_opt)[i] : (*cam_wfc)[i];
+        if (cur_opt.has_value() && prev_opt.has_value())
+        {
+            SE3Transform prev_cam_from_cur_cam = SE3Compose(SE3Inv(prev_opt).value(), cur_opt.value());
+            Scalar s = Norm(prev_cam_from_cur_cam.T);
+            trans_sum += s;
+
+            TumTimestamp dur = cur_time.value() - prev_time.value();
+            *total_dur += dur;
+
+            Scalar ang = RotAngleFromRotMat(prev_cam_from_cur_cam.R);
+            *total_rot_ang += ang;
+        }
+        prev_opt = cur_opt;
+        prev_time = cur_time;
+    }
+    return trans_sum;
+}
+
+// Find transformation to transform src into dst.
+std::tuple<bool,SE3Transform> AlignTrajectoryHornAFromB(
+    const gsl::span<suriko::Point3> dst,
+    const gsl::span<suriko::Point3> src)
+{
+    // can't align empty trajectories
+    // can't align trajectories of different size
+    auto n = src.size();
+    if (src.empty() || n != dst.size()) return std::make_tuple(false, SE3Transform::NoTransform());
+
+    constexpr int kEucl3 = 3;
+    Eigen::Matrix<Scalar, kEucl3, 1> src_mean {0, 0, 0};
+    Eigen::Matrix<Scalar, kEucl3, 1> dst_mean {0, 0, 0};
+    for (size_t i = 0; i < n; ++i)
+    {
+        const auto& s = src[i];
+        src_mean[0] += s[0];
+        src_mean[1] += s[1];
+        src_mean[2] += s[2];
+        const auto& d = dst[i];
+        dst_mean[0] += d[0];
+        dst_mean[1] += d[1];
+        dst_mean[2] += d[2];
+    }
+
+    Scalar inv_n = 1 / static_cast<Scalar>(n);
+    src_mean *= inv_n;
+    dst_mean *= inv_n;
+
+    Eigen::Matrix<Scalar, kEucl3, kEucl3> W;
+    W.fill(0);
+    for (size_t i = 0; i < n; ++i)
+    {
+        W.noalias() += (Mat(src[i]) - src_mean) * (Mat(dst[i]) - dst_mean).transpose();
+    }
+    W.transposeInPlace();
+
+    // W = U*S*tr(V)
+    auto svd = W.jacobiSvd(Eigen::ComputeFullU | Eigen::ComputeFullV);
+
+    auto U = svd.matrixU();
+    if (svd.matrixU().determinant() * svd.matrixV().determinant() < 0)
+        U.col(2) *= -1;
+
+    auto rot = (U * svd.matrixV().transpose()).eval();
+    auto trans = (dst_mean - rot * src_mean).eval();
+
+    SE3Transform result{};
+    result.R = rot;
+    result.T = trans;
+    return std::make_tuple(true, result);
+}
+
 }

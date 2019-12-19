@@ -2344,6 +2344,16 @@ void DavisonMonoSlam::AllocateAndInitStateForNewSalientPoint(size_t new_sal_pnt_
     Eigen::Matrix<Scalar, kSphericalSalientPointComps, Eigen::Dynamic> spher_sal_pnt_to_other_covar;
     GetNewSphericalSalientPointCovar(cam_state, corner_pix, interm_proj_vars, vars_count_before, &spher_sal_pnt_autocovar, &spher_sal_pnt_to_other_covar);
 
+    if (pnt_inv_dist_gt.has_value())
+    {
+        // if user provided the ground truth depth of a salient point, then we assume the ultimate certainty (or variance=0)
+        DependsOnSalientPointPackOrder();
+        auto inv_dist_ind = kSphericalSalientPointComps - 1;
+        spher_sal_pnt_autocovar(inv_dist_ind, inv_dist_ind) = 0;
+        spher_sal_pnt_autocovar.row(inv_dist_ind).setZero();
+        spher_sal_pnt_autocovar.col(inv_dist_ind).setZero();
+    }
+
     Point3 xyz_sal_pnt_vars;
     Eigen::Matrix<Scalar, kXyzSalientPointComps, kXyzSalientPointComps> xyz_sal_pnt_autocovar;
     Eigen::Matrix<Scalar, kXyzSalientPointComps, Eigen::Dynamic> xyz_sal_pnt_to_other_covar;

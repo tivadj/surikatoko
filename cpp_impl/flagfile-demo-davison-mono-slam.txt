@@ -7,6 +7,7 @@
 #--demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-imageseq.json
 --demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-imageseq-freiburg.json
 #--demo_params=\\localhost\surikatoko_src\cpp_impl\demo-monoslam-scenario01.json
+#--demo_params=/mnt/e/dev-efr/workshop/multviewgeom_proj/src_git/cpp_impl/demo-monoslam-scenario01.json
 
 # Controller
 --ctrl_wait_after_each_frame=false
@@ -16,7 +17,7 @@
 --ctrl_log_slam_images_dir=dump_out
 --ctrl_log_slam_images_cam0=false
 --ctrl_log_slam_images_scene3D=false
---ctrl_log_slam_cam_traj=false
+--ctrl_log_slam_cam_traj=true
 # true to just test visualizer, no slam is done
 --ctrl_debug_skim_over=false
 
@@ -31,7 +32,7 @@
 #
 --monoslam_force_sequential_engine=false
 --monoslam_sal_pnt_negative_inv_rho_substitute=-1
-# 1=all, 2=one observation, 3=one component of one observation
+# 1=all, 2=one observation, 3=one component of one observation, 4=1-Point RANSAC
 --monoslam_update_impl=4
 --monoslam_covar2D_to_ellipse_confidence=0.95
 --monoslam_max_new_blobs_in_first_frame=-10
@@ -68,8 +69,7 @@
 --monoslam_sal_pnt_first_cam_pos_std_if_gt=0
 --monoslam_sal_pnt_azimuth_std_if_gt=0
 --monoslam_sal_pnt_elevation_std_if_gt=0
---monoslam_sal_pnt_inv_dist_std=_if_gt0
-
+--monoslam_sal_pnt_inv_dist_std_if_gt=0
 
 # Visualizer
 

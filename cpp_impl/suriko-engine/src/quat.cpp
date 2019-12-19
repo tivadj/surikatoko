@@ -97,6 +97,14 @@ auto RotMat(const Eigen::Matrix<Scalar, 4, 1>& quat)->Eigen::Matrix<Scalar, 3, 3
     return result;
 }
 
+auto RotMat(gsl::span<Scalar> quat)->Eigen::Matrix<Scalar, 3, 3>
+{
+    CHECK(quat.size() == 4);
+    Eigen::Matrix<Scalar, 3, 3> result;
+    RotMatFromQuat(quat, &result);
+    return result;
+}
+
 auto QuatFromAxisAngle(gsl::span<const Scalar> axis_ang, gsl::span<Scalar> quat) -> void
 {
     Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>> axis(axis_ang.data());

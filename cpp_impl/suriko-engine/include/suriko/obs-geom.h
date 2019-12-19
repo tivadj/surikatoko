@@ -208,6 +208,7 @@ struct SE3Transform
 };
 
 auto SE3Inv(const SE3Transform& rt) -> SE3Transform;
+auto SE3Inv(const std::optional<SE3Transform>& rt)->std::optional<SE3Transform>;
 auto SE2Apply(const SE2Transform& rt, const suriko::Point2f& x)->suriko::Point2f;
 auto SE3Apply(const SE3Transform& rt, const suriko::Point3& x) -> suriko::Point3;
 auto SE3Compose(const SE3Transform& rt1, const SE3Transform& rt2) -> suriko::SE3Transform;
@@ -349,10 +350,13 @@ bool IsIdentity(const Eigen::Matrix<Scalar, 3, 3>& M, Scalar rtol, Scalar atol, 
 
 /// Logarithm of SO(3) : R[3x3]->(n, ang) where n = rotation vector, ang = angle in radians.
 [[nodiscard]]
-auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Point3*> unity_dir, gsl::not_null<Scalar*> ang, bool check_input = true) -> bool;
+auto LogSO3(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, Point3* unity_dir, gsl::not_null<Scalar*> ang, bool check_input = true) -> bool;
 
 [[nodiscard]]
 auto AxisAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, gsl::not_null<Point3*> dir) -> bool;
+
+[[nodiscard]]
+auto RotAngleFromRotMat(const Eigen::Matrix<Scalar, 3, 3>& rot_mat, bool check_rot_mat = true) -> Scalar;
 
 //template <class F>
 //class SalientPointTracker
@@ -463,14 +467,13 @@ constexpr auto Deg2Rad(F x)
     using Float = std::common_type_t<float, F>; // if input is int, force output to be float
     return x * static_cast<Float>(M_PI / 180);
 }
+template <typename F>
+constexpr auto Rad2Deg(F x)
+{
+    using Float = std::common_type_t<float, F>; // if input is int, force output to be float
+    return x * static_cast<Float>(180 / M_PI);
 }
-
-// Calculates difference between two trajectories, aka Relative Pose Error (RPE).
-// source: "A benchmark for the evaluation of RGB-D SLAM systems", Sturm, 2012.
-bool CalcRelativePoseError(
-    gsl::span<const std::optional<SE3Transform>> ground_cfw,
-    gsl::span<const std::optional<SE3Transform>> estim_cfw,
-    std::vector<Scalar>* errs);
+}
 
 struct ErrWithMoments
 {
@@ -481,10 +484,41 @@ struct ErrWithMoments
     Scalar max;
     Scalar rmse;
 };
+// Calculates difference between two trajectories, aka Relative Pose Error (RPE).
+// source: "A benchmark for the evaluation of RGB-D SLAM systems", Sturm, 2012.
+bool CalcRelativePoseErrorItems(
+    gsl::span<const std::optional<SE3Transform>> ground_cfw,
+    gsl::span<const std::optional<SE3Transform>> estim_cfw,
+    std::vector<Scalar>* trasl_errs,
+    std::vector<Scalar>* rot_errs);
+
+std::optional<std::tuple<ErrWithMoments, ErrWithMoments>> CalcRelativePoseError(
+    gsl::span<const std::optional<SE3Transform>> ground_cfw,
+    gsl::span<const std::optional<SE3Transform>> estim_cfw);
+
+// Calculates list of Absolute Trajectory Errors (ATE).
+bool CalcAbsoluteTrajectoryErrorItems(gsl::span<Point3> ground_coords, gsl::span<Point3> estim_coords,
+    std::vector<Scalar>* errs);
+
+std::optional<ErrWithMoments> CalcAbsoluteTrajectoryError(gsl::span<Point3> ground_coords, gsl::span<Point3> estim_coords);
 
 auto CalcTrajectoryErrStats(const std::vector<Scalar>& errs)->std::optional<ErrWithMoments>;
 
 Scalar CalcTrajectoryLength(
     const std::vector<std::optional<SE3Transform>>* cam_cfw_opt,
     const std::vector<SE3Transform>* cam_cfw);
+Scalar CalcTrajectoryLengthWfc(
+    const std::vector<std::optional<SE3Transform>>* cam_wfc_opt,
+    const std::vector<SE3Transform>* cam_wfc,
+    std::function<std::optional<double>(size_t)> get_pose_time,
+    double* total_dur,
+    Scalar* total_rot_ang);
+
+/// Aligns two trajectories as closely as possible (in least-squares sense) using method of Horn.
+/// Finds transformation M so that M*src[i]=dst[i].
+/// source: "Closed-form solution of absolute orientation using unit quaternions", Horn, 1987.
+std::tuple<bool, SE3Transform> AlignTrajectoryHornAFromB(
+    const gsl::span<suriko::Point3> src,
+    const gsl::span<suriko::Point3> dst);
+
 }
