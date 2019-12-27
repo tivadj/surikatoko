@@ -466,6 +466,7 @@ public:
     //
     std::function<void(DavisonMonoSlam&, SalPntId, cv::Mat*)> draw_sal_pnt_fun_;
     std::function<void(std::string_view, cv::Mat)> show_image_fun_;
+    std::function<std::optional<Scalar>(Point2f)> get_pixel_inv_depth_;
 public:
     ImageTemplCornersMatcher(int nfeatures = 50)
     : detect_orb_corners_per_frame_(nfeatures)
@@ -945,9 +946,12 @@ public:
             if (templ_img.gray.empty())
                 continue;
 
+            Point2f pix_coord = GetBlobCoord(kp);
             CornerVicinity vic;
-            vic.coord = GetBlobCoord(kp);
+            vic.coord = pix_coord;
             vic.templ_img = templ_img;
+            if (get_pixel_inv_depth_ != nullptr)
+                vic.pnt_inv_dist_gt = get_pixel_inv_depth_(pix_coord);
 
             if (match_corners_impl_ == MatchCornerImpl::OrbDescr)
             {
@@ -956,6 +960,8 @@ public:
             }
             else
             {
+                SRK_ASSERT(match_corners_impl_ == MatchCornerImpl::Templ);
+
                 // calculate the statistics of this template (mean and variance), used for matching templates
                 auto templ_roi = Recti{ 0, 0, sal_pnt_templ_size.width, sal_pnt_templ_size.height };
                 Scalar templ_mean = GetGrayImageMean(templ_img.gray, templ_roi);
@@ -1206,140 +1212,6 @@ void CheckDavisonMonoSlamConfigurationAndDump(const DavisonMonoSlam& mono_slam,
                 << "Note: max_cam_shift=" << between_frames_max_cam_shift.value()
                 << " is too big compared to input (process) noise 3sig=" << max_expected_cam_shift;
     }
-}
-
-bool LoadOversampledTumGtTraj(const std::filesystem::path& tum_dataset_dirpath,
-    std::vector<std::optional<SE3Transform>>* gt_cam_orient_cfw)
-{
-    if (tum_dataset_dirpath.empty() || !is_directory(tum_dataset_dirpath))
-        return false;
-
-    // TUM dataset has ground truth trajectory in oversampled frequency (4ms), while images are collected every 33ms.
-    // ground truth
-    std::filesystem::path gt_filepath = tum_dataset_dirpath / "groundtruth.txt"sv;
-    std::vector<TumTimestampPose> oversampled_poses_wfc_gt_tum;
-    std::string err_msg;
-    bool op = ReadTumDatasetGroundTruth(gt_filepath, &oversampled_poses_wfc_gt_tum, &err_msg);
-    if (!op)
-    {
-        LOG(ERROR) << "Can't read TUM ground truth file: " << gt_filepath << ", error: " << err_msg;
-        return false;
-    }
-
-    std::vector<std::optional<SE3Transform>> gt_poses_wfc_gt;
-    std::transform(oversampled_poses_wfc_gt_tum.begin(), oversampled_poses_wfc_gt_tum.end(), std::back_inserter(gt_poses_wfc_gt),
-        [](const auto& t) { return TimestampPoseToSE3(t); });
-    return true;
-}
-
-/// \param premult_gt_from_cam0 transforms from frame of camera0 into the frame of ground truth: result=premult_gt_from_cam0 * cam0_from_cami
-bool LoadTumGtTraj(const std::filesystem::path& tum_dataset_dirpath,
-    const std::vector<TumTimestamp>& rgb_stamps,
-    std::optional<TumTimestampDiff> max_time_diff,
-    std::optional<Eigen::Matrix<Scalar, 3,3>> premult_gt_from_cam0,
-    std::vector<std::optional<SE3Transform>>* gt_cam_orient_cfw)
-{
-    if (tum_dataset_dirpath.empty() || !is_directory(tum_dataset_dirpath))
-        return false;
-
-    // TUM dataset has ground truth trajectory in oversampled frequency (4ms), while images are collected every 33ms.
-    // ground truth
-    std::filesystem::path gt_filepath = tum_dataset_dirpath / "groundtruth.txt"sv;
-    std::vector<TumTimestampPose> oversampled_poses_wfc_gt_tum;
-    std::string err_msg;
-    bool op = ReadTumDatasetGroundTruth(gt_filepath, &oversampled_poses_wfc_gt_tum, &err_msg);
-    if (!op)
-    {
-        LOG(ERROR) << "Can't read TUM ground truth file: " << gt_filepath << ", error: " << err_msg;
-        return false;
-    }
-
-    std::vector<std::optional<SE3Transform>> gt_poses_wfc_gt;
-    std::transform(oversampled_poses_wfc_gt_tum.begin(), oversampled_poses_wfc_gt_tum.end(), std::back_inserter(gt_poses_wfc_gt),
-        [](const auto& t) { return TimestampPoseToSE3(t); });
-
-    double gt_total_dur = -1;
-    Scalar gt_total_rot_ang = -1;
-    Scalar gt_poses_traj_len = CalcTrajectoryLengthWfc(&gt_poses_wfc_gt, nullptr, 
-        [&](size_t i) -> std::optional<double> {
-            return oversampled_poses_wfc_gt_tum[i].timestamp;
-        }, &gt_total_dur, &gt_total_rot_ang);
-LOG(INFO) << "gt traj:"
-        << " frames:" << oversampled_poses_wfc_gt_tum.size()
-        << ", length[m]: " << gt_poses_traj_len
-        << ", dur[s]: " << gt_total_dur
-        << ", avg transl vel[m/s]:" << gt_poses_traj_len / gt_total_dur
-        << ", avg angular vel[deg/s]:" << Rad2Deg(gt_total_rot_ang) / gt_total_dur;
-
-    // maximal allowed difference between ground truth and rgb image timestamp
-    if (!max_time_diff.has_value())
-        max_time_diff = MaxMatchTimeDifference(oversampled_poses_wfc_gt_tum);
-    if (!max_time_diff.has_value()) return false;
-
-    std::vector<ptrdiff_t> rgb_poses_gt_inds;
-    size_t found_gt_count = AssignCloseIndsByTimestamp(oversampled_poses_wfc_gt_tum, rgb_stamps, max_time_diff, &rgb_poses_gt_inds);
-
-    // construct subset of ground truth trajectory, corresponding to rgb images
-    std::vector<std::optional<SE3Transform>> rgb_poses_wfc_gt{ rgb_stamps.size() };
-    for (size_t i = 0; i < rgb_poses_wfc_gt.size(); ++i)
-    {
-        ptrdiff_t gt_ind = rgb_poses_gt_inds[i];
-        if (gt_ind != -1)
-        {
-            const TumTimestampPose& p = oversampled_poses_wfc_gt_tum[gt_ind];
-            rgb_poses_wfc_gt[i] = TimestampPoseToSE3(p);
-        }
-    }
-
-    double rgb_total_dur = -1;
-    Scalar rgb_total_rot_ang = -1;
-    Scalar rgb_poses_gt_traj_len = CalcTrajectoryLengthWfc(&rgb_poses_wfc_gt, nullptr,
-        [&](size_t i) -> std::optional<double> {
-            ptrdiff_t gt_ind = rgb_poses_gt_inds[i];
-            if (gt_ind == -1) return std::nullopt;
-            return oversampled_poses_wfc_gt_tum[gt_ind].timestamp;
-        }, &rgb_total_dur, &rgb_total_rot_ang);
-    LOG(INFO) << "estim traj"
-        << " frames:" << rgb_poses_wfc_gt.size()
-        << ", frames_with_gt:" << found_gt_count
-        <<", length[m]: " << rgb_poses_gt_traj_len
-        << ", dur[s]: " << rgb_total_dur
-        << ", avg trans vel[m/s]:" << rgb_poses_gt_traj_len / rgb_total_dur
-        << ", avg angul vel[deg/s]:" << Rad2Deg(rgb_total_rot_ang) / rgb_total_dur;
-
-    // ground truth corresponding to the first camera frame
-    ptrdiff_t first_cam_gt_ind = rgb_poses_gt_inds[0];
-    const TumTimestampPose& first_cam_wfc_gt_tum = oversampled_poses_wfc_gt_tum[first_cam_gt_ind];
-    std::optional<SE3Transform> first_cam_wfc0_gt = TimestampPoseToSE3(first_cam_wfc_gt_tum);
-    if (!first_cam_wfc0_gt.has_value()) return false;
-
-    // transform the entire ground truth sequence, so that a ground truth frame, corresponding to the first camera's frame, coincides with the origin
-    SE3Transform first_cam_c0fw_gt = SE3Inv(first_cam_wfc0_gt.value());  // rgb cam0 from world
-
-    // this may transform from X-right-Y-bottom into X-left-Y-top (which is the default) coordinates
-    SE3Transform premult_gt_from_cam0_se3 = SE3Transform::NoTransform();
-    if (premult_gt_from_cam0.has_value())
-        premult_gt_from_cam0_se3.R = premult_gt_from_cam0.value();
-
-    std::array<Scalar, 4> prefix_quat;
-    op = QuatFromRotationMat(premult_gt_from_cam0_se3.R, prefix_quat);
-    SRK_ASSERT(op);
-
-    for (const std::optional<SE3Transform>& wfci : rgb_poses_wfc_gt)  // world from cami
-    {
-        std::optional<SE3Transform> cifc0;  // cam0 from cami
-        if (wfci.has_value())
-        {
-            auto c0fci = SE3Compose(first_cam_c0fw_gt, wfci.value());
-
-            c0fci = SE3Compose(premult_gt_from_cam0_se3, c0fci);  // apply X-right-y_bottom to X-left-Y-top transformation
-
-            cifc0 = SE3Inv(c0fci);
-        }
-        gt_cam_orient_cfw->push_back(cifc0);
-    }
-
-    return true;
 }
 
 void CalcAndPrintTrajectoryErrors(const std::vector<SE3Transform>& estim_cam_orient_cfw,
@@ -1673,21 +1545,24 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     std::string scene_imageseq_dir;
 
     std::vector<std::optional<SE3Transform>> gt_cam_orient_cfw;  // entire sequence of ground truth camera orientation, transforming into camera from world
-    std::vector<TumTimestamp> estim_rgb_timestamps;              // timestamps of input images
+    std::vector<TumTimestamp> estim_rgb_timestamps;              // timestamps of input RGB images
     std::vector<SE3Transform> estim_cam_orient_cfw;              // estimated trajectory of the camera
     std::vector<std::optional<SE3Transform>> aligned_with_gt_estim_cam_orient_cfw;  // estimated trajectory of the camera which is aligned with ground truth using Horn algorithm
+    TumRgbdDataset tum_dataset;
 
     std::vector<std::optional<SE3Transform>> external_cam_orient_cfw;  // some trajectory to render
 
     // load ground truth from TUM dataset
     std::filesystem::path tum_dataset_dirpath;
+    cv::Mat depth_img;  // depth image in case of RGB-D
     if (auto tum_dataset_dirpath_opt = config_reader.GetValue<std::string>("tum_dataset_dir"); tum_dataset_dirpath_opt.has_value())
     {
         tum_dataset_dirpath = std::filesystem::path{ tum_dataset_dirpath_opt.value() };
         LOG(INFO) << "tum_dataset_dir=" << tum_dataset_dirpath;
 
         demo_data_source = DemoDataSource::kImageSeqDir;
-        scene_imageseq_dir = (tum_dataset_dirpath / "rgb/").string();
+        tum_dataset.SetDatasetDirpath(tum_dataset_dirpath);
+        scene_imageseq_dir = tum_dataset.GetRgbDirpath().string();
     }
     else
     {
@@ -1954,19 +1829,8 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             }
             else
             {
-                // load timestamps from file names of rgb images
-                std::filesystem::path rgb_filepath = tum_dataset_dirpath / "rgb.txt"sv;
-                std::vector<TumTimestampFilename> filename_stamps;
-                filename_stamps.reserve(1024);
-                std::string err_msg;
-                bool op = ReadTumDatasetTimedRgb(rgb_filepath, &filename_stamps, &err_msg);
-                if (!op)
-                {
-                    LOG(ERROR) << "Can't read TUM 'rgb' file: " << rgb_filepath << ", error: " << err_msg;
-                    return false;
-                }
-                estim_rgb_timestamps.resize(filename_stamps.size());
-                std::transform(filename_stamps.begin(), filename_stamps.end(), estim_rgb_timestamps.begin(), [](const TumTimestampFilename& i) { return i.timestamp; });
+                tum_dataset.LoadRgbHeaders();
+                estim_rgb_timestamps = tum_dataset.rgb_timestamps_;
             }
 
             std::optional<Eigen::Matrix<Scalar, 3, 3>> premult_gt_from_cam0;
@@ -1978,17 +1842,19 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
             }
 
             // [seconds] max time difference to assign ground truth to estimated trajectory; TUM RGB - D bench 'evalute_ate.py' utility uses 0.02 seconds
-            TumTimestampDiff max_time_diff = static_cast<TumTimestampDiff>(FloatParam<Scalar>(&config_reader, "tum_groundtruth_sample_match_tolerance_s").value_or(0.02f));
-            LOG(INFO) << "tum_groundtruth_sample_match_tolerance[s]: " << max_time_diff;
+            TumTimestampDiff match_rgb_and_gt_max_time_diff = static_cast<TumTimestampDiff>(FloatParam<Scalar>(&config_reader, "tum_groundtruth_sample_match_tolerance_s").value_or(0.02f));
+            LOG(INFO) << "tum_groundtruth_sample_match_tolerance[s]: " << match_rgb_and_gt_max_time_diff;
 
-            // ground truth
-            bool oploadgt = LoadTumGtTraj(tum_dataset_dirpath, estim_rgb_timestamps, max_time_diff, premult_gt_from_cam0, &gt_cam_orient_cfw);
-            if (!oploadgt)
-                LOG(INFO) << "Can't load ground truth from TUM dataset";
+            tum_dataset.LoadAndAssignGtTraj(estim_rgb_timestamps, match_rgb_and_gt_max_time_diff, premult_gt_from_cam0, &gt_cam_orient_cfw);
 
-            std::vector<std::optional<SE3Transform>> gt_cam_orient_wfc;
-            std::transform(gt_cam_orient_cfw.begin(), gt_cam_orient_cfw.end(), std::back_inserter(gt_cam_orient_wfc),
-                [](const auto& p) { return SE3Inv(p); });
+            if (FLAGS_monoslam_sal_pnt_perfect_init_inv_dist)
+            {
+                TumTimestampDiff match_rgb_and_depth_max_time_diff = match_rgb_and_gt_max_time_diff;
+                tum_dataset.LoadAndAssignDepthImageFilepathes(match_rgb_and_depth_max_time_diff);
+            }
+
+            if (tum_dataset.HasErrors())
+                LOG(INFO) << "Can't load ground truth from TUM dataset. " << tum_dataset.err_msg_;
         }
 
         if (auto external_traj_filepath = config_reader.GetValue<std::string>(" ").value_or(""); !external_traj_filepath.empty())
@@ -2088,6 +1954,7 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
     mono_slam.cam_enable_distortion_ = config_reader.GetValue<bool>("camera_enable_distortion").value_or(true);
     mono_slam.force_xyz_sal_pnt_pos_diagonal_uncert_ = FLAGS_monoslam_force_xyz_sal_pnt_pos_diagonal_uncert;
     mono_slam.sal_pnt_templ_size_ = { FLAGS_monoslam_templ_width, FLAGS_monoslam_templ_width };
+    mono_slam.sal_pnt_perfect_init_inv_dist_ = FLAGS_monoslam_sal_pnt_perfect_init_inv_dist;
     if (FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute >= 0)
         mono_slam.sal_pnt_negative_inv_rho_substitute_ = static_cast<Scalar>(FLAGS_monoslam_sal_pnt_negative_inv_rho_substitute);
     mono_slam.covar2D_to_ellipse_confidence_ = static_cast<Scalar>(FLAGS_monoslam_covar2D_to_ellipse_confidence);
@@ -2110,7 +1977,6 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         mono_slam.SetCameraVelocity(cam_vel_tracker, cam_ang_vel_c);
 
         //
-        mono_slam.sal_pnt_perfect_init_inv_dist_ = FLAGS_monoslam_sal_pnt_perfect_init_inv_dist;
         mono_slam.set_estim_state_covar_to_gt_impl_ = FLAGS_monoslam_set_estim_state_covar_to_gt_impl;
 
         // covariances used together with ground truth state
@@ -2206,6 +2072,20 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
         corners_matcher->force_sequential_execution_ = FLAGS_monoslam_force_sequential_engine;
         corners_matcher->min_search_rect_size_ = suriko::Sizei{ FLAGS_monoslam_templ_min_search_rect_width, FLAGS_monoslam_templ_min_search_rect_height };
         corners_matcher->min_templ_corr_coeff_ = config_reader.GetValue<Scalar>("monoslam_templ_min_corr_coeff").value_or(corners_matcher->min_templ_corr_coeff_);
+        if (FLAGS_monoslam_sal_pnt_perfect_init_inv_dist)
+        {
+            corners_matcher->get_pixel_inv_depth_ = [&depth_img](Point2f pix_coord)->std::optional<Scalar>
+            {
+                if (depth_img.empty()) return std::nullopt;
+                int x = static_cast<int>(pix_coord.X());
+                int y = static_cast<int>(pix_coord.Y());
+                auto encoded_depth = depth_img.at<uint16_t>(cv::Point{ x,y });
+                std::optional<Scalar> z = DecodeDepthImagePixel(encoded_depth);
+                if (!z.has_value()) return std::nullopt;
+                Scalar inv_depth = 1 / z.value();
+                return inv_depth;
+            };
+        }
         
         corners_matcher->draw_sal_pnt_fun_ = [&drawer](DavisonMonoSlam& mono_slam, SalPntId sal_pnt_id, cv::Mat* out_image_bgr)
         {
@@ -2381,6 +2261,12 @@ int DavisonMonoSlamDemo(int argc, char* argv[])
 #if defined(SRK_DEBUG)
             image.bgr_debug = image_bgr;
 #endif
+
+            std::optional<std::filesystem::path> depth_img_filepath = tum_dataset.GetDepthFilepathForRgbImage(frame_ind);
+            if (depth_img_filepath.has_value())
+            {
+                depth_img = cv::imread(depth_img_filepath.value().string(), cv::IMREAD_ANYDEPTH);
+            }
         }
 
         std::optional<std::chrono::duration<double>> frame_process_time; // time it took to process current frame by tracker
